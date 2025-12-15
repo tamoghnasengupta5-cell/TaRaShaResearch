@@ -47,8 +47,7 @@ def render_capital_structure_cost_of_capital_tab() -> None:
             "Debt/Market Capitalization (annual) = Total Debt / Market Capitalization."
         )
 
-        conn = get_conn()
-        init_db(conn)
+        conn = get_db()
         companies_df = list_companies(conn)
 
         if companies_df.empty:
@@ -388,9 +387,7 @@ def render_capital_structure_cost_of_capital_tab() -> None:
     st.markdown("---")
 
     with st.expander("FCFE and Spread Score Dashboard", expanded=True):
-        conn = get_conn()
-        init_db(conn)
-
+        conn = get_db()
         # -----------------------------
         # User inputs
         # -----------------------------

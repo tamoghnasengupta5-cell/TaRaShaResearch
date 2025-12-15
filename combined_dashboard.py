@@ -45,8 +45,7 @@ def render_combined_dashboard_tab() -> None:
     st.title("Combined Dashboard")
 
     with st.expander("Overall Score Dashboard", expanded=True):
-        conn = get_conn()
-        init_db(conn)
+        conn = get_db()
         companies_df = list_companies(conn)
         if companies_df.empty:
             st.info("No companies in the database yet. Upload a spreadsheet above.")

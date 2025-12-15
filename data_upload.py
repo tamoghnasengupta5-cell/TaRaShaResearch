@@ -494,8 +494,7 @@ def render_data_upload_tab():
                             continue
 
                     # Store
-                    conn = get_conn()
-                    init_db(conn)
+                    conn = get_db()
                     cid = upsert_company(conn, company, ticker)
             
                     # Remember last ingested company for default selection in dropdown
@@ -715,8 +714,7 @@ def render_data_upload_tab():
                     if not year_to_change:
                         raise ValueError("No valid Year/Change rows found in the 'Export' sheet.")
 
-                    conn = get_conn()
-                    init_db(conn)
+                    conn = get_db()
                     cid_price = upsert_company(conn, company_p, ticker_p)
 
                     upsert_annual_price_change(conn, cid_price, year_to_change)

@@ -5,8 +5,7 @@ def render_pl_metrics_tab():
     st.title("P&L Metrics and Dashboard")
 
     with st.expander("P&L Metrics", expanded=True):
-            conn = get_conn()
-            init_db(conn)
+            conn = get_db()
             companies_df = list_companies(conn)
             if companies_df.empty:
                 st.info("No companies in the database yet. Upload a spreadsheet above.")
@@ -304,8 +303,7 @@ def render_pl_metrics_tab():
     st.markdown("---")
 
     with st.expander("3) P&L Score Dashboard", expanded=True):
-        conn = get_conn()
-        init_db(conn)
+        conn = get_db()
         companies_df = list_companies(conn)
         if companies_df.empty:
             st.info("No companies in the database yet. Upload a spreadsheet above.")

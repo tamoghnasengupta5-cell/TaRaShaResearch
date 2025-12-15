@@ -5,8 +5,7 @@ def render_balance_sheet_metrics_tab():
     st.title("Balance Sheet Metrics and Dashboard")
 
     with st.expander("Balance Sheet Metrics", expanded=True):
-        conn = get_conn()
-        init_db(conn)
+        conn = get_db()
         companies_df = list_companies(conn)
         if companies_df.empty:
             st.info("No companies in the database yet. Upload a spreadsheet above.")
@@ -399,8 +398,7 @@ def render_balance_sheet_metrics_tab():
     st.markdown("---")
 
     with st.expander("Balance Sheet Score Dashboard", expanded=True):
-        conn = get_conn()
-        init_db(conn)
+        conn = get_db()
         companies_df = list_companies(conn)
         if companies_df.empty:
             st.info("No companies in the database yet. Upload a spreadsheet above.")

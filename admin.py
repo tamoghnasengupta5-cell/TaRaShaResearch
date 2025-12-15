@@ -96,12 +96,10 @@ def render_admin_tab():
 
     st.write(
         "Configure metric weight factors and manage company buckets. "
-        "All changes are stored in the same SQLite database (`app.db`)."
+        "All changes are stored in the same SQLite database (app data store)."
     )
 
-    conn = get_conn()
-    init_db(conn)
-
+    conn = get_db()
     tab_weights, tab_buckets, tab_rfr, tab_iapm, tab_erp, tab_mctr, tab_industry_beta, tab_cleanup, tab_formula = st.tabs(
 
 

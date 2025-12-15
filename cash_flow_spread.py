@@ -30,9 +30,7 @@ def render_cash_flow_and_spread_tab() -> None:
     st.title("Cash Flow and Reinvestment")
 
     with st.expander("Cash Flow and Reinvestment Metrics", expanded=True):
-        conn = get_conn()
-        init_db(conn)
-
+        conn = get_db()
         companies_df = list_companies(conn)
         if companies_df.empty:
             st.info("No companies in the database yet. Upload a spreadsheet in Data Upload tab.")
