@@ -151,7 +151,7 @@ def _render_hero_carousel(image_paths) -> None:
         display: none;
         position: relative;
         width: 100%;
-        aspect-ratio: {banner_ratio_w} / {banner_ratio_h};
+        /*aspect-ratio: {banner_ratio_w} / {banner_ratio_h};*/
         border-radius: 16px;
         overflow: hidden;
         box-shadow: 0 12px 30px rgba(0,0,0,0.12);
