@@ -96,7 +96,7 @@ def render_admin_tab():
 
     st.write(
         "Configure metric weight factors and manage company buckets. "
-        "All changes are stored in the same SQLite database (app data store)."
+        "All changes are stored in the same SQLite database (`app.db`)."
     )
 
     conn = get_db()

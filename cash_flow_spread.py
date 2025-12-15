@@ -5,7 +5,9 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from core import (  # noqa: F401
+from core import (
+    get_db,
+  # noqa: F401
     compute_and_store_fcff_and_reinvestment_rate,
     compute_and_store_fcfe,
     compute_and_store_rd_spend_rate,

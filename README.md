@@ -1,18 +1,19 @@
-# TaRaSha Equity Research Tool (Streamlit)
+# TaRaSha on Azure App Service (Streamlit)
 
-## Run locally
-1. Install Python 3.11+
-2. Open a terminal in this folder and run:
-   - `python -m venv .venv`
-   - Windows: `.venv\Scripts\activate`
-   - Mac/Linux: `source .venv/bin/activate`
-   - `pip install -r requirements.txt`
-   - `streamlit run app.py`
+## What was fixed
+- Avoids SQLite "database is locked" by using a single shared SQLite connection per app process.
+- Uses Azure-persistent DB path (/home/app.db) when running on Azure App Service.
 
-## Notes for Azure App Service
-- The app stores its SQLite database at:
-  - Local: `./app.db`
-  - Azure App Service: `/home/app.db` (persistent storage)
-- Put these images in `./assets/` (case-sensitive):
-  - `Hero_Banner.png` (1802x601 recommended)
-  - `tarasha_logo.png`
+## Required Azure settings
+1) Startup Command:
+   python -m streamlit run app.py --server.address 0.0.0.0 --server.port 8000 --server.headless true
+
+2) App setting:
+   WEBSITES_PORT = 8000
+
+## GitHub Actions deployment
+This repo includes .github/workflows/main_tarasha.yml which deploys using a publish-profile secret.
+
+Create a repo secret:
+- Name: TARASHA_AZURE_WEBAPP_PUBLISH_PROFILE
+- Value: paste the contents of your downloaded .PublishSettings file.

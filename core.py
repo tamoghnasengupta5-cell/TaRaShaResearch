@@ -1,8 +1,8 @@
 import io
-import re
-import sqlite3
 import os
 import threading
+import re
+import sqlite3
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
@@ -17,49 +17,29 @@ import streamlit as st
 
 def _default_db_path() -> str:
     """
-    Pick a DB file path that works locally and on Azure App Service.
-
-    - Locally: keep it as ./app.db
-    - Azure App Service: /home is the persistent disk, while /tmp is ephemeral.
+    Picks a safe default DB path.
+    - On Azure App Service (Linux), /home is the persistent disk.
+    - Locally, keep using ./app.db.
     """
     if os.environ.get("WEBSITE_SITE_NAME") or os.environ.get("WEBSITE_INSTANCE_ID"):
         return "/home/app.db"
     return "app.db"
 
 
-_DB_LOCK = threading.RLock()
-
-
-def get_conn(db_path: Optional[str] = None) -> sqlite3.Connection:
+def get_conn(db_path: str | None = None) -> sqlite3.Connection:
     """
-    Create a SQLite connection with settings that reduce "database is locked"
-    errors on cloud hosts (especially Azure App Service).
+    Create a SQLite connection with cloud-friendly settings.
+
+    Notes:
+    - timeout/busy_timeout helps avoid 'database is locked' when the DB is briefly busy.
+    - journal_mode=DELETE is more reliable than WAL on some cloud-mounted filesystems.
     """
-    path = (db_path or "").strip() or _default_db_path()
-
-    # timeout: wait for the lock to clear (seconds) instead of failing immediately
-    conn = sqlite3.connect(path, check_same_thread=False, timeout=30)
-
-    # Pragmas: prefer reliability over peak write concurrency.
-    conn.execute("PRAGMA busy_timeout=30000;")       # 30s
-    conn.execute("PRAGMA journal_mode=DELETE;")      # safer than WAL on network filesystems
+    db_path = db_path or _default_db_path()
+    conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
+    conn.execute("PRAGMA journal_mode=DELETE;")
     conn.execute("PRAGMA synchronous=NORMAL;")
-
+    conn.execute("PRAGMA busy_timeout=30000;")  # 30 seconds
     return conn
-
-
-def get_db() -> sqlite3.Connection:
-    """
-    Return a single DB connection per Streamlit user session.
-    This dramatically reduces SQLite locking issues caused by many connections.
-    """
-    if "trs_db_conn" not in st.session_state:
-        with _DB_LOCK:
-            conn = get_conn()
-            init_db(conn)
-            st.session_state["trs_db_conn"] = conn
-    return st.session_state["trs_db_conn"]
-
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(
@@ -955,6 +935,30 @@ CREATE TABLE IF NOT EXISTS invested_capital_annual (
 
 
 
+
+
+
+# ---------------------------
+# Shared connection helper
+# ---------------------------
+
+_DB_INIT_LOCK = threading.Lock()
+
+@st.cache_resource
+def _get_shared_conn() -> sqlite3.Connection:
+    """
+    One shared DB connection per app process.
+    This dramatically reduces 'database is locked' errors on Azure.
+    """
+    with _DB_INIT_LOCK:
+        conn = get_conn()
+        init_db(conn)
+    return conn
+
+
+def get_db() -> sqlite3.Connection:
+    """Get the shared SQLite connection."""
+    return _get_shared_conn()
 
 def compute_and_store_wacc(conn: sqlite3.Connection, company_id: int) -> None:
     """Compute and store annual Weighted Average Cost of Capital (WACC) for a company.
