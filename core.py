@@ -1,5 +1,6 @@
 import io
 import os
+import shutil
 import threading
 import re
 import sqlite3
@@ -15,15 +16,115 @@ import streamlit as st
 # Database helpers (SQLite)
 # ---------------------------
 
-def _default_db_path() -> str:
+def _is_azure_app_service() -> bool:
+    """Detect Azure App Service environment."""
+    return bool(os.environ.get("WEBSITE_SITE_NAME") or os.environ.get("WEBSITE_INSTANCE_ID"))
+
+
+def _repo_dir() -> str:
+    """Directory containing this code (and typically the seeded app.db committed to the repo)."""
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def get_db_path() -> str:
+    """Return the resolved SQLite DB path used by the app.
+
+    Precedence:
+      1) TARASHA_DB_PATH (supports absolute or relative paths)
+      2) Azure App Service default: $HOME/app.db (persistent disk)
+      3) Local default: <repo_dir>/app.db
     """
-    Picks a safe default DB path.
-    - On Azure App Service (Linux), /home is the persistent disk.
-    - Locally, keep using ./app.db.
-    """
-    if os.environ.get("WEBSITE_SITE_NAME") or os.environ.get("WEBSITE_INSTANCE_ID"):
-        return "/home/app.db"
-    return "app.db"
+    env_path = (os.environ.get("TARASHA_DB_PATH") or "").strip()
+    if env_path:
+        if os.path.isabs(env_path):
+            return env_path
+        return os.path.join(_repo_dir(), env_path)
+
+    if _is_azure_app_service():
+        home = os.environ.get("HOME") or "/home"
+        return os.path.join(home, "app.db")
+
+    return os.path.join(_repo_dir(), "app.db")
+
+
+# Guard seeding in multi-threaded / multi-request environments
+_DB_SEED_LOCK = threading.Lock()
+_DB_SEED_STATUS: set[str] = set()
+
+
+def _sqlite_companies_count(db_path: str) -> int | None:
+    """Return COUNT(*) from companies table, or None if db is missing/invalid."""
+    if not db_path or not os.path.exists(db_path):
+        return None
+    try:
+        # Open read-only when possible (avoid locking the writer connection)
+        uri = f"file:{db_path}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        try:
+            row = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='companies'"
+            ).fetchone()
+            if row is None:
+                return 0
+            n = conn.execute("SELECT COUNT(*) FROM companies").fetchone()[0]
+            return int(n or 0)
+        finally:
+            conn.close()
+    except Exception:
+        return None
+
+
+def _seed_azure_db_if_needed(target_db_path: str) -> None:
+    """On Azure, seed the persistent DB from the repo DB once (if needed)."""
+    if not _is_azure_app_service():
+        return
+
+    if not target_db_path:
+        return
+
+    # Only seed once per process per target path
+    if target_db_path in _DB_SEED_STATUS:
+        return
+
+    with _DB_SEED_LOCK:
+        if target_db_path in _DB_SEED_STATUS:
+            return
+
+        seed_db_path = os.path.join(_repo_dir(), "app.db")
+
+        # Nothing to seed from (repo DB not packaged / not committed)
+        if not os.path.exists(seed_db_path):
+            _DB_SEED_STATUS.add(target_db_path)
+            return
+
+        # If target DB already has data, do not overwrite it.
+        target_count = _sqlite_companies_count(target_db_path)
+        if target_count is not None and target_count > 0:
+            _DB_SEED_STATUS.add(target_db_path)
+            return
+
+        seed_count = _sqlite_companies_count(seed_db_path) or 0
+        if seed_count <= 0:
+            _DB_SEED_STATUS.add(target_db_path)
+            return
+
+        # Ensure target directory exists
+        target_dir = os.path.dirname(target_db_path) or "."
+        os.makedirs(target_dir, exist_ok=True)
+
+        # Copy via temp + atomic replace
+        tmp_path = target_db_path + ".tmp"
+        try:
+            shutil.copy2(seed_db_path, tmp_path)
+            os.replace(tmp_path, target_db_path)
+        finally:
+            try:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+            except Exception:
+                pass
+
+        _DB_SEED_STATUS.add(target_db_path)
 
 
 def get_conn(db_path: str | None = None) -> sqlite3.Connection:
@@ -34,7 +135,11 @@ def get_conn(db_path: str | None = None) -> sqlite3.Connection:
     - timeout/busy_timeout helps avoid 'database is locked' when the DB is briefly busy.
     - journal_mode=DELETE is more reliable than WAL on some cloud-mounted filesystems.
     """
-    db_path = db_path or _default_db_path()
+    db_path = db_path or get_db_path()
+
+    # On Azure, ensure the persistent DB file is seeded from the repo DB (once) if needed
+    _seed_azure_db_if_needed(db_path)
+
     conn = sqlite3.connect(db_path, check_same_thread=False, timeout=30)
     conn.execute("PRAGMA journal_mode=DELETE;")
     conn.execute("PRAGMA synchronous=NORMAL;")
