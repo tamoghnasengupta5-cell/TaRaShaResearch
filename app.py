@@ -1,5 +1,6 @@
 import base64
 from pathlib import Path
+from typing import Dict, List
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -17,6 +18,9 @@ _ASSETS_DIR = Path(__file__).parent / "assets"
 _LOGO_PATH = _ASSETS_DIR / "tarasha_logo.png"
 _HERO_BANNER_PATH = _ASSETS_DIR / "Hero_Banner.png"
 
+# --- Featured Articles assets ---
+_ARTICLES_DIR = _ASSETS_DIR / "articles"
+
 # Streamlit requires set_page_config to be the first Streamlit command in the app.
 st.set_page_config(
     page_title="TaRaSha Equity Research Tool",
@@ -25,84 +29,52 @@ st.set_page_config(
 )
 
 @st.cache_data(show_spinner=False)
-def _img_to_b64(path: Path) -> str:
-    return base64.b64encode(path.read_bytes()).decode("utf-8")
+def _bytes_to_b64(data: bytes) -> str:
+    return base64.b64encode(data).decode("utf-8")
 
+@st.cache_data(show_spinner=False)
+def _file_to_b64(path: Path) -> str:
+    return _bytes_to_b64(path.read_bytes())
 
 def _inject_shell_css() -> None:
+    """
+    Minimal CSS to keep the Home page clean.
+    (We avoid over-customizing Streamlit so we don't break layout across upgrades.)
+    """
     st.markdown(
         """
         <style>
-          /* Give the app a simple "site layout" feel (header / body / footer) */
-          .trs-header {
-            padding: 0.75rem 0 0.25rem 0;
-            border-bottom: 1px solid rgba(0,0,0,0.08);
-            margin-bottom: 0.75rem;
-          }
-          .trs-brand-row {
-            display: flex;
-            align-items: center;
-            gap: 0.75rem;
-            padding-bottom: 0.25rem;
-          }
-          .trs-brand-row img {
-            height: 38px;
-            width: auto;
-            object-fit: contain;
-            display: block;
-          }
-          .trs-footer {
-            margin-top: 1.75rem;
-            padding: 1.25rem 0 0.75rem 0;
-            border-top: 1px solid rgba(0,0,0,0.08);
-            min-height: 18px; /* "empty footer" but visible spacing */
-          }
-          /* Slightly tighten the first block spacing */
-          div.block-container { padding-top: 1rem; }
+          /* Reduce excessive top padding */
+          .block-container { padding-top: 1.0rem; padding-bottom: 2rem; }
 
-          /* Remove left navigation pane (Streamlit sidebar) */
-          [data-testid="stSidebar"],
-          [data-testid="stSidebarNav"],
-          [data-testid="collapsedControl"] {
-            display: none !important;
-          }
-        
-          /* Hide Streamlit chrome (Deploy button / menu / toolbar) */
-          header[data-testid="stHeader"] { display: none !important; }
-          [data-testid="stToolbar"] { display: none !important; }
-          [data-testid="stDecoration"] { display: none !important; }
-          .stDeployButton { display: none !important; }
-          #MainMenu { visibility: hidden; }
-          footer { visibility: hidden; }
-</style>
+          /* Make the tab bar feel tighter */
+          [data-baseweb="tab-list"] { gap: 0.75rem; }
+
+          /* Nicer headers */
+          h1, h2, h3 { letter-spacing: -0.2px; }
+        </style>
         """,
         unsafe_allow_html=True,
     )
-
 
 def _render_header() -> tuple:
     _inject_shell_css()
 
     with st.container():
-        st.markdown('<div class="trs-header">', unsafe_allow_html=True)
+        # Logo (optional; app runs fine even if the file is missing)
+        if _LOGO_PATH.exists():
+            st.image(str(_LOGO_PATH), width=120)
 
         tab_home, tab_equity_research = st.tabs(["Home", "Equity Research"])
+        return tab_home, tab_equity_research
 
-
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    return tab_home, tab_equity_research
-
-
-def _render_hero_carousel(image_paths) -> None:
-    """Render a responsive hero image carousel.
-
-    Notes:
-    - Designed as a carousel so you can add more hero images later.
-    - Leaves a clean overlay layer available for future CTA (Call To Action) buttons.
+def _render_hero_carousel(image_paths: List[Path]) -> None:
     """
-
+    Render a responsive hero image carousel.
+    - Designed as a carousel so you can add more hero images later.
+    - Keeps aspect ratio; avoids cropping/distortion.
+    - Leaves a clean overlay layer available for future CTA buttons.
+    """
     # Keep the hero banner from feeling "too big" on large monitors.
     max_width_px = 1250
 
@@ -114,193 +86,286 @@ def _render_hero_carousel(image_paths) -> None:
 
     valid_paths = [Path(p) for p in image_paths if Path(p).exists()]
     if not valid_paths:
-        st.warning(
-            "Hero banner image not found. Put 'Hero_Banner.png' under ./assets/."
-        )
+        st.warning("Hero banner image not found. Put 'Hero_Banner.png' under ./assets/.")
         return
 
-    imgs_b64 = [_img_to_b64(p) for p in valid_paths]
+    imgs_b64 = [_file_to_b64(p) for p in valid_paths]
     slides_html = "".join(
         [
             f"""
-            <div class=\"trs-slide\">
-              <img src=\"data:image/png;base64,{b64}\" alt=\"Hero banner\" />
-              <div class=\"trs-overlay\"><!-- CTA buttons can be injected here later --></div>
+            <div class="ta-hero-slide">
+              <div class="ta-hero-frame">
+                <img src="data:image/png;base64,{b64}" alt="Hero banner"/>
+                <div class="ta-hero-overlay" aria-hidden="true"></div>
+              </div>
             </div>
             """
             for b64 in imgs_b64
         ]
     )
 
-    show_controls = "true" if len(imgs_b64) > 1 else "false"
-
+    show_controls = "block" if len(imgs_b64) > 1 else "none"
     html = f"""
-    <style>
-      .trs-hero-outer {{
-        width: 100%;
-        display: flex;
-        justify-content: center;
-        margin: 0.25rem 0 1.25rem 0;
-      }}
-      .trs-hero-carousel {{
-        position: relative;
-        width: 100%;
-        max-width: {max_width_px}px;
-      }}
-      .trs-slide {{
-        display: none;
-        position: relative;
-        width: 100%;
-        /*aspect-ratio: {banner_ratio_w} / {banner_ratio_h};*/
-        border-radius: 16px;
-        overflow: hidden;
-        box-shadow: 0 12px 30px rgba(0,0,0,0.12);
-
-        /* Fix "side bars" when object-fit: contain.
-           We paint a blurred, full-bleed version of the same image behind the main image,
-           so any leftover space blends with the banner instead of showing a flat color. */
-        background: rgba(0,0,0,0.02);
-        isolation: isolate;
-      }}
-      .trs-slide::before {{
-        content: "";
-        position: absolute;
-        inset: -28px;            /* bleed outward so blur doesn't reveal edges */
-        background-image: var(--trs-bg-image);
-        background-size: cover;
-        background-position: center;
-        filter: blur(18px);
-        transform: scale(1.06);
-        opacity: 0.88;
-        z-index: 0;
-      }}
-      .trs-slide::after {{
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: rgba(255,255,255,0.08); /* tiny wash to keep it classy */
-        z-index: 1;
-      }}
-      .trs-slide.is-active {{ display: block; }}
-      .trs-slide img {{
-        width: 100%;
-        height: 100%;
-        display: block;
-        object-fit: contain; /* never crop or distort */
-        position: relative;
-        z-index: 2;
-      }}
-      .trs-overlay {{
-        position: absolute;
-        inset: 0;
-        border-radius: inherit;
-        pointer-events: none; /* future CTA layer can override per-button */
-        z-index: 3;
-      }}
-      .trs-nav {{
-        position: absolute;
-        top: 50%;
-        transform: translateY(-50%);
-        width: 40px;
-        height: 40px;
-        border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.65);
-        background: rgba(0,0,0,0.28);
-        color: white;
-        cursor: pointer;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        user-select: none;
-        backdrop-filter: blur(6px);
-      }}
-      .trs-nav:hover {{ background: rgba(0,0,0,0.38); }}
-      .trs-prev {{ left: 14px; }}
-      .trs-next {{ right: 14px; }}
-      .trs-dots {{
-        display: flex;
-        justify-content: center;
-        gap: 8px;
-        margin-top: 10px;
-      }}
-      .trs-dot {{
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-        background: rgba(0,0,0,0.25);
-      }}
-      .trs-dot.is-active {{ background: rgba(0,0,0,0.55); }}
-      .trs-controls-hidden {{ display: none; }}
-    </style>
-
-    <div class="trs-hero-outer">
-      <div class="trs-hero-carousel" id="trsHero" data-show-controls="{show_controls}">
-        {slides_html}
-
-        <button class="trs-nav trs-prev" id="trsPrev" aria-label="Previous hero image">&#8249;</button>
-        <button class="trs-nav trs-next" id="trsNext" aria-label="Next hero image">&#8250;</button>
-        <div class="trs-dots" id="trsDots"></div>
-      </div>
-    </div>
-
-    <script>
-      (function() {{
-        const root = document.getElementById('trsHero');
-        if (!root) return;
-
-        const slides = Array.from(root.querySelectorAll('.trs-slide'));
-
-        // Use each slide's image as a blurred background so any side space blends in.
-        slides.forEach((s) => {{
-          const img = s.querySelector('img');
-          if (img) {{
-            s.style.setProperty('--trs-bg-image', `url("${{img.src}}")`);
-          }}
-        }});
-        const prev = document.getElementById('trsPrev');
-        const next = document.getElementById('trsNext');
-        const dots = document.getElementById('trsDots');
-        const showControls = root.getAttribute('data-show-controls') === 'true';
-
-        if (!showControls) {{
-          prev.classList.add('trs-controls-hidden');
-          next.classList.add('trs-controls-hidden');
-          dots.classList.add('trs-controls-hidden');
+    <html>
+    <head>
+      <style>
+        .ta-hero {{
+          max-width: {max_width_px}px;
+          margin: 0 auto 0.25rem auto;
+          position: relative;
+          user-select: none;
+          -webkit-user-select: none;
+        }}
+        .ta-hero-slide {{ display: none; }}
+        .ta-hero-slide.active {{ display: block; }}
+        .ta-hero-frame {{
+          width: 100%;
+          aspect-ratio: {banner_ratio_w} / {banner_ratio_h};
+          border-radius: 18px;
+          overflow: hidden;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.08);
+          position: relative;
+          background: #ffffff;
+        }}
+        .ta-hero-frame img {{
+          width: 100%;
+          height: 100%;
+          object-fit: contain; /* critical: no crop/distort */
+          display: block;
+        }}
+        .ta-hero-overlay {{
+          position: absolute;
+          inset: 0;
+          background: linear-gradient(180deg, rgba(255,255,255,0.00) 35%, rgba(0,0,0,0.04) 100%);
+          pointer-events: none;
         }}
 
-        let idx = 0;
-        const renderDots = () => {{
-          dots.innerHTML = '';
-          slides.forEach((_, i) => {{
-            const d = document.createElement('div');
-            d.className = 'trs-dot' + (i === idx ? ' is-active' : '');
-            d.addEventListener('click', () => show(i));
-            dots.appendChild(d);
-          }});
-        }};
-        const show = (i) => {{
-          idx = (i + slides.length) % slides.length;
-          slides.forEach((s, j) => s.classList.toggle('is-active', j === idx));
-          if (showControls) renderDots();
-        }};
+        .ta-hero-nav {{
+          display: {show_controls};
+          position: absolute;
+          inset: 0;
+          pointer-events: none;
+        }}
+        .ta-hero-btn {{
+          pointer-events: auto;
+          position: absolute;
+          top: 50%;
+          transform: translateY(-50%);
+          width: 42px;
+          height: 42px;
+          border-radius: 999px;
+          border: 1px solid rgba(0,0,0,0.08);
+          background: rgba(255,255,255,0.85);
+          color: rgba(0,0,0,0.75);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+          font-size: 20px;
+          box-shadow: 0 8px 20px rgba(0,0,0,0.10);
+        }}
+        .ta-hero-btn:hover {{
+          background: rgba(255,255,255,0.95);
+        }}
+        .ta-hero-btn.prev {{ left: 10px; }}
+        .ta-hero-btn.next {{ right: 10px; }}
 
-        if (slides.length === 0) return;
+        .ta-hero-dots {{
+          display: {show_controls};
+          text-align: center;
+          margin-top: 10px;
+        }}
+        .ta-dot {{
+          display: inline-block;
+          width: 7px;
+          height: 7px;
+          margin: 0 4px;
+          border-radius: 999px;
+          background: rgba(0,0,0,0.20);
+          cursor: pointer;
+        }}
+        .ta-dot.active {{
+          background: rgba(0,0,0,0.55);
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="ta-hero">
+        {slides_html}
+        <div class="ta-hero-nav">
+          <div class="ta-hero-btn prev" onclick="prevSlide()" aria-label="Previous slide">‹</div>
+          <div class="ta-hero-btn next" onclick="nextSlide()" aria-label="Next slide">›</div>
+        </div>
+      </div>
+      <div class="ta-hero-dots" id="dots"></div>
+
+      <script>
+        const slides = Array.from(document.querySelectorAll('.ta-hero-slide'));
+        const dotsEl = document.getElementById('dots');
+        let idx = 0;
+
+        function renderDots() {{
+          if (!dotsEl) return;
+          dotsEl.innerHTML = '';
+          slides.forEach((_, i) => {{
+            const d = document.createElement('span');
+            d.className = 'ta-dot' + (i === idx ? ' active' : '');
+            d.onclick = () => goTo(i);
+            dotsEl.appendChild(d);
+          }});
+        }}
+
+        function show(i) {{
+          slides.forEach((s, n) => s.classList.toggle('active', n === i));
+          idx = i;
+          renderDots();
+        }}
+
+        function nextSlide() {{
+          show((idx + 1) % slides.length);
+        }}
+
+        function prevSlide() {{
+          show((idx - 1 + slides.length) % slides.length);
+        }}
+
+        function goTo(i) {{
+          show(i);
+        }}
+
+        // Init
         show(0);
 
-        if (showControls) {{
-          prev.addEventListener('click', () => show(idx - 1));
-          next.addEventListener('click', () => show(idx + 1));
-
-          // Gentle auto-advance (can be removed later if you want manual-only)
-          setInterval(() => show(idx + 1), 9000);
+        // Auto-rotate (only if more than one slide)
+        if (slides.length > 1) {{
+          setInterval(nextSlide, 8000);
         }}
-      }})();
-    </script>
+      </script>
+    </body>
+    </html>
     """
-
-    # Height is tuned for the max-width hero banner and leaves room for dots.
     components.html(html, height=hero_iframe_height, scrolling=False)
 
+def _get_featured_articles() -> List[Dict]:
+    """
+    A tiny registry so you can add more articles later without touching layout code.
+    """
+    return [
+        {
+            "id": "repairing-vs-salvaging-cav",
+            "title": "Repairing versus Salvaging in the Age of Connected Autonomous Vehicles",
+            "pdf_path": _ARTICLES_DIR / "repairing_vs_salvaging_connected_autonomous_vehicles.pdf",
+            "thumb_path": _ARTICLES_DIR / "repairing_vs_salvaging_connected_autonomous_vehicles_thumb.png",
+        },
+    ]
+
+def _render_featured_articles_carousel(articles: List[Dict]) -> None:
+    """
+    Horizontal, scrollable carousel of article cards.
+    Clicking a card opens the PDF in a new browser tab.
+
+    Note: For simplicity and zero infra friction, PDFs are embedded as data: URLs.
+    This keeps it fully self-contained for Azure App Service + Streamlit.
+    """
+    # Filter only those where assets exist (prevents runtime surprises)
+    safe_articles = []
+    for a in articles:
+        if not a["pdf_path"].exists() or not a["thumb_path"].exists():
+            continue
+        safe_articles.append(a)
+
+    if not safe_articles:
+        st.info("No featured articles found under ./assets/articles yet.")
+        return
+
+    cards_html = []
+    for a in safe_articles:
+        thumb_b64 = _file_to_b64(a["thumb_path"])
+        pdf_b64 = _file_to_b64(a["pdf_path"])
+        # Important: use application/pdf + base64 so clicking opens a real PDF viewer.
+        href = f"data:application/pdf;base64,{pdf_b64}"
+        title = a["title"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        cards_html.append(
+            f"""
+            <a class="ta-article-card" href="{href}" target="_blank" rel="noopener noreferrer">
+              <img class="ta-article-thumb" src="data:image/png;base64,{thumb_b64}" alt="{title}"/>
+              <div class="ta-article-title">{title}</div>
+            </a>
+            """
+        )
+
+    html = f"""
+    <html>
+    <head>
+      <style>
+        .ta-articles {{
+          max-width: 1250px;
+          margin: 0.25rem auto 0 auto;
+        }}
+
+        .ta-scroll {{
+          display: flex;
+          gap: 18px;
+          overflow-x: auto;
+          padding: 6px 2px 12px 2px;
+          scroll-snap-type: x mandatory;
+        }}
+
+        .ta-scroll::-webkit-scrollbar {{
+          height: 10px;
+        }}
+        .ta-scroll::-webkit-scrollbar-track {{
+          background: rgba(0,0,0,0.04);
+          border-radius: 999px;
+        }}
+        .ta-scroll::-webkit-scrollbar-thumb {{
+          background: rgba(0,0,0,0.18);
+          border-radius: 999px;
+        }}
+
+        .ta-article-card {{
+          flex: 0 0 auto;
+          width: 320px;
+          text-decoration: none;
+          color: inherit;
+          border-radius: 16px;
+          overflow: hidden;
+          border: 1px solid rgba(0,0,0,0.08);
+          box-shadow: 0 10px 24px rgba(0,0,0,0.06);
+          background: #fff;
+          scroll-snap-align: start;
+          transition: transform 0.12s ease, box-shadow 0.12s ease;
+        }}
+        .ta-article-card:hover {{
+          transform: translateY(-2px);
+          box-shadow: 0 14px 28px rgba(0,0,0,0.10);
+        }}
+        .ta-article-thumb {{
+          width: 100%;
+          height: 180px;
+          object-fit: contain;
+          display: block;
+          background: #f6f6f6;
+        }}
+        .ta-article-title {{
+          padding: 12px 14px;
+          font-size: 14px;
+          line-height: 1.25;
+          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+          color: rgba(0,0,0,0.78);
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="ta-articles">
+        <div class="ta-scroll">
+          {''.join(cards_html)}
+        </div>
+      </div>
+    </body>
+    </html>
+    """
+    components.html(html, height=260, scrolling=False)
 
 def _render_home_body() -> None:
     # Hero banner carousel (add more images here later)
@@ -314,12 +379,9 @@ def _render_home_body() -> None:
 
     _render_hero_carousel(hero_images)
 
-    # Placeholder for an articles carousel section (to be implemented later).
-    # Keeping this section here ensures layout stability when you add it.
     st.markdown("### Featured Articles")
-    st.caption("(Article carousel will appear here.)")
-    st.empty()
-
+    st.caption("Click an article to open it in a new tab.")
+    _render_featured_articles_carousel(_get_featured_articles())
 
 def _render_equity_research_body() -> None:
     tab_upload, tab_pl, tab_bs, tab_cs, tab_cf, tab_combined, tab_admin = st.tabs(
@@ -355,11 +417,9 @@ def _render_equity_research_body() -> None:
     with tab_admin:
         render_admin_tab()
 
-
 def _render_footer() -> None:
     # Intentionally empty for now (layout placeholder).
-    st.markdown('<div class="trs-footer"></div>', unsafe_allow_html=True)
-
+    st.markdown("", unsafe_allow_html=True)
 
 tab_home, tab_equity_research = _render_header()
 
