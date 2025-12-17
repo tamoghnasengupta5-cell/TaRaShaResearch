@@ -63,7 +63,7 @@ def _render_header() -> tuple:
     with st.container():
         # Logo (optional; app runs fine even if the file is missing)
         if _LOGO_PATH.exists():
-            st.image(str(_LOGO_PATH), width=120)
+            st.image(str(_LOGO_PATH), width=360)
 
         tab_home, tab_equity_research = st.tabs(["Home", "Equity Research"])
         return tab_home, tab_equity_research
