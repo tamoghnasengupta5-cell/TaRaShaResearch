@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 import base64
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import streamlit as st
 import streamlit.components.v1 as components
@@ -13,13 +15,15 @@ from combined_dashboard import render_combined_dashboard_tab
 from data_upload import render_data_upload_tab
 from pl_metrics import render_pl_metrics_tab
 
+
 # --- Branding assets (kept local to the repo) ---
 _ASSETS_DIR = Path(__file__).parent / "assets"
 _LOGO_PATH = _ASSETS_DIR / "tarasha_logo.png"
 _HERO_BANNER_PATH = _ASSETS_DIR / "Hero_Banner.png"
 
-# --- Featured Articles assets ---
+# Articles (Portable Document Format files)
 _ARTICLES_DIR = _ASSETS_DIR / "articles"
+
 
 # Streamlit requires set_page_config to be the first Streamlit command in the app.
 st.set_page_config(
@@ -28,346 +32,357 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
+
+# -----------------------------
+# Small helpers
+# -----------------------------
 @st.cache_data(show_spinner=False)
-def _bytes_to_b64(data: bytes) -> str:
+def _read_bytes(path: str) -> bytes:
+    return Path(path).read_bytes()
+
+
+@st.cache_data(show_spinner=False)
+def _b64(data: bytes) -> str:
     return base64.b64encode(data).decode("utf-8")
 
+
 @st.cache_data(show_spinner=False)
-def _file_to_b64(path: Path) -> str:
-    return _bytes_to_b64(path.read_bytes())
+def _img_to_b64(path: str) -> str:
+    return _b64(_read_bytes(path))
+
+
+def _get_query_param(name: str) -> Optional[str]:
+    """
+    Compatible across Streamlit versions:
+      - New API: st.query_params
+      - Legacy: st.experimental_get_query_params
+    """
+    try:
+        val = st.query_params.get(name)  # type: ignore[attr-defined]
+        if val is None:
+            return None
+        if isinstance(val, list):
+            return val[0] if val else None
+        return str(val)
+    except Exception:
+        qp = st.experimental_get_query_params()
+        vals = qp.get(name, [])
+        return vals[0] if vals else None
+
 
 def _inject_shell_css() -> None:
-    """
-    Minimal CSS to keep the Home page clean.
-    (We avoid over-customizing Streamlit so we don't break layout across upgrades.)
-    """
+    # Keep this light—your app already uses Streamlit defaults.
     st.markdown(
         """
         <style>
-          /* Reduce excessive top padding */
-          .block-container { padding-top: 1.0rem; padding-bottom: 2rem; }
+          /* Slightly tighter tab spacing */
+          div[data-baseweb="tab-list"] button { padding-top: 10px; padding-bottom: 10px; }
 
-          /* Make the tab bar feel tighter */
-          [data-baseweb="tab-list"] { gap: 0.75rem; }
-
-          /* Nicer headers */
-          h1, h2, h3 { letter-spacing: -0.2px; }
+          /* Make horizontal carousels feel nicer */
+          .tarasha-scroll::-webkit-scrollbar { height: 10px; }
+          .tarasha-scroll::-webkit-scrollbar-thumb { border-radius: 999px; }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
+
+# -----------------------------
+# Header / shell
+# -----------------------------
 def _render_header() -> tuple:
     _inject_shell_css()
 
     with st.container():
-        # Logo (optional; app runs fine even if the file is missing)
+        # Logo + title row (simple + robust)
+        logo_html = ""
         if _LOGO_PATH.exists():
-            st.image(str(_LOGO_PATH), width=360)
+            logo_b64 = _img_to_b64(str(_LOGO_PATH))
+            logo_html = f"""
+              <div style="display:flex; align-items:center; gap:12px; margin-top:6px;">
+                <img src="data:image/png;base64,{logo_b64}" style="height:40px; width:auto;" />
+                <div style="font-size:22px; font-weight:700;">TaRaSha Research</div>
+              </div>
+            """
+        else:
+            logo_html = '<div style="font-size:22px; font-weight:700; margin-top:6px;">TaRaSha Research</div>'
 
-        tab_home, tab_equity_research = st.tabs(["Home", "Equity Research"])
-        return tab_home, tab_equity_research
+        st.markdown(logo_html, unsafe_allow_html=True)
 
+    tab_home, tab_equity_research = st.tabs(["Home", "Equity Research"])
+    return tab_home, tab_equity_research
+
+
+# -----------------------------
+# Hero banner carousel
+# -----------------------------
 def _render_hero_carousel(image_paths: List[Path]) -> None:
     """
     Render a responsive hero image carousel.
-    - Designed as a carousel so you can add more hero images later.
-    - Keeps aspect ratio; avoids cropping/distortion.
-    - Leaves a clean overlay layer available for future CTA buttons.
+    Notes:
+      - Designed as a carousel so you can add more hero images later.
+      - Leaves a clean overlay layer available for future Call To Action buttons.
     """
-    # Keep the hero banner from feeling "too big" on large monitors.
     max_width_px = 1250
-
-    # Standard hero banner aspect ratio (prevents cropping/distortion)
-    # Target size: 1802x601
     banner_ratio_w = 1802
     banner_ratio_h = 601
     hero_iframe_height = int((max_width_px * banner_ratio_h / banner_ratio_w) + 95)
 
-    valid_paths = [Path(p) for p in image_paths if Path(p).exists()]
+    valid_paths = [p for p in image_paths if p.exists()]
     if not valid_paths:
         st.warning("Hero banner image not found. Put 'Hero_Banner.png' under ./assets/.")
         return
 
-    imgs_b64 = [_file_to_b64(p) for p in valid_paths]
+    imgs_b64 = [_img_to_b64(str(p)) for p in valid_paths]
     slides_html = "".join(
         [
             f"""
-            <div class="ta-hero-slide">
-              <div class="ta-hero-frame">
-                <img src="data:image/png;base64,{b64}" alt="Hero banner"/>
-                <div class="ta-hero-overlay" aria-hidden="true"></div>
-              </div>
+            <div class="slide">
+              <img src="data:image/png;base64,{b64}" />
+              <div class="overlay"></div>
             </div>
             """
             for b64 in imgs_b64
         ]
     )
+    show_controls = "true" if len(imgs_b64) > 1 else "false"
 
-    show_controls = "block" if len(imgs_b64) > 1 else "none"
     html = f"""
-    <html>
-    <head>
-      <style>
-        .ta-hero {{
-          max-width: {max_width_px}px;
-          margin: 0 auto 0.25rem auto;
-          position: relative;
-          user-select: none;
-          -webkit-user-select: none;
-        }}
-        .ta-hero-slide {{ display: none; }}
-        .ta-hero-slide.active {{ display: block; }}
-        .ta-hero-frame {{
-          width: 100%;
-          aspect-ratio: {banner_ratio_w} / {banner_ratio_h};
-          border-radius: 18px;
-          overflow: hidden;
-          box-shadow: 0 10px 30px rgba(0,0,0,0.08);
-          position: relative;
-          background: #ffffff;
-        }}
-        .ta-hero-frame img {{
-          width: 100%;
-          height: 100%;
-          object-fit: contain; /* critical: no crop/distort */
-          display: block;
-        }}
-        .ta-hero-overlay {{
-          position: absolute;
-          inset: 0;
-          background: linear-gradient(180deg, rgba(255,255,255,0.00) 35%, rgba(0,0,0,0.04) 100%);
-          pointer-events: none;
-        }}
+    <style>
+      .hero-wrap {{ max-width:{max_width_px}px; margin: 12px auto 8px auto; position:relative; }}
+      .carousel {{ position:relative; overflow:hidden; border-radius: 18px; }}
+      .track {{ display:flex; transition: transform 0.4s ease; }}
+      .slide {{ min-width:100%; position:relative; }}
+      .slide img {{ width:100%; height:auto; display:block; }}
+      .overlay {{ position:absolute; inset:0; pointer-events:none; }}
+      .btn {{ position:absolute; top:50%; transform: translateY(-50%); border:none; background:rgba(0,0,0,0.35);
+              color:white; width:44px; height:44px; border-radius:999px; cursor:pointer; display:flex;
+              align-items:center; justify-content:center; font-size:24px; }}
+      .btn:hover {{ background:rgba(0,0,0,0.50);}}
+      .btn.prev {{ left:12px; }}
+      .btn.next {{ right:12px; }}
+      .dots {{ display:flex; gap:8px; justify-content:center; margin-top:10px; }}
+      .dot {{ width:10px; height:10px; border-radius:999px; background:rgba(0,0,0,0.25); cursor:pointer; }}
+      .dot.active {{ background:rgba(0,0,0,0.55); }}
+    </style>
 
-        .ta-hero-nav {{
-          display: {show_controls};
-          position: absolute;
-          inset: 0;
-          pointer-events: none;
-        }}
-        .ta-hero-btn {{
-          pointer-events: auto;
-          position: absolute;
-          top: 50%;
-          transform: translateY(-50%);
-          width: 42px;
-          height: 42px;
-          border-radius: 999px;
-          border: 1px solid rgba(0,0,0,0.08);
-          background: rgba(255,255,255,0.85);
-          color: rgba(0,0,0,0.75);
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          cursor: pointer;
-          font-size: 20px;
-          box-shadow: 0 8px 20px rgba(0,0,0,0.10);
-        }}
-        .ta-hero-btn:hover {{
-          background: rgba(255,255,255,0.95);
-        }}
-        .ta-hero-btn.prev {{ left: 10px; }}
-        .ta-hero-btn.next {{ right: 10px; }}
-
-        .ta-hero-dots {{
-          display: {show_controls};
-          text-align: center;
-          margin-top: 10px;
-        }}
-        .ta-dot {{
-          display: inline-block;
-          width: 7px;
-          height: 7px;
-          margin: 0 4px;
-          border-radius: 999px;
-          background: rgba(0,0,0,0.20);
-          cursor: pointer;
-        }}
-        .ta-dot.active {{
-          background: rgba(0,0,0,0.55);
-        }}
-      </style>
-    </head>
-    <body>
-      <div class="ta-hero">
-        {slides_html}
-        <div class="ta-hero-nav">
-          <div class="ta-hero-btn prev" onclick="prevSlide()" aria-label="Previous slide">‹</div>
-          <div class="ta-hero-btn next" onclick="nextSlide()" aria-label="Next slide">›</div>
+    <div class="hero-wrap">
+      <div class="carousel" id="car">
+        <div class="track" id="track">
+          {slides_html}
         </div>
+        <button class="btn prev" id="prev" aria-label="Previous" style="display:{'flex' if len(imgs_b64)>1 else 'none'};">‹</button>
+        <button class="btn next" id="next" aria-label="Next" style="display:{'flex' if len(imgs_b64)>1 else 'none'};">›</button>
       </div>
-      <div class="ta-hero-dots" id="dots"></div>
+      <div class="dots" id="dots"></div>
+    </div>
 
-      <script>
-        const slides = Array.from(document.querySelectorAll('.ta-hero-slide'));
-        const dotsEl = document.getElementById('dots');
-        let idx = 0;
+    <script>
+      const showControls = {show_controls};
+      const track = document.getElementById('track');
+      const slides = Array.from(track.children);
+      const dots = document.getElementById('dots');
+      const prev = document.getElementById('prev');
+      const next = document.getElementById('next');
+      let idx = 0;
 
-        function renderDots() {{
-          if (!dotsEl) return;
-          dotsEl.innerHTML = '';
-          slides.forEach((_, i) => {{
-            const d = document.createElement('span');
-            d.className = 'ta-dot' + (i === idx ? ' active' : '');
-            d.onclick = () => goTo(i);
-            dotsEl.appendChild(d);
-          }});
-        }}
+      function renderDots() {{
+        dots.innerHTML = '';
+        slides.forEach((_, i) => {{
+          const d = document.createElement('div');
+          d.className = 'dot' + (i === idx ? ' active' : '');
+          d.onclick = () => go(i);
+          dots.appendChild(d);
+        }});
+      }}
 
-        function show(i) {{
-          slides.forEach((s, n) => s.classList.toggle('active', n === i));
-          idx = i;
-          renderDots();
-        }}
+      function go(i) {{
+        idx = (i + slides.length) % slides.length;
+        track.style.transform = `translateX(${{-idx * 100}}%)`;
+        renderDots();
+      }}
 
-        function nextSlide() {{
-          show((idx + 1) % slides.length);
-        }}
-
-        function prevSlide() {{
-          show((idx - 1 + slides.length) % slides.length);
-        }}
-
-        function goTo(i) {{
-          show(i);
-        }}
-
-        // Init
-        show(0);
-
-        // Auto-rotate (only if more than one slide)
-        if (slides.length > 1) {{
-          setInterval(nextSlide, 8000);
-        }}
-      </script>
-    </body>
-    </html>
+      if (showControls) {{
+        prev.onclick = () => go(idx - 1);
+        next.onclick = () => go(idx + 1);
+        renderDots();
+      }}
+    </script>
     """
     components.html(html, height=hero_iframe_height, scrolling=False)
 
-def _get_featured_articles() -> List[Dict]:
-    """
-    A tiny registry so you can add more articles later without touching layout code.
-    """
-    return [
-        {
-            "id": "repairing-vs-salvaging-cav",
-            "title": "Repairing versus Salvaging in the Age of Connected Autonomous Vehicles",
-            "pdf_path": _ARTICLES_DIR / "repairing_vs_salvaging_connected_autonomous_vehicles.pdf",
-            "thumb_path": _ARTICLES_DIR / "repairing_vs_salvaging_connected_autonomous_vehicles_thumb.png",
-        },
-    ]
 
-def _render_featured_articles_carousel(articles: List[Dict]) -> None:
+# -----------------------------
+# Featured articles (PDF viewer)
+# -----------------------------
+def _discover_articles() -> List[Dict[str, str]]:
     """
-    Horizontal, scrollable carousel of article cards.
-    Clicking a card opens the PDF in a new browser tab.
-
-    Note: For simplicity and zero infra friction, PDFs are embedded as data: URLs.
-    This keeps it fully self-contained for Azure App Service + Streamlit.
+    Find PDFs under:
+      1) ./assets/articles (preferred)
+      2) anywhere under ./assets (fallback)
+    Returns a list of {slug,title,pdf_path,thumb_path?}.
     """
-    # Filter only those where assets exist (prevents runtime surprises)
-    safe_articles = []
-    for a in articles:
-        if not a["pdf_path"].exists() or not a["thumb_path"].exists():
-            continue
-        safe_articles.append(a)
+    pdfs: List[Path] = []
 
-    if not safe_articles:
-        st.info("No featured articles found under ./assets/articles yet.")
+    if _ARTICLES_DIR.exists():
+        pdfs = sorted(_ARTICLES_DIR.rglob("*.pdf"))
+    else:
+        pdfs = sorted(_ASSETS_DIR.rglob("*.pdf"))
+
+    articles: List[Dict[str, str]] = []
+    for pdf in pdfs:
+        slug = pdf.stem
+        title = slug.replace("_", " ").replace("-", " ").strip().title()
+
+        # Optional: look for a thumbnail image with the same stem next to the PDF.
+        thumb = None
+        for ext in (".png", ".jpg", ".jpeg", ".webp"):
+            cand = pdf.with_suffix(ext)
+            if cand.exists():
+                thumb = cand
+                break
+
+        item: Dict[str, str] = {
+            "slug": slug,
+            "title": title or slug,
+            "pdf_path": str(pdf),
+        }
+        if thumb is not None:
+            item["thumb_path"] = str(thumb)
+        articles.append(item)
+
+    return articles
+
+
+@st.cache_data(show_spinner=False)
+def _pdf_first_page_png_b64(pdf_path: str) -> Optional[str]:
+    """
+    Best-effort thumbnail from the PDF's first page.
+    If PyMuPDF is unavailable, return None.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return None
+
+    try:
+        doc = fitz.open(pdf_path)
+        page = doc.load_page(0)
+        pix = page.get_pixmap(matrix=fitz.Matrix(1.2, 1.2), alpha=False)
+        img_bytes = pix.tobytes("png")
+        return _b64(img_bytes)
+    except Exception:
+        return None
+    finally:
+        try:
+            doc.close()  # type: ignore[name-defined]
+        except Exception:
+            pass
+
+
+def _render_articles_carousel(articles: List[Dict[str, str]]) -> None:
+    if not articles:
+        st.info("No featured articles found yet. Add PDF files under ./assets/articles/.")
         return
 
-    cards_html = []
-    for a in safe_articles:
-        thumb_b64 = _file_to_b64(a["thumb_path"])
-        pdf_b64 = _file_to_b64(a["pdf_path"])
-        # Important: use application/pdf + base64 so clicking opens a real PDF viewer.
-        href = f"data:application/pdf;base64,{pdf_b64}"
-        title = a["title"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        cards_html.append(
-            f"""
-            <a class="ta-article-card" href="{href}" target="_blank" rel="noopener noreferrer">
-              <img class="ta-article-thumb" src="data:image/png;base64,{thumb_b64}" alt="{title}"/>
-              <div class="ta-article-title">{title}</div>
-            </a>
+    cards_html = ""
+    for a in articles:
+        slug = a["slug"]
+        title = a["title"]
+
+        thumb_b64 = None
+        if "thumb_path" in a and Path(a["thumb_path"]).exists():
+            thumb_b64 = _img_to_b64(a["thumb_path"])
+        else:
+            # Try rendering the first page
+            thumb_b64 = _pdf_first_page_png_b64(a["pdf_path"])
+
+        if thumb_b64:
+            img_tag = f'<img src="data:image/png;base64,{thumb_b64}" />'
+        else:
+            # Simple placeholder (no external assets)
+            img_tag = """
+              <div style="height:160px; display:flex; align-items:center; justify-content:center;
+                          background: rgba(0,0,0,0.04); font-size: 40px;">
+                📄
+              </div>
             """
-        )
+
+        # Open in a new tab as a Streamlit-rendered viewer page (avoids broken static PDF links).
+        href = f"?article={slug}"
+
+        cards_html += f"""
+          <div class="card">
+            <div class="thumb">{img_tag}</div>
+            <div class="body">
+              <div class="title">{title}</div>
+              <div class="meta">Portable Document Format • opens in a new tab</div>
+              <a class="read" href="{href}" target="_blank" rel="noopener noreferrer">Open</a>
+            </div>
+          </div>
+        """
 
     html = f"""
-    <html>
-    <head>
-      <style>
-        .ta-articles {{
-          max-width: 1250px;
-          margin: 0.25rem auto 0 auto;
-        }}
-
-        .ta-scroll {{
-          display: flex;
-          gap: 18px;
-          overflow-x: auto;
-          padding: 6px 2px 12px 2px;
-          scroll-snap-type: x mandatory;
-        }}
-
-        .ta-scroll::-webkit-scrollbar {{
-          height: 10px;
-        }}
-        .ta-scroll::-webkit-scrollbar-track {{
-          background: rgba(0,0,0,0.04);
-          border-radius: 999px;
-        }}
-        .ta-scroll::-webkit-scrollbar-thumb {{
-          background: rgba(0,0,0,0.18);
-          border-radius: 999px;
-        }}
-
-        .ta-article-card {{
-          flex: 0 0 auto;
-          width: 320px;
-          text-decoration: none;
-          color: inherit;
-          border-radius: 16px;
-          overflow: hidden;
-          border: 1px solid rgba(0,0,0,0.08);
-          box-shadow: 0 10px 24px rgba(0,0,0,0.06);
-          background: #fff;
-          scroll-snap-align: start;
-          transition: transform 0.12s ease, box-shadow 0.12s ease;
-        }}
-        .ta-article-card:hover {{
-          transform: translateY(-2px);
-          box-shadow: 0 14px 28px rgba(0,0,0,0.10);
-        }}
-        .ta-article-thumb {{
-          width: 100%;
-          height: 180px;
-          object-fit: contain;
-          display: block;
-          background: #f6f6f6;
-        }}
-        .ta-article-title {{
-          padding: 12px 14px;
-          font-size: 14px;
-          line-height: 1.25;
-          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
-          color: rgba(0,0,0,0.78);
-        }}
-      </style>
-    </head>
-    <body>
-      <div class="ta-articles">
-        <div class="ta-scroll">
-          {''.join(cards_html)}
-        </div>
-      </div>
-    </body>
-    </html>
+    <style>
+      .tarasha-scroll {{ display:flex; gap:16px; overflow-x:auto; padding: 8px 4px 14px 4px; }}
+      .card {{ flex: 0 0 340px; border-radius: 18px; border: 1px solid rgba(0,0,0,0.10);
+              overflow:hidden; background: rgba(255,255,255,0.90); }}
+      .thumb img {{ width:100%; height:160px; object-fit:cover; display:block; }}
+      .body {{ padding: 12px 14px 14px 14px; }}
+      .title {{ font-size: 16px; font-weight: 700; line-height: 1.2; margin-bottom: 6px; }}
+      .meta {{ font-size: 12px; opacity: 0.70; margin-bottom: 10px; }}
+      .read {{ display:inline-block; padding: 8px 14px; border-radius: 999px; text-decoration:none;
+               border: 1px solid rgba(0,0,0,0.18); font-weight: 600; }}
+      .read:hover {{ border-color: rgba(0,0,0,0.35); }}
+    </style>
+    <div class="tarasha-scroll">
+      {cards_html}
+    </div>
     """
     components.html(html, height=260, scrolling=False)
 
-def _render_home_body() -> None:
+
+def _render_article_viewer(article: Dict[str, str]) -> None:
+    title = article.get("title", "Featured Article")
+    pdf_path = article.get("pdf_path", "")
+
+    st.markdown(f"## {title}")
+    st.markdown(
+        '<a href="?" style="text-decoration:none;">← Back to Home</a>',
+        unsafe_allow_html=True,
+    )
+
+    if not pdf_path or not Path(pdf_path).exists():
+        st.error("PDF file not found on the server.")
+        return
+
+    pdf_bytes = _read_bytes(pdf_path)
+    pdf_b64 = _b64(pdf_bytes)
+
+    # Render in an iframe inside the new tab.
+    iframe_html = f"""
+      <iframe
+        src="data:application/pdf;base64,{pdf_b64}"
+        width="100%"
+        height="900"
+        style="border:none; border-radius: 14px;"
+      ></iframe>
+    """
+    components.html(iframe_html, height=920, scrolling=True)
+
+    # Always provide a download fallback.
+    st.download_button(
+        "Download PDF",
+        data=pdf_bytes,
+        file_name=Path(pdf_path).name,
+        mime="application/pdf",
+    )
+
+
+# -----------------------------
+# Home + Equity Research bodies
+# -----------------------------
+def _render_home_body(articles: List[Dict[str, str]]) -> None:
     # Hero banner carousel (add more images here later)
     hero_images = [_HERO_BANNER_PATH]
 
@@ -380,8 +395,8 @@ def _render_home_body() -> None:
     _render_hero_carousel(hero_images)
 
     st.markdown("### Featured Articles")
-    st.caption("Click an article to open it in a new tab.")
-    _render_featured_articles_carousel(_get_featured_articles())
+    _render_articles_carousel(articles)
+
 
 def _render_equity_research_body() -> None:
     tab_upload, tab_pl, tab_bs, tab_cs, tab_cf, tab_combined, tab_admin = st.tabs(
@@ -398,35 +413,48 @@ def _render_equity_research_body() -> None:
 
     with tab_upload:
         render_data_upload_tab()
-
     with tab_pl:
         render_pl_metrics_tab()
-
     with tab_bs:
         render_balance_sheet_metrics_tab()
-
     with tab_cs:
         render_capital_structure_cost_of_capital_tab()
-
     with tab_cf:
         render_cash_flow_and_spread_tab()
-
     with tab_combined:
         render_combined_dashboard_tab()
-
     with tab_admin:
         render_admin_tab()
 
+
 def _render_footer() -> None:
     # Intentionally empty for now (layout placeholder).
-    st.markdown("", unsafe_allow_html=True)
+    st.markdown("<div style='height: 12px;'></div>", unsafe_allow_html=True)
 
-tab_home, tab_equity_research = _render_header()
 
-with tab_home:
-    _render_home_body()
+def main() -> None:
+    articles = _discover_articles()
 
-with tab_equity_research:
-    _render_equity_research_body()
+    # If user opened an article in a new tab, render the PDF viewer and stop.
+    slug = _get_query_param("article")
+    if slug:
+        article = next((a for a in articles if a.get("slug") == slug), None)
+        if article is None:
+            st.error("Unknown article.")
+        else:
+            _render_article_viewer(article)
+        return
 
-_render_footer()
+    tab_home, tab_equity_research = _render_header()
+
+    with tab_home:
+        _render_home_body(articles)
+
+    with tab_equity_research:
+        _render_equity_research_body()
+
+    _render_footer()
+
+
+if __name__ == "__main__":
+    main()
