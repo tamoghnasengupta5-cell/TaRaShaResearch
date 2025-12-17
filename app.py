@@ -63,7 +63,7 @@ def _render_header() -> tuple:
     with st.container():
         # Logo (optional; app runs fine even if the file is missing)
         if _LOGO_PATH.exists():
-            st.image(str(_LOGO_PATH), width=200)
+            st.image(str(_LOGO_PATH), width=220)
 
         tab_home, tab_equity_research = st.tabs(["Home", "Equity Research"])
         return tab_home, tab_equity_research
@@ -120,7 +120,7 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
         .ta-hero-slide.active {{ display: block; }}
         .ta-hero-frame {{
           width: 100%;
-          aspect-ratio: {banner_ratio_w} / {banner_ratio_h};
+          /*aspect-ratio: {banner_ratio_w} / {banner_ratio_h};*/
           border-radius: 18px;
           overflow: hidden;
           box-shadow: 0 10px 30px rgba(0,0,0,0.08);
