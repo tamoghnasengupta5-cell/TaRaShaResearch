@@ -1,4 +1,5 @@
 import base64
+import re
 from pathlib import Path
 from typing import Dict, List
 
@@ -56,6 +57,52 @@ def _inject_shell_css() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "article"
+
+
+def _prettify_title(stem: str) -> str:
+    cleaned = re.sub(r"[_-]+", " ", stem)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if not cleaned:
+        return "Untitled Article"
+    return cleaned.title()
+
+
+def _discover_articles(articles_dir: Path) -> List[Dict]:
+    if not articles_dir.exists():
+        return []
+
+    thumb_exts = [".png", ".jpg", ".jpeg", ".webp"]
+    found = []
+
+    for pdf_path in sorted(articles_dir.glob("*.pdf")):
+        stem = pdf_path.stem
+        thumb_path = next(
+            (
+                articles_dir / f"{stem}_thumb{ext}"
+                for ext in thumb_exts
+                if (articles_dir / f"{stem}_thumb{ext}").exists()
+            ),
+            None,
+        )
+
+        if not thumb_path:
+            continue
+
+        found.append(
+            {
+                "id": _slugify(stem),
+                "title": _prettify_title(stem),
+                "pdf_path": pdf_path,
+                "thumb_path": thumb_path,
+            }
+        )
+
+    return found
 
 def _render_header() -> tuple:
     _inject_shell_css()
@@ -248,16 +295,10 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
 
 def _get_featured_articles() -> List[Dict]:
     """
-    A tiny registry so you can add more articles later without touching layout code.
+    Discover PDFs and thumbnails dropped into assets/articles.
+    Thumbnails must follow the pattern `<pdf_name>_thumb.<ext>`.
     """
-    return [
-        {
-            "id": "repairing-vs-salvaging-cav",
-            "title": "Repairing versus Salvaging in the Age of Connected Autonomous Vehicles",
-            "pdf_path": _ARTICLES_DIR / "repairing_vs_salvaging_connected_autonomous_vehicles.pdf",
-            "thumb_path": _ARTICLES_DIR / "repairing_vs_salvaging_connected_autonomous_vehicles_thumb.png",
-        },
-    ]
+    return _discover_articles(_ARTICLES_DIR)
 
 def _render_featured_articles_carousel(articles: List[Dict]) -> None:
     """
@@ -295,77 +336,71 @@ def _render_featured_articles_carousel(articles: List[Dict]) -> None:
         )
 
     html = f"""
-    <html>
-    <head>
-      <style>
-        .ta-articles {{
-          max-width: 1250px;
-          margin: 0.25rem auto 0 auto;
-        }}
+    <style>
+      .ta-articles {{
+        max-width: 1250px;
+        margin: 0.25rem auto 0 auto;
+      }}
 
-        .ta-scroll {{
-          display: flex;
-          gap: 18px;
-          overflow-x: auto;
-          padding: 6px 2px 12px 2px;
-          scroll-snap-type: x mandatory;
-        }}
+      .ta-scroll {{
+        display: flex;
+        gap: 18px;
+        overflow-x: auto;
+        padding: 6px 2px 12px 2px;
+        scroll-snap-type: x mandatory;
+      }}
 
-        .ta-scroll::-webkit-scrollbar {{
-          height: 10px;
-        }}
-        .ta-scroll::-webkit-scrollbar-track {{
-          background: rgba(0,0,0,0.04);
-          border-radius: 999px;
-        }}
-        .ta-scroll::-webkit-scrollbar-thumb {{
-          background: rgba(0,0,0,0.18);
-          border-radius: 999px;
-        }}
+      .ta-scroll::-webkit-scrollbar {{
+        height: 10px;
+      }}
+      .ta-scroll::-webkit-scrollbar-track {{
+        background: rgba(0,0,0,0.04);
+        border-radius: 999px;
+      }}
+      .ta-scroll::-webkit-scrollbar-thumb {{
+        background: rgba(0,0,0,0.18);
+        border-radius: 999px;
+      }}
 
-        .ta-article-card {{
-          flex: 0 0 auto;
-          width: 320px;
-          text-decoration: none;
-          color: inherit;
-          border-radius: 16px;
-          overflow: hidden;
-          border: 1px solid rgba(0,0,0,0.08);
-          box-shadow: 0 10px 24px rgba(0,0,0,0.06);
-          background: #fff;
-          scroll-snap-align: start;
-          transition: transform 0.12s ease, box-shadow 0.12s ease;
-        }}
-        .ta-article-card:hover {{
-          transform: translateY(-2px);
-          box-shadow: 0 14px 28px rgba(0,0,0,0.10);
-        }}
-        .ta-article-thumb {{
-          width: 100%;
-          height: 180px;
-          object-fit: contain;
-          display: block;
-          background: #f6f6f6;
-        }}
-        .ta-article-title {{
-          padding: 12px 14px;
-          font-size: 14px;
-          line-height: 1.25;
-          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
-          color: rgba(0,0,0,0.78);
-        }}
-      </style>
-    </head>
-    <body>
-      <div class="ta-articles">
-        <div class="ta-scroll">
-          {''.join(cards_html)}
-        </div>
+      .ta-article-card {{
+        flex: 0 0 auto;
+        width: 320px;
+        text-decoration: none;
+        color: inherit;
+        border-radius: 16px;
+        overflow: hidden;
+        border: 1px solid rgba(0,0,0,0.08);
+        box-shadow: 0 10px 24px rgba(0,0,0,0.06);
+        background: #fff;
+        scroll-snap-align: start;
+        transition: transform 0.12s ease, box-shadow 0.12s ease;
+      }}
+      .ta-article-card:hover {{
+        transform: translateY(-2px);
+        box-shadow: 0 14px 28px rgba(0,0,0,0.10);
+      }}
+      .ta-article-thumb {{
+        width: 100%;
+        height: 180px;
+        object-fit: contain;
+        display: block;
+        background: #f6f6f6;
+      }}
+      .ta-article-title {{
+        padding: 12px 14px;
+        font-size: 14px;
+        line-height: 1.25;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+        color: rgba(0,0,0,0.78);
+      }}
+    </style>
+    <div class="ta-articles">
+      <div class="ta-scroll">
+        {''.join(cards_html)}
       </div>
-    </body>
-    </html>
+    </div>
     """
-    components.html(html, height=260, scrolling=False)
+    st.markdown(html, unsafe_allow_html=True)
 
 def _render_home_body() -> None:
     # Hero banner carousel (add more images here later)
