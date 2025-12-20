@@ -47,11 +47,29 @@ def _inject_shell_css() -> None:
     st.markdown(
         """
         <style>
-          /* Reduce excessive top padding */
-          .block-container { padding-top: 1.0rem; padding-bottom: 2rem; }
+          /* Full-bleed layout: remove Streamlit's default max-width + side padding */
+          .block-container {
+            max-width: 100% !important;
+            padding-top: 1.0rem !important;
+            padding-bottom: 2rem !important;
+            padding-left: 0rem !important;
+            padding-right: 0rem !important;
+          }
 
-          /* Make the tab bar feel tighter */
-          [data-baseweb="tab-list"] { gap: 0.75rem; }
+          /* Some Streamlit versions add padding on these containers too */
+          [data-testid="stAppViewContainer"],
+          [data-testid="stAppViewContainer"] > .main,
+          [data-testid="stMainBlockContainer"] {
+            padding-left: 0rem !important;
+            padding-right: 0rem !important;
+          }
+
+          /* Keep tabs readable while the page is full-bleed */
+          [data-baseweb="tab-list"] {
+            gap: 0.75rem;
+            padding-left: 1rem;
+            padding-right: 1rem;
+          }
 
           /* Nicer headers */
           h1, h2, h3 { letter-spacing: -0.2px; }
@@ -66,7 +84,7 @@ def _render_header() -> tuple:
     with st.container():
         # Logo (optional; app runs fine even if the file is missing)
         if _LOGO_PATH.exists():
-            st.image(str(_LOGO_PATH), width=220)
+            st.image(str(_LOGO_PATH),width=300)
 
         tab_home, tab_equity_research = st.tabs(["Home", "Equity Research"])
         return tab_home, tab_equity_research
@@ -78,15 +96,13 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
     - Keeps aspect ratio; avoids cropping/distortion.
     - Leaves a clean overlay layer available for future CTA buttons.
     """
-    # Keep the hero banner from feeling "too big" on large monitors.
-    max_width_px = 1250
-
     # Standard hero banner aspect ratio (prevents cropping/distortion)
     # Target size: 1802x601
     banner_ratio_w = 1802
     banner_ratio_h = 601
-    hero_iframe_height = int((max_width_px * banner_ratio_h / banner_ratio_w) + 95)
 
+    # Starting height only — the iframe auto-resizes via JS (postMessage)
+    hero_iframe_height = 720
     valid_paths = [Path(p) for p in image_paths if Path(p).exists()]
     if not valid_paths:
         st.warning("Hero banner image not found. Put 'Hero_Banner.png' under ./assets/.")
@@ -113,8 +129,9 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
     <head>
       <style>
         .ta-hero {{
-          max-width: {max_width_px}px;
-          margin: 0 auto 0.25rem auto;
+          width: 100%;
+          max-width: 100%;
+          margin: 0 0 0.25rem 0;
           position: relative;
           user-select: none;
           -webkit-user-select: none;
@@ -243,7 +260,36 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
         if (slides.length > 1) {{
           setInterval(nextSlide, 8000);
         }}
-      </script>
+                // Auto-resize Streamlit iframe height (prevents cropping on wide screens)
+        (function () {{
+          function sendHeight() {{
+            const height = document.documentElement.scrollHeight;
+            window.parent.postMessage(
+              {{ isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height }},
+              "*"
+            );
+          }}
+
+          function start() {{
+            sendHeight();
+            if ("ResizeObserver" in window && document.body) {{
+              const ro = new ResizeObserver(sendHeight);
+              ro.observe(document.body);
+            }} else {{
+              // Fallback: ping a few times after load
+              let n = 0;
+              const t = setInterval(() => {{
+                sendHeight();
+                n += 1;
+                if (n >= 12) clearInterval(t);
+              }}, 250);
+            }}
+          }}
+
+          window.addEventListener("load", start);
+          window.addEventListener("resize", sendHeight);
+        }})();
+</script>
     </body>
     </html>
     """
@@ -365,8 +411,10 @@ def _render_featured_articles_carousel(articles: List[Dict]) -> None:
     <head>
       <style>
         .ta-articles {{
-          max-width: 1250px;
-          margin: 0.25rem auto 0 auto;
+          width: 100%;
+          max-width: 100%;
+          margin: 0.25rem 0 0 0;
+          padding: 0;
         }}
 
         .ta-scroll {{
@@ -462,7 +510,36 @@ def _render_featured_articles_carousel(articles: List[Dict]) -> None:
           // Revoke after a bit (don't revoke immediately or the PDF may fail to load).
           setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
         }}
-      </script>
+                // Auto-resize Streamlit iframe height (prevents cropping on wide screens)
+        (function () {{
+          function sendHeight() {{
+            const height = document.documentElement.scrollHeight;
+            window.parent.postMessage(
+              {{ isStreamlitMessage: true, type: "streamlit:setFrameHeight", height: height }},
+              "*"
+            );
+          }}
+
+          function start() {{
+            sendHeight();
+            if ("ResizeObserver" in window && document.body) {{
+              const ro = new ResizeObserver(sendHeight);
+              ro.observe(document.body);
+            }} else {{
+              // Fallback: ping a few times after load
+              let n = 0;
+              const t = setInterval(() => {{
+                sendHeight();
+                n += 1;
+                if (n >= 12) clearInterval(t);
+              }}, 250);
+            }}
+          }}
+
+          window.addEventListener("load", start);
+          window.addEventListener("resize", sendHeight);
+        }})();
+</script>
     </head>
     <body>
       <div class="ta-articles">
