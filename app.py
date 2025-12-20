@@ -1,4 +1,7 @@
 import base64
+import json
+import re
+import unicodedata
 from pathlib import Path
 from typing import Dict, List
 
@@ -246,29 +249,84 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
     """
     components.html(html, height=hero_iframe_height, scrolling=False)
 
+def _slugify(value: str) -> str:
+    """Convert an arbitrary filename/path into a stable, URL/DOM-safe id."""
+    value = unicodedata.normalize("NFKD", value)
+    value = value.encode("ascii", "ignore").decode("ascii")
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9]+", "-", value).strip("-")
+    return value or "article"
+
+def _humanize_filename(stem: str) -> str:
+    """Turn a filename stem into a readable title."""
+    # Replace underscores with spaces, collapse repeated whitespace, and trim.
+    s = stem.replace("_", " ")
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def _find_thumbnail_for_pdf(pdf_path: Path) -> Path:
+    """Find a matching thumbnail for a given PDF.
+
+    Convention: <pdf_stem>_thumb.<ext>
+    """
+    stem = pdf_path.stem
+    for ext in (".png", ".jpg", ".jpeg", ".webp"):
+        cand = pdf_path.with_name(f"{stem}_thumb{ext}")
+        if cand.exists():
+            return cand
+    # Fallback (still renders a card even if thumbnail is missing)
+    return _LOGO_PATH
+
 def _get_featured_articles() -> List[Dict]:
+    """Discover featured articles automatically from the ./assets folder.
+
+    Rules:
+    - Any *.pdf under ./assets (including ./assets/articles) is treated as a featured article.
+    - Thumbnail is resolved by naming convention: <pdf_name>_thumb.png (also supports jpg/jpeg/webp).
+      Example: my_article.pdf -> my_article_thumb.png
     """
-    A tiny registry so you can add more articles later without touching layout code.
-    """
-    return [
-        {
-            "id": "repairing-vs-salvaging-cav",
-            "title": "Repairing versus Salvaging in the Age of Connected Autonomous Vehicles",
-            "pdf_path": _ARTICLES_DIR / "repairing_vs_salvaging_connected_autonomous_vehicles.pdf",
-            "thumb_path": _ARTICLES_DIR / "repairing_vs_salvaging_connected_autonomous_vehicles_thumb.png",
-        },
-    ]
+    articles: List[Dict] = []
+
+    if not _ASSETS_DIR.exists():
+        return articles
+
+    pdf_paths = sorted(_ASSETS_DIR.rglob("*.pdf"), key=lambda p: p.name.lower())
+    for pdf_path in pdf_paths:
+        if not pdf_path.is_file():
+            continue
+
+        # Use a stable id derived from the asset-relative path to avoid collisions.
+        try:
+            rel = pdf_path.relative_to(_ASSETS_DIR).as_posix()
+        except Exception:
+            rel = pdf_path.name
+        article_id = _slugify(rel)
+
+        articles.append(
+            {
+                "id": article_id,
+                "title": _humanize_filename(pdf_path.stem),
+                "pdf_path": pdf_path,
+                "thumb_path": _find_thumbnail_for_pdf(pdf_path),
+            }
+        )
+
+    return articles
+
 
 def _render_featured_articles_carousel(articles: List[Dict]) -> None:
     """
     Horizontal, scrollable carousel of article cards.
     Clicking a card opens the PDF in a new browser tab.
 
-    Note: For simplicity and zero infra friction, PDFs are embedded as data: URLs.
-    This keeps it fully self-contained for Azure App Service + Streamlit.
+    Implementation detail:
+    - We DO NOT navigate directly to a huge `data:application/pdf;base64,...` URL.
+      Some browsers/hosts will open a blank tab for large data URLs.
+    - Instead, we open a `blob:` URL created client-side from the base64 PDF bytes.
+      This is much more reliable and keeps the address bar sane.
     """
     # Filter only those where assets exist (prevents runtime surprises)
-    safe_articles = []
+    safe_articles: List[Dict] = []
     for a in articles:
         if not a["pdf_path"].exists() or not a["thumb_path"].exists():
             continue
@@ -278,21 +336,29 @@ def _render_featured_articles_carousel(articles: List[Dict]) -> None:
         st.info("No featured articles found under ./assets/articles yet.")
         return
 
-    cards_html = []
+    # Build card HTML + a JS map of {article_id: pdf_base64}
+    cards_html: List[str] = []
+    pdf_map = {}
     for a in safe_articles:
+        article_id = a["id"]
+        title = a["title"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
         thumb_b64 = _file_to_b64(a["thumb_path"])
         pdf_b64 = _file_to_b64(a["pdf_path"])
-        # Important: use application/pdf + base64 so clicking opens a real PDF viewer.
-        href = f"data:application/pdf;base64,{pdf_b64}"
-        title = a["title"].replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        # Store raw base64 (NO data: prefix) so JS can build a Blob.
+        pdf_map[article_id] = pdf_b64
+
         cards_html.append(
             f"""
-            <a class="ta-article-card" href="{href}" target="_blank" rel="noopener noreferrer">
+            <button type="button" class="ta-article-card" onclick="openPdf('{article_id}')">
               <img class="ta-article-thumb" src="data:image/png;base64,{thumb_b64}" alt="{title}"/>
               <div class="ta-article-title">{title}</div>
-            </a>
+            </button>
             """
         )
+
+    pdf_map_json = json.dumps(pdf_map)
 
     html = f"""
     <html>
@@ -309,25 +375,15 @@ def _render_featured_articles_carousel(articles: List[Dict]) -> None:
           overflow-x: auto;
           padding: 6px 2px 12px 2px;
           scroll-snap-type: x mandatory;
+          -webkit-overflow-scrolling: touch;
         }}
-
         .ta-scroll::-webkit-scrollbar {{
           height: 10px;
-        }}
-        .ta-scroll::-webkit-scrollbar-track {{
-          background: rgba(0,0,0,0.04);
-          border-radius: 999px;
-        }}
-        .ta-scroll::-webkit-scrollbar-thumb {{
-          background: rgba(0,0,0,0.18);
-          border-radius: 999px;
         }}
 
         .ta-article-card {{
           flex: 0 0 auto;
           width: 320px;
-          text-decoration: none;
-          color: inherit;
           border-radius: 16px;
           overflow: hidden;
           border: 1px solid rgba(0,0,0,0.08);
@@ -335,26 +391,78 @@ def _render_featured_articles_carousel(articles: List[Dict]) -> None:
           background: #fff;
           scroll-snap-align: start;
           transition: transform 0.12s ease, box-shadow 0.12s ease;
+          cursor: pointer;
+
+          /* button reset */
+          padding: 0;
+          text-align: left;
+          border: 1px solid rgba(0,0,0,0.08);
+          outline: none;
         }}
         .ta-article-card:hover {{
           transform: translateY(-2px);
-          box-shadow: 0 14px 28px rgba(0,0,0,0.10);
+          box-shadow: 0 14px 30px rgba(0,0,0,0.10);
         }}
+
         .ta-article-thumb {{
           width: 100%;
           height: 180px;
-          object-fit: contain;
+          object-fit: cover;
           display: block;
-          background: #f6f6f6;
+          background: #f3f4f6;
         }}
+
         .ta-article-title {{
-          padding: 12px 14px;
-          font-size: 14px;
+          padding: 12px 14px 14px 14px;
+          font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+          font-size: 15px;
+          font-weight: 650;
           line-height: 1.25;
-          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
-          color: rgba(0,0,0,0.78);
         }}
       </style>
+      <script>
+        const pdfMap = {pdf_map_json};
+
+        function base64ToBlob(base64, contentType, sliceSize) {{
+          contentType = contentType || "application/pdf";
+          sliceSize = sliceSize || 1024;
+
+          const byteCharacters = atob(base64);
+          const byteArrays = [];
+
+          for (let offset = 0; offset < byteCharacters.length; offset += sliceSize) {{
+            const slice = byteCharacters.slice(offset, offset + sliceSize);
+            const byteNumbers = new Array(slice.length);
+            for (let i = 0; i < slice.length; i++) {{
+              byteNumbers[i] = slice.charCodeAt(i);
+            }}
+            const byteArray = new Uint8Array(byteNumbers);
+            byteArrays.push(byteArray);
+          }}
+
+          return new Blob(byteArrays, {{ type: contentType }});
+        }}
+
+        function openPdf(articleId) {{
+          const b64 = pdfMap[articleId];
+          if (!b64) {{
+            alert("Sorry — that article could not be found.");
+            return;
+          }}
+
+          const blob = base64ToBlob(b64, "application/pdf");
+          const url = URL.createObjectURL(blob);
+
+          // Open in a new tab.
+          const w = window.open(url, "_blank", "noopener,noreferrer");
+          if (!w) {{
+            alert("Your browser blocked the popup. Please allow popups for this site and try again.");
+          }}
+
+          // Revoke after a bit (don't revoke immediately or the PDF may fail to load).
+          setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+        }}
+      </script>
     </head>
     <body>
       <div class="ta-articles">
