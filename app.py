@@ -1,4 +1,5 @@
 import base64
+import html as html_lib
 import json
 import re
 import unicodedata
@@ -15,11 +16,14 @@ from cash_flow_spread import render_cash_flow_and_spread_tab
 from combined_dashboard import render_combined_dashboard_tab
 from data_upload import render_data_upload_tab
 from pl_metrics import render_pl_metrics_tab
+from key_data import render_key_data_tab
 
 # --- Branding assets (kept local to the repo) ---
 _ASSETS_DIR = Path(__file__).parent / "assets"
 _LOGO_PATH = _ASSETS_DIR / "tarasha_logo.png"
 _HERO_BANNER_PATH = _ASSETS_DIR / "Hero_Banner.png"
+_HERO_BANNER_2_PATH = _ASSETS_DIR / "Hero_Banner_2_Semiconductors.png"
+_HERO_BANNER_3_PATH = _ASSETS_DIR / "Hero_Banner_3_YoY_Growth.png"
 
 # --- Featured Articles assets ---
 _ARTICLES_DIR = _ASSETS_DIR / "articles"
@@ -52,23 +56,30 @@ def _inject_shell_css() -> None:
             max-width: 100% !important;
             padding-top: 1.0rem !important;
             padding-bottom: 2rem !important;
-            padding-left: 0rem !important;
-            padding-right: 0rem !important;
+            padding-left: 10px !important;
+            padding-right: 10px !important;
           }
 
           /* Some Streamlit versions add padding on these containers too */
           [data-testid="stAppViewContainer"],
           [data-testid="stAppViewContainer"] > .main,
           [data-testid="stMainBlockContainer"] {
-            padding-left: 0rem !important;
-            padding-right: 0rem !important;
+            padding-left: 10px !important;
+            padding-right: 10px !important;
           }
 
           /* Keep tabs readable while the page is full-bleed */
           [data-baseweb="tab-list"] {
             gap: 0.75rem;
-            padding-left: 1rem;
-            padding-right: 1rem;
+            padding-left: 10px;
+            padding-right: 10px;
+          }
+
+
+          /* Header logo: reduce vertical real estate */
+          div[data-testid="stImage"] {
+            margin-top: 0.0rem !important;
+            margin-bottom: 0.15rem !important;
           }
 
           /* Nicer headers */
@@ -84,12 +95,12 @@ def _render_header() -> tuple:
     with st.container():
         # Logo (optional; app runs fine even if the file is missing)
         if _LOGO_PATH.exists():
-            st.image(str(_LOGO_PATH),width=300)
+            st.image(str(_LOGO_PATH), width=200)
 
-        tab_home, tab_equity_research = st.tabs(["Home", "Equity Research"])
-        return tab_home, tab_equity_research
+        tab_home, tab_key_data, tab_equity_research = st.tabs(["Home", "Key Data", "Equity Research"])
+        return tab_home, tab_key_data, tab_equity_research
 
-def _render_hero_carousel(image_paths: List[Path]) -> None:
+def _render_hero_carousel(image_paths: List[Path], slide_meta: List[Dict] | None = None) -> None:
     """
     Render a responsive hero image carousel.
     - Designed as a carousel so you can add more hero images later.
@@ -103,25 +114,50 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
 
     # Starting height only — the iframe auto-resizes via JS (postMessage)
     hero_iframe_height = 720
-    valid_paths = [Path(p) for p in image_paths if Path(p).exists()]
-    if not valid_paths:
+    # "slide_meta" is a future-proof hook for adding CTA behavior per slide.
+    # We intentionally do NOT implement CTA click behavior yet.
+    if slide_meta is None:
+        slide_meta = [None] * len(image_paths)
+    # Keep ordering stable, but skip missing files.
+    pairs = [(Path(p), m) for p, m in zip(image_paths, slide_meta)]
+    pairs = [(p, m) for p, m in pairs if p.exists()]
+    if not pairs:
         st.warning("Hero banner image not found. Put 'Hero_Banner.png' under ./assets/.")
         return
 
-    imgs_b64 = [_file_to_b64(p) for p in valid_paths]
-    slides_html = "".join(
-        [
+    imgs_b64 = [_file_to_b64(p) for p, _ in pairs]
+    metas = [m for _, m in pairs]
+
+    # Optional: a transparent text banner overlay on specific slides (e.g., the main Hero_Banner).
+    slides_parts: List[str] = []
+    for b64, meta in zip(imgs_b64, metas):
+        overlay_text_html = ""
+        if isinstance(meta, dict) and meta.get("overlay_text"):
+            ov = meta.get("overlay_text") or {}
+            line1 = html_lib.escape(str(ov.get("line1", "")))
+            line2 = html_lib.escape(str(ov.get("line2", "")))
+            cta_label = html_lib.escape(str(ov.get("button_label", "Explore Combined Dashboard")))
+            overlay_text_html = f"""
+                <div class=\"ta-hero-textbanner\" aria-label=\"Hero banner description\">
+                  <div class=\"ta-hero-textbanner-line1\">{line1}</div>
+                  <div class=\"ta-hero-textbanner-line2\">{line2}</div>
+                  <button class=\"ta-hero-cta\" type=\"button\" onclick=\"navigateToCombinedDashboard(event)\">{cta_label}</button>
+                </div>
+            """
+
+        slides_parts.append(
             f"""
-            <div class="ta-hero-slide">
-              <div class="ta-hero-frame">
-                <img src="data:image/png;base64,{b64}" alt="Hero banner"/>
-                <div class="ta-hero-overlay" aria-hidden="true"></div>
+            <div class=\"ta-hero-slide\" data-slide-meta='{json.dumps(meta) if meta else ""}'>
+              <div class=\"ta-hero-frame\">
+                <img src=\"data:image/png;base64,{b64}\" alt=\"Hero banner\"/>
+                {overlay_text_html}
+                <div class=\"ta-hero-overlay\" aria-hidden=\"true\"></div>
               </div>
             </div>
             """
-            for b64 in imgs_b64
-        ]
-    )
+        )
+
+    slides_html = "".join(slides_parts)
 
     show_controls = "block" if len(imgs_b64) > 1 else "none"
     html = f"""
@@ -158,6 +194,84 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
           inset: 0;
           background: linear-gradient(180deg, rgba(255,255,255,0.00) 35%, rgba(0,0,0,0.04) 100%);
           pointer-events: none;
+          z-index: 1;
+        }}
+
+        /* Transparent text banner (main Hero_Banner only) */
+        .ta-hero-textbanner {{
+          position: absolute;
+          top: 65%;
+          right: clamp(28px, 5.5vw, 120px);
+          transform: translateY(-50%);
+          width: min(720px, 56%);
+          padding: 40px 22px 27px 22px;
+          border-radius: 16px;
+          background: rgba(255, 255, 255, 0.42);
+          border: 1px solid rgba(255, 255, 255, 0.50);
+          box-shadow: 0 10px 26px rgba(0,0,0,0.12);
+          backdrop-filter: blur(10px);
+          -webkit-backdrop-filter: blur(10px);
+          color: rgba(15, 17, 20, 0.92);
+          line-height: 1.38;
+          font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", "Liberation Sans", sans-serif;
+          -webkit-font-smoothing: antialiased;
+          text-rendering: optimizeLegibility;
+          z-index: 2;
+          pointer-events: none;
+        }}
+        .ta-hero-textbanner-line1 {{
+          font-size: 16px;
+          font-weight: 600;
+          letter-spacing: -0.15px;
+        }}
+        .ta-hero-textbanner-line2 {{
+          margin-top: 10px;
+          font-size: 15px;
+          font-weight: 450;
+          opacity: 0.92;
+        }}
+        .ta-hero-cta {{
+          margin-top: 16px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding: 10px 14px;
+          border-radius: 999px;
+          border: 1px solid rgba(15, 17, 20, 0.18);
+          background: rgba(255, 255, 255, 0.72);
+          color: rgba(15, 17, 20, 0.92);
+          font-size: 14px;
+          font-weight: 600;
+          letter-spacing: -0.10px;
+          cursor: pointer;
+          pointer-events: auto;
+          box-shadow: 0 8px 20px rgba(0,0,0,0.10);
+          transition: transform 140ms ease, background 140ms ease, box-shadow 140ms ease;
+        }}
+        .ta-hero-cta:hover {{
+          background: rgba(255, 255, 255, 0.88);
+          transform: translateY(-1px);
+          box-shadow: 0 10px 26px rgba(0,0,0,0.12);
+        }}
+        .ta-hero-cta:active {{
+          transform: translateY(0px);
+        }}
+        .ta-hero-cta:focus {{
+          outline: none;
+        }}
+        .ta-hero-cta:focus-visible {{
+          outline: 2px solid rgba(15, 17, 20, 0.30);
+          outline-offset: 2px;
+        }}
+        @media (max-width: 960px) {{
+          .ta-hero-textbanner {{
+            left: 14px;
+            right: 14px;
+            top: auto;
+            bottom: 14px;
+            transform: none;
+            width: auto;
+          }}
         }}
 
         .ta-hero-nav {{
@@ -224,6 +338,41 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
         const dotsEl = document.getElementById('dots');
         let idx = 0;
 
+        function _clickStreamlitTabByText(label) {{
+          try {{
+            const doc = window.parent.document;
+            const tabs = Array.from(doc.querySelectorAll('button[role=\"tab\"]'));
+            const target = tabs.find(b => ((b.innerText || '').trim() === label));
+            if (target) {{
+              target.click();
+              return true;
+            }}
+          }} catch (e) {{
+            console.warn('tab click failed', e);
+          }}
+          return false;
+        }}
+
+        function navigateToCombinedDashboard(evt) {{
+          if (evt) {{
+            evt.preventDefault();
+            evt.stopPropagation();
+          }}
+          const clickedOuter = _clickStreamlitTabByText('Equity Research');
+          const delay = clickedOuter ? 250 : 0;
+          window.setTimeout(() => {{
+            let tries = 0;
+            const maxTries = 12;
+            const timer = window.setInterval(() => {{
+              tries += 1;
+              const ok = _clickStreamlitTabByText('Combined Dashboard');
+              if (ok || tries >= maxTries) {{
+                window.clearInterval(timer);
+              }}
+            }}, 200);
+          }}, delay);
+        }}
+
         function renderDots() {{
           if (!dotsEl) return;
           dotsEl.innerHTML = '';
@@ -256,10 +405,7 @@ def _render_hero_carousel(image_paths: List[Path]) -> None:
         // Init
         show(0);
 
-        // Auto-rotate (only if more than one slide)
-        if (slides.length > 1) {{
-          setInterval(nextSlide, 8000);
-        }}
+        // Auto-rotate disabled: slides advance only via user navigation (arrows/dots)
                 // Auto-resize Streamlit iframe height (prevents cropping on wide screens)
         (function () {{
           function sendHeight() {{
@@ -553,16 +699,42 @@ def _render_featured_articles_carousel(articles: List[Dict]) -> None:
     components.html(html, height=260, scrolling=False)
 
 def _render_home_body() -> None:
-    # Hero banner carousel (add more images here later)
-    hero_images = [_HERO_BANNER_PATH]
+    # Hero banner carousel (3-slide carousel; CTA hooks reserved for future use)
+    hero_images = [_HERO_BANNER_PATH, _HERO_BANNER_2_PATH, _HERO_BANNER_3_PATH]
+    hero_meta: List[Dict] = [
+        {
+            "cta": None,
+            "overlay_text": {
+                "line1": "Select one or more company buckets and a year range to generate a volatility- and debt-aware composite score that blends P&L growth, balance-sheet strength, free-cash-flow momentum, and ROIC–WACC value creation.",
+                "line2": "Get the ranking + the breakdown behind every score, with quick price-history sanity checks to spot the most consistent performers.",
+            },
+        },
+        {
+            "cta": {
+                "kind": "navigate",
+                "target": "combined_dashboard",
+                "prepopulated_buckets": [
+                    "Technology : Semiconductor",
+                    "Technology : Semiconductor Equipment & Materials",
+                ],
+            }
+        },
+        {
+            "cta": {
+                "kind": "navigate",
+                "target": "key_data",
+                "subtab": "P&L Key Data",
+            }
+        },
+    ]
 
-    # Fallback: if the image isn't under assets yet, allow running from repo root.
+    # Fallback: if the primary image isn't under assets yet, allow running from repo root.
     if not _HERO_BANNER_PATH.exists():
         alt = Path(__file__).parent / "Hero_Banner.png"
         if alt.exists():
-            hero_images = [alt]
+            hero_images[0] = alt
 
-    _render_hero_carousel(hero_images)
+    _render_hero_carousel(hero_images, slide_meta=hero_meta)
 
     st.markdown("### Featured Articles")
     st.caption("Click an article to open it in a new tab.")
@@ -602,14 +774,20 @@ def _render_equity_research_body() -> None:
     with tab_admin:
         render_admin_tab()
 
+def _render_key_data_body() -> None:
+    render_key_data_tab()
+
 def _render_footer() -> None:
     # Intentionally empty for now (layout placeholder).
     st.markdown("", unsafe_allow_html=True)
 
-tab_home, tab_equity_research = _render_header()
+tab_home, tab_key_data, tab_equity_research = _render_header()
 
 with tab_home:
     _render_home_body()
+
+with tab_key_data:
+    _render_key_data_body()
 
 with tab_equity_research:
     _render_equity_research_body()
