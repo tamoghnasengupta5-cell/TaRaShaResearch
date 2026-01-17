@@ -84,6 +84,42 @@ def _inject_shell_css() -> None:
 
           /* Nicer headers */
           h1, h2, h3 { letter-spacing: -0.2px; }
+
+          /* Mobile responsiveness (primarily affects the Home shell) */
+          @media (max-width: 640px) {
+            .block-container {
+              padding-left: 6px !important;
+              padding-right: 6px !important;
+              padding-top: 0.6rem !important;
+            }
+
+            [data-testid="stAppViewContainer"],
+            [data-testid="stAppViewContainer"] > .main,
+            [data-testid="stMainBlockContainer"] {
+              padding-left: 6px !important;
+              padding-right: 6px !important;
+            }
+
+            /* Make tabs horizontally scrollable instead of overflowing */
+            [data-baseweb="tab-list"] {
+              gap: 0.45rem;
+              overflow-x: auto;
+              flex-wrap: nowrap;
+              -webkit-overflow-scrolling: touch;
+              padding-left: 6px;
+              padding-right: 6px;
+            }
+            button[role="tab"] {
+              flex: 0 0 auto;
+              white-space: nowrap;
+            }
+
+            /* Keep the logo from dominating the top on narrow screens */
+            div[data-testid="stImage"] img {
+              max-width: 160px;
+              height: auto;
+            }
+          }
         </style>
         """,
         unsafe_allow_html=True,
@@ -271,6 +307,42 @@ def _render_hero_carousel(image_paths: List[Path], slide_meta: List[Dict] | None
             bottom: 14px;
             transform: none;
             width: auto;
+          }}
+        }}
+
+        /* Extra tightening for small/mobile screens */
+        @media (max-width: 520px) {{
+          .ta-hero-textbanner {{
+            padding: 16px 14px 14px 14px;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.62);
+          }}
+          .ta-hero-textbanner-line1 {{
+            font-size: 13px;
+          }}
+          .ta-hero-textbanner-line2 {{
+            margin-top: 8px;
+            font-size: 12.5px;
+          }}
+          .ta-hero-cta {{
+            margin-top: 12px;
+            padding: 9px 12px;
+            font-size: 13px;
+          }}
+          .ta-hero .ta-hero-btn {{
+            width: 36px;
+            height: 36px;
+            font-size: 18px;
+          }}
+          .ta-hero .ta-hero-btn.prev {{ left: 8px; }}
+          .ta-hero .ta-hero-btn.next {{ right: 8px; }}
+          .ta-hero .ta-hero-dots {{
+            margin-top: 6px;
+          }}
+          .ta-hero-dots .ta-dot {{
+            width: 6px;
+            height: 6px;
+            margin: 0 3px;
           }}
         }}
 
@@ -612,6 +684,27 @@ def _render_featured_articles_carousel(articles: List[Dict]) -> None:
           font-size: 15px;
           font-weight: 650;
           line-height: 1.25;
+        }}
+
+        @media (max-width: 520px) {{
+          .ta-scroll {{
+            gap: 12px;
+            padding: 6px 0 10px 0;
+          }}
+
+          .ta-article-card {{
+            width: min(82vw, 320px);
+            border-radius: 14px;
+          }}
+
+          .ta-article-thumb {{
+            height: 160px;
+          }}
+
+          .ta-article-title {{
+            padding: 10px 12px 12px 12px;
+            font-size: 14px;
+          }}
         }}
       </style>
       <script>
