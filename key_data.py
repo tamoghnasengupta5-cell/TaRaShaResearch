@@ -7,11 +7,17 @@ def render_key_data_tab() -> None:
     """Master tab: Key Data."""
     st.title("Key Data")
 
-    tab_pl_key, tab_bs_key = st.tabs(["P&L Key data", "Balance Sheet Key Data"])
+    tab_pl_key, tab_bs_key, tab_cs_key, tab_cf_key = st.tabs(
+        ["P&L Key data", "Balance Sheet Key Data", "Capital Structure & Spread", "Cash Flow & Reinvestment"]
+    )
     with tab_pl_key:
         _render_pl_key_data()
     with tab_bs_key:
         _render_bs_key_data()
+    with tab_cs_key:
+        _render_cs_spread_key_data()
+    with tab_cf_key:
+        _render_cf_reinvestment_key_data()
 
 
 def _render_pl_key_data() -> None:
@@ -1092,6 +1098,1261 @@ def _render_bs_key_data() -> None:
     disp = pd.DataFrame(rows)
     disp = disp.reindex(columns=ordered_cols)
 
+    dup_mask = disp["Company"].eq(disp["Company"].shift())
+    disp.loc[dup_mask, ["Company", "Ticker"]] = ""
+
+    st.dataframe(disp, use_container_width=True)
+
+
+def _render_cs_spread_key_data() -> None:
+    st.subheader("Capital Structure & Spread")
+
+    conn = get_db()
+    companies_df = list_companies(conn)
+    if companies_df.empty:
+        st.info("No companies in the database yet. Upload a spreadsheet under Equity Research → Data Upload.")
+        return
+
+    # Base selection: individual companies
+    all_company_options = [
+        f"{row.name} ({row.ticker}) [id={row.id}]" for _, row in companies_df.iterrows()
+    ]
+
+    # Default selection: companies not present in any bucket (same behavior as other tabs)
+    try:
+        bucket_df = pd.read_sql_query(
+            "SELECT DISTINCT company_id FROM company_group_members",
+            conn,
+        )
+        bucketed_ids = set(int(x) for x in bucket_df["company_id"].tolist()) if not bucket_df.empty else set()
+    except Exception:
+        bucketed_ids = set()
+
+    if bucketed_ids:
+        default_company_options = [
+            f"{row.name} ({row.ticker}) [id={row.id}]"
+            for _, row in companies_df.iterrows()
+            if int(row.id) not in bucketed_ids
+        ]
+    else:
+        default_company_options = all_company_options
+
+    # If a company was just ingested this session, override default to only that company
+    last_company_id = st.session_state.get("last_ingested_company_id")
+    if last_company_id is not None:
+        selected_label = None
+        for _, row in companies_df.iterrows():
+            if int(row.id) == int(last_company_id):
+                selected_label = f"{row.name} ({row.ticker}) [id={row.id}]"
+                break
+        if selected_label:
+            default_company_options = [selected_label]
+
+    options = st.multiselect(
+        "Companies to analyze",
+        options=all_company_options,
+        default=default_company_options,
+        key="keydata_cs_companies_select",
+    )
+
+    # Bucket definition: allow user to save current selection as a named bucket
+    bucket_col1, bucket_col2 = st.columns([3, 1])
+    with bucket_col1:
+        bucket_name = st.text_input(
+            "Save current selection as bucket (optional)",
+            placeholder="e.g. US_LowLeverage_Compounders",
+            key="keydata_cs_bucket_name_input",
+        )
+    with bucket_col2:
+        save_bucket = st.button("Save bucket", key="keydata_cs_save_bucket_button")
+
+    if save_bucket:
+        sel_company_ids = []
+        for opt in options:
+            m_sel = re.search(r"\[id=(\d+)\]$", opt)
+            if m_sel:
+                sel_company_ids.append(int(m_sel.group(1)))
+
+        if not bucket_name or not bucket_name.strip():
+            st.error("Please provide a non-empty bucket name.")
+        elif not sel_company_ids:
+            st.error("Please select at least one company before saving a bucket.")
+        else:
+            bname = bucket_name.strip()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT OR IGNORE INTO company_groups(name) VALUES(?)",
+                (bname,),
+            )
+            cur.execute(
+                "SELECT id FROM company_groups WHERE name = ?",
+                (bname,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                st.error("Unexpected error while creating bucket.")
+            else:
+                gid = int(row[0])
+                # Append current selection to existing membership (keep existing companies in the bucket)
+                cur.executemany(
+                    "INSERT OR IGNORE INTO company_group_members(group_id, company_id) VALUES(?, ?)",
+                    [(gid, cid) for cid in sel_company_ids],
+                )
+                conn.commit()
+                st.success(f"Saved bucket '{bname}' with {len(sel_company_ids)} companies.")
+
+    # Bucket selection: use previously saved buckets to drive the analysis
+    groups_df = pd.read_sql_query(
+        "SELECT id, name FROM company_groups ORDER BY name",
+        conn,
+    )
+    bucket_names_selected = []
+    group_name_to_id: Dict[str, int] = {}
+    if not groups_df.empty:
+        group_name_to_id = {str(row["name"]): int(row["id"]) for _, row in groups_df.iterrows()}
+        bucket_names_selected = st.multiselect(
+            "Or select one or more saved buckets",
+            options=list(group_name_to_id.keys()),
+            key="keydata_cs_bucket_select",
+        )
+
+    yr_input = st.text_input(
+        "Year range (e.g., 'Recent - 2020' or '2023-2018')",
+        value="Recent - 2020",
+        key="keydata_cs_year_range",
+    )
+
+    stdev_mode = st.radio(
+        "Standard deviation mode",
+        ["Sample (ddof=1)", "Population (ddof=0)"],
+        horizontal=True,
+        key="keydata_cs_stdev_mode",
+    )
+    sample = (stdev_mode == "Sample (ddof=1)")
+
+    def parse_range(s: str, available_years: List[int]) -> Tuple[int, int]:
+        s = (s or "").strip()
+        if not available_years:
+            raise ValueError("No annual years available.")
+        most_recent = max(available_years)
+        m_recent = re.match(r"^recent\s*[-–]\s*(\d{4})$", s, flags=re.IGNORECASE)
+        m_two = re.match(r"^(\d{4})\s*[-–]\s*(\d{4})$", s)
+        if m_recent:
+            end = int(m_recent.group(1))
+            return most_recent, end
+        if m_two:
+            start, end = int(m_two.group(1)), int(m_two.group(2))
+            return start, end
+        raise ValueError("Could not parse the year range. Use 'Recent - YYYY' or 'YYYY-YYYY'.")
+
+    # Determine final set of company ids based on direct selection + buckets
+    selected_company_ids: List[int] = []
+    for opt in options:
+        m = re.search(r"\[id=(\d+)\]$", opt)
+        if m:
+            selected_company_ids.append(int(m.group(1)))
+
+    bucket_company_ids: List[int] = []
+    if bucket_names_selected:
+        group_ids = [group_name_to_id[name] for name in bucket_names_selected]
+        placeholders = ",".join(["?"] * len(group_ids))
+        bucket_df2 = pd.read_sql_query(
+            f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
+            conn,
+            params=group_ids,
+        )
+        if not bucket_df2.empty:
+            bucket_company_ids = [int(x) for x in bucket_df2["company_id"].tolist()]
+
+    all_company_ids = sorted(set(selected_company_ids + bucket_company_ids))
+    if not all_company_ids:
+        st.info("Select at least one company or a saved bucket to view Capital Structure & Spread key data.")
+        return
+
+    def build_metric(
+        ann_df: pd.DataFrame,
+        value_col: str,
+        yr_start: int,
+        yr_end: int,
+        stdev_sample: bool,
+        *,
+        abs_denom: bool = False,
+    ) -> Tuple[Dict[int, Optional[float]], Dict[int, Optional[float]], Optional[float], Optional[float]]:
+        """Return (values_by_year, yoy_growth_by_year, median_growth, stdev_growth)."""
+        if ann_df is None or ann_df.empty:
+            return {}, {}, None, None
+        df_m = ann_df.copy()
+        df_m = df_m[(df_m["year"] >= yr_end) & (df_m["year"] <= yr_start)].sort_values("year")
+        if df_m.empty or value_col not in df_m.columns:
+            return {}, {}, None, None
+
+        try:
+            df_m["_v"] = pd.to_numeric(df_m[value_col], errors="coerce").astype(float)
+        except Exception:
+            df_m["_v"] = pd.to_numeric(df_m[value_col], errors="coerce")
+
+        df_m["yoy_growth"] = df_m["_v"].pct_change()
+        # IMPORTANT: pass only a single numeric column into compute_growth_stats.
+        # If we renamed _v to value_col while also keeping the original value_col,
+        # we'd create duplicate column names. In that case, pandas returns a Series
+        # for prev.get(value_col), which makes truth checks ambiguous.
+        df_stats = df_m[["year", "_v"]].rename(columns={"_v": value_col})
+        med_g, std_g = compute_growth_stats(
+            df_stats,
+            yr_start,
+            yr_end,
+            stdev_sample=stdev_sample,
+            value_col=value_col,
+            abs_denom=abs_denom,
+        )
+
+        val_by_year = {int(y): (None if pd.isna(v) else float(v)) for y, v in zip(df_m["year"], df_m["_v"])}
+        growth_by_year = {
+            int(y): (None if pd.isna(g) else float(g)) for y, g in zip(df_m["year"], df_m["yoy_growth"])
+        }
+        return val_by_year, growth_by_year, med_g, std_g
+
+    def compute_value_stats(
+        ann_df: pd.DataFrame,
+        value_col: str,
+        yr_start: int,
+        yr_end: int,
+        stdev_sample: bool,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Return (median_value, stdev_value) for a value column over the chosen year range."""
+        if ann_df is None or ann_df.empty or value_col not in ann_df.columns:
+            return None, None
+        df_v = ann_df.copy()
+        df_v = df_v[(df_v["year"] >= yr_end) & (df_v["year"] <= yr_start)].sort_values("year")
+        if df_v.empty:
+            return None, None
+        arr = pd.to_numeric(df_v[value_col], errors="coerce").dropna().astype(float).to_numpy()
+        if arr.size == 0:
+            return None, None
+        median = float(np.median(arr))
+        ddof = 1 if stdev_sample and arr.size > 1 else 0
+        stdev = float(np.std(arr, ddof=ddof)) if arr.size > 1 or ddof == 0 else None
+        return median, stdev
+
+    def ratio_series(
+        df_num: pd.DataFrame,
+        num_col: str,
+        df_den: pd.DataFrame,
+        den_col: str,
+        out_col: str,
+    ) -> pd.DataFrame:
+        if df_num is None or df_den is None or df_num.empty or df_den.empty:
+            return pd.DataFrame(columns=["year", out_col])
+        a = df_num[["year", num_col]].copy()
+        b = df_den[["year", den_col]].copy()
+        a[num_col] = pd.to_numeric(a[num_col], errors="coerce")
+        b[den_col] = pd.to_numeric(b[den_col], errors="coerce")
+        m = a.merge(b, on="year", how="inner")
+        if m.empty:
+            return pd.DataFrame(columns=["year", out_col])
+        m[out_col] = np.where(m[den_col] == 0.0, np.nan, (m[num_col] / m[den_col]))
+        return m[["year", out_col]].sort_values("year")
+
+    def _get_industry_beta(conn_in: sqlite3.Connection, company_id: int, field: str) -> Optional[float]:
+        if field not in ("unlevered_beta", "cash_adjusted_beta"):
+            return None
+        try:
+            row = conn_in.execute(
+                f"""
+                SELECT AVG(ib.{field})
+                FROM company_group_members m
+                JOIN company_groups g ON g.id = m.group_id
+                JOIN industry_betas ib ON ib.user_industry_bucket = g.name
+                WHERE m.company_id = ?
+                """,
+                (company_id,),
+            ).fetchone()
+            if row is None or row[0] is None:
+                return None
+            v = float(row[0])
+            return v if np.isfinite(v) else None
+        except Exception:
+            return None
+
+    def any_available_years(conn_in: sqlite3.Connection, company_id: int) -> List[int]:
+        years: List[int] = []
+        for df in [
+            get_annual_market_capitalization_series(conn_in, company_id),
+            get_annual_total_debt_series(conn_in, company_id),
+            get_annual_shareholders_equity_series(conn_in, company_id),
+            get_annual_roic_direct_upload_series(conn_in, company_id),
+            get_annual_cost_of_equity_series(conn_in, company_id),
+            get_annual_pre_tax_cost_of_debt_series(conn_in, company_id),
+            get_annual_wacc_series(conn_in, company_id),
+            get_annual_roic_wacc_spread_series(conn_in, company_id),
+        ]:
+            if df is not None and not df.empty and "year" in df.columns:
+                years.extend([int(y) for y in df["year"].tolist() if pd.notna(y)])
+        return years
+
+    per_company = []
+    year_set = set()
+
+    for cid in all_company_ids:
+        years = any_available_years(conn, cid)
+        if not years:
+            continue
+
+        try:
+            yr_start, yr_end = parse_range(yr_input, years)
+            if yr_start < yr_end:
+                yr_start, yr_end = yr_end, yr_start
+        except Exception as e:
+            st.error(f"Year range error: {e}")
+            return
+
+        # Ensure derived metrics exist in DB (safe to call repeatedly)
+        try:
+            compute_and_store_debt_equity(conn, cid)
+        except Exception:
+            pass
+        try:
+            compute_and_store_levered_beta(conn, cid)
+        except Exception:
+            pass
+        try:
+            compute_and_store_cost_of_equity(conn, cid)
+        except Exception:
+            pass
+        try:
+            compute_and_store_default_spread(conn, cid)
+        except Exception:
+            pass
+        try:
+            compute_and_store_pre_tax_cost_of_debt(conn, cid)
+        except Exception:
+            pass
+        try:
+            compute_and_store_wacc(conn, cid)
+        except Exception:
+            pass
+        try:
+            compute_and_store_roic_wacc_spread(conn, cid)
+        except Exception:
+            pass
+
+        # Company label
+        rowc = companies_df[companies_df["id"] == cid]
+        if not rowc.empty:
+            name = rowc.iloc[0]["name"]
+            ticker = rowc.iloc[0]["ticker"]
+        else:
+            name = f"Company {cid}"
+            ticker = ""
+
+        # Pull required annual series
+        ann_mc = get_annual_market_capitalization_series(conn, cid)
+        ann_td = get_annual_total_debt_series(conn, cid)
+        ann_eq = get_annual_shareholders_equity_series(conn, cid)
+        ann_roic = get_annual_roic_direct_upload_series(conn, cid)
+        ann_coe = get_annual_cost_of_equity_series(conn, cid)
+        ann_pcd = get_annual_pre_tax_cost_of_debt_series(conn, cid)
+        ann_wacc = get_annual_wacc_series(conn, cid)
+        ann_spread = get_annual_roic_wacc_spread_series(conn, cid)
+
+        # Derived ratios
+        ann_eq_over_debt = ratio_series(ann_eq, "shareholders_equity", ann_td, "total_debt", "eq_over_debt")
+        ann_mc_over_debt = ratio_series(ann_mc, "market_capitalization", ann_td, "total_debt", "mc_over_debt")
+
+        # Metrics (level + growth)
+        mc_by_year, mc_growth_by_year, mc_med_g, mc_std_g = build_metric(
+            ann_mc, "market_capitalization", yr_start, yr_end, stdev_sample=sample
+        )
+        td_by_year, td_growth_by_year, td_med_g, td_std_g = build_metric(
+            ann_td, "total_debt", yr_start, yr_end, stdev_sample=sample
+        )
+        eqd_by_year, eqd_growth_by_year, eqd_med_g, eqd_std_g = build_metric(
+            ann_eq_over_debt, "eq_over_debt", yr_start, yr_end, stdev_sample=sample
+        )
+        mcd_by_year, mcd_growth_by_year, mcd_med_g, mcd_std_g = build_metric(
+            ann_mc_over_debt, "mc_over_debt", yr_start, yr_end, stdev_sample=sample
+        )
+
+        roic_by_year, roic_growth_by_year, _, _ = build_metric(
+            ann_roic, "roic_pct", yr_start, yr_end, stdev_sample=sample
+        )
+        roic_med_v, roic_std_v = compute_value_stats(ann_roic, "roic_pct", yr_start, yr_end, stdev_sample=sample)
+
+        coe_by_year, coe_growth_by_year, _, _ = build_metric(
+            ann_coe, "cost_of_equity", yr_start, yr_end, stdev_sample=sample
+        )
+        coe_med_v, coe_std_v = compute_value_stats(ann_coe, "cost_of_equity", yr_start, yr_end, stdev_sample=sample)
+
+        pcd_by_year, pcd_growth_by_year, _, _ = build_metric(
+            ann_pcd, "pre_tax_cost_of_debt", yr_start, yr_end, stdev_sample=sample
+        )
+        pcd_med_v, pcd_std_v = compute_value_stats(
+            ann_pcd, "pre_tax_cost_of_debt", yr_start, yr_end, stdev_sample=sample
+        )
+
+        wacc_by_year, wacc_growth_by_year, _, _ = build_metric(
+            ann_wacc, "wacc", yr_start, yr_end, stdev_sample=sample
+        )
+        wacc_med_v, wacc_std_v = compute_value_stats(ann_wacc, "wacc", yr_start, yr_end, stdev_sample=sample)
+
+        spread_by_year, spread_growth_by_year, _, _ = build_metric(
+            ann_spread, "spread_pct", yr_start, yr_end, stdev_sample=sample
+        )
+        spread_med_v, spread_std_v = compute_value_stats(ann_spread, "spread_pct", yr_start, yr_end, stdev_sample=sample)
+
+        # Industry betas (single values) - repeat across the company-year set (for consistent columns)
+        company_years = sorted(set(
+            list(mc_by_year.keys())
+            + list(td_by_year.keys())
+            + list(eqd_by_year.keys())
+            + list(mcd_by_year.keys())
+            + list(roic_by_year.keys())
+            + list(coe_by_year.keys())
+            + list(pcd_by_year.keys())
+            + list(wacc_by_year.keys())
+            + list(spread_by_year.keys())
+        ))
+
+        ub = _get_industry_beta(conn, cid, "unlevered_beta")
+        cab = _get_industry_beta(conn, cid, "cash_adjusted_beta")
+
+        ub_by_year = {int(y): ub for y in company_years} if company_years else {}
+        cab_by_year = {int(y): cab for y in company_years} if company_years else {}
+        ub_growth_by_year = {}
+        cab_growth_by_year = {}
+        if company_years and ub is not None:
+            ub_df = pd.DataFrame({"year": company_years, "beta": [ub] * len(company_years)})
+            _, ub_growth_by_year, _, _ = build_metric(ub_df, "beta", yr_start, yr_end, stdev_sample=sample)
+        if company_years and cab is not None:
+            cab_df = pd.DataFrame({"year": company_years, "beta": [cab] * len(company_years)})
+            _, cab_growth_by_year, _, _ = build_metric(cab_df, "beta", yr_start, yr_end, stdev_sample=sample)
+
+        # Track years across any metric present
+        for d in [
+            mc_by_year, td_by_year, eqd_by_year, mcd_by_year, roic_by_year, coe_by_year, pcd_by_year, wacc_by_year, spread_by_year,
+            ub_by_year, cab_by_year,
+        ]:
+            year_set.update(d.keys())
+
+        per_company.append(
+            {
+                "name": str(name),
+                "ticker": str(ticker),
+                "mc_by_year": mc_by_year,
+                "mc_growth_by_year": mc_growth_by_year,
+                "mc_median_growth": mc_med_g,
+                "mc_stdev_growth": mc_std_g,
+                "td_by_year": td_by_year,
+                "td_growth_by_year": td_growth_by_year,
+                "td_median_growth": td_med_g,
+                "td_stdev_growth": td_std_g,
+                "eqd_by_year": eqd_by_year,
+                "eqd_growth_by_year": eqd_growth_by_year,
+                "eqd_median_growth": eqd_med_g,
+                "eqd_stdev_growth": eqd_std_g,
+                "mcd_by_year": mcd_by_year,
+                "mcd_growth_by_year": mcd_growth_by_year,
+                "mcd_median_growth": mcd_med_g,
+                "mcd_stdev_growth": mcd_std_g,
+                "roic_by_year": roic_by_year,
+                "roic_growth_by_year": roic_growth_by_year,
+                "roic_median": roic_med_v,
+                "roic_stdev": roic_std_v,
+                "ub_by_year": ub_by_year,
+                "ub_growth_by_year": ub_growth_by_year,
+                "cab_by_year": cab_by_year,
+                "cab_growth_by_year": cab_growth_by_year,
+                "coe_by_year": coe_by_year,
+                "coe_growth_by_year": coe_growth_by_year,
+                "coe_median": coe_med_v,
+                "coe_stdev": coe_std_v,
+                "pcd_by_year": pcd_by_year,
+                "pcd_growth_by_year": pcd_growth_by_year,
+                "pcd_median": pcd_med_v,
+                "pcd_stdev": pcd_std_v,
+                "wacc_by_year": wacc_by_year,
+                "wacc_growth_by_year": wacc_growth_by_year,
+                "wacc_median": wacc_med_v,
+                "wacc_stdev": wacc_std_v,
+                "spread_by_year": spread_by_year,
+                "spread_growth_by_year": spread_growth_by_year,
+                "spread_median": spread_med_v,
+                "spread_stdev": spread_std_v,
+            }
+        )
+
+    if not per_company:
+        st.info("No annual Capital Structure data found for the selected companies in the chosen year range.")
+        return
+
+    year_cols = sorted(year_set)
+
+    def fmt_money(x: Optional[float]) -> str:
+        if x is None or pd.isna(x):
+            return "—"
+        try:
+            xv = float(x)
+        except Exception:
+            return str(x)
+        sign = "-" if xv < 0 else ""
+        xv = abs(xv)
+        if xv >= 1e9:
+            return f"{sign}{xv/1e9:.2f}B"
+        if xv >= 1e6:
+            return f"{sign}{xv/1e6:.2f}M"
+        if xv >= 1e3:
+            return f"{sign}{xv/1e3:.2f}K"
+        return f"{sign}{xv:.0f}"
+
+    def fmt_ratio(x: Optional[float]) -> str:
+        if x is None or pd.isna(x):
+            return "—"
+        try:
+            return f"{float(x):.2f}"
+        except Exception:
+            return str(x)
+
+    def fmt_pct_from_decimal(x: Optional[float]) -> str:
+        if x is None or pd.isna(x):
+            return "—"
+        try:
+            return f"{float(x) * 100.0:.2f}%"
+        except Exception:
+            return str(x)
+
+    def fmt_pct_points(x: Optional[float]) -> str:
+        # Stored as percentage points (e.g., 6.62 means 6.62%)
+        if x is None or pd.isna(x):
+            return "—"
+        try:
+            return f"{float(x):.2f}%"
+        except Exception:
+            return str(x)
+
+    st.markdown("---")
+
+    rows = []
+    for item in per_company:
+        # Market Cap
+        mc = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Market Cap",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            mc[y] = fmt_money(item["mc_by_year"].get(y))
+        rows.append(mc)
+
+        mcg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item.get("mc_median_growth")),
+            "Standard Deviation": fmt_pct_from_decimal(item.get("mc_stdev_growth")),
+        }
+        for y in year_cols:
+            gv = item["mc_growth_by_year"].get(y)
+            mcg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(mcg)
+
+        # Total Debt
+        td = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Total Debt",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            td[y] = fmt_money(item["td_by_year"].get(y))
+        rows.append(td)
+
+        tdg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item.get("td_median_growth")),
+            "Standard Deviation": fmt_pct_from_decimal(item.get("td_stdev_growth")),
+        }
+        for y in year_cols:
+            gv = item["td_growth_by_year"].get(y)
+            tdg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(tdg)
+
+        # Shareholder Equity / Total Debt
+        ed = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Shareholder Equity/Total Debt",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            ed[y] = fmt_ratio(item["eqd_by_year"].get(y))
+        rows.append(ed)
+
+        edg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item.get("eqd_median_growth")),
+            "Standard Deviation": fmt_pct_from_decimal(item.get("eqd_stdev_growth")),
+        }
+        for y in year_cols:
+            gv = item["eqd_growth_by_year"].get(y)
+            edg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(edg)
+
+        # Market Cap / Total Debt
+        md = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Market Cap/Total Debt",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            md[y] = fmt_ratio(item["mcd_by_year"].get(y))
+        rows.append(md)
+
+        mdg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item.get("mcd_median_growth")),
+            "Standard Deviation": fmt_pct_from_decimal(item.get("mcd_stdev_growth")),
+        }
+        for y in year_cols:
+            gv = item["mcd_growth_by_year"].get(y)
+            mdg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(mdg)
+
+        # ROIC% (median/std only for actual)
+        roic = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "ROIC%",
+            "Median": fmt_pct_points(item.get("roic_median")),
+            "Standard Deviation": fmt_pct_points(item.get("roic_stdev")),
+        }
+        for y in year_cols:
+            roic[y] = fmt_pct_points(item["roic_by_year"].get(y))
+        rows.append(roic)
+
+        roicg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            gv = item["roic_growth_by_year"].get(y)
+            roicg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(roicg)
+
+        # Unlevered Beta (Industry) (no median/std)
+        ub = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Unlevered Beta (Industry)",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            ub[y] = fmt_ratio(item["ub_by_year"].get(y))
+        rows.append(ub)
+
+        ubg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            gv = item["ub_growth_by_year"].get(y)
+            ubg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(ubg)
+
+        # Cash-Adjusted Beta (Industry) (no median/std)
+        cab = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Cash-Adjusted Beta (Industry)",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            cab[y] = fmt_ratio(item["cab_by_year"].get(y))
+        rows.append(cab)
+
+        cabg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            gv = item["cab_growth_by_year"].get(y)
+            cabg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(cabg)
+
+        # Cost of Equity % (median/std only for actual)
+        coe = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Cost of Equity %",
+            "Median": fmt_pct_points(item.get("coe_median")),
+            "Standard Deviation": fmt_pct_points(item.get("coe_stdev")),
+        }
+        for y in year_cols:
+            coe[y] = fmt_pct_points(item["coe_by_year"].get(y))
+        rows.append(coe)
+
+        coeg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            gv = item["coe_growth_by_year"].get(y)
+            coeg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(coeg)
+
+        # Pre-Tax Cost of Debt % (median/std only for actual)
+        pcd = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Pre-Tax Cost of Debt %",
+            "Median": fmt_pct_points(item.get("pcd_median")),
+            "Standard Deviation": fmt_pct_points(item.get("pcd_stdev")),
+        }
+        for y in year_cols:
+            pcd[y] = fmt_pct_points(item["pcd_by_year"].get(y))
+        rows.append(pcd)
+
+        pcdg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            gv = item["pcd_growth_by_year"].get(y)
+            pcdg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(pcdg)
+
+        # WACC % (median/std only for actual)
+        w = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Weighted Average Cost of Capital (WACC) %",
+            "Median": fmt_pct_points(item.get("wacc_median")),
+            "Standard Deviation": fmt_pct_points(item.get("wacc_stdev")),
+        }
+        for y in year_cols:
+            w[y] = fmt_pct_points(item["wacc_by_year"].get(y))
+        rows.append(w)
+
+        wg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            gv = item["wacc_growth_by_year"].get(y)
+            wg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(wg)
+
+        # Spread% (median/std only for actual)
+        sp = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Spread%",
+            "Median": fmt_pct_points(item.get("spread_median")),
+            "Standard Deviation": fmt_pct_points(item.get("spread_stdev")),
+        }
+        for y in year_cols:
+            sp[y] = fmt_pct_points(item["spread_by_year"].get(y))
+        rows.append(sp)
+
+        spg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            gv = item["spread_growth_by_year"].get(y)
+            spg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(spg)
+
+    ordered_cols = ["Company", "Ticker", "Key"] + year_cols + ["Median", "Standard Deviation"]
+    disp = pd.DataFrame(rows)
+    disp = disp.reindex(columns=ordered_cols)
+
+    # Visually "merge" Company/Ticker cells (Excel-like) by blanking repeated values
+    dup_mask = disp["Company"].eq(disp["Company"].shift())
+    disp.loc[dup_mask, ["Company", "Ticker"]] = ""
+
+    st.dataframe(disp, use_container_width=True)
+
+
+def _render_cf_reinvestment_key_data() -> None:
+    """Key Data sub-tab: Cash Flow & Reinvestment."""
+    st.subheader("Cash Flow & Reinvestment")
+
+    conn = get_db()
+    companies_df = list_companies(conn)
+    if companies_df.empty:
+        st.info("No companies in the database yet. Upload a spreadsheet under Equity Research → Data Upload.")
+        return
+
+    # Base selection: individual companies
+    all_company_options = [
+        f"{row.name} ({row.ticker}) [id={row.id}]" for _, row in companies_df.iterrows()
+    ]
+
+    # Default selection: companies not present in any bucket (same behavior as other Key Data tabs)
+    try:
+        bucket_df = pd.read_sql_query(
+            "SELECT DISTINCT company_id FROM company_group_members",
+            conn,
+        )
+        bucketed_ids = set(int(x) for x in bucket_df["company_id"].tolist()) if not bucket_df.empty else set()
+    except Exception:
+        bucketed_ids = set()
+
+    if bucketed_ids:
+        default_company_options = [
+            f"{row.name} ({row.ticker}) [id={row.id}]"
+            for _, row in companies_df.iterrows()
+            if int(row.id) not in bucketed_ids
+        ]
+    else:
+        default_company_options = all_company_options
+
+    # If a company was just ingested this session, override default to only that company
+    last_company_id = st.session_state.get("last_ingested_company_id")
+    if last_company_id is not None:
+        selected_label = None
+        for _, row in companies_df.iterrows():
+            if int(row.id) == int(last_company_id):
+                selected_label = f"{row.name} ({row.ticker}) [id={row.id}]"
+                break
+        if selected_label:
+            default_company_options = [selected_label]
+
+    options = st.multiselect(
+        "Companies to analyze",
+        options=all_company_options,
+        default=default_company_options,
+        key="keydata_cf_companies_select",
+    )
+
+    # Bucket definition: allow user to save current selection as a named bucket
+    bucket_col1, bucket_col2 = st.columns([3, 1])
+    with bucket_col1:
+        bucket_name = st.text_input(
+            "Save current selection as bucket (optional)",
+            placeholder="e.g. US_FCF_Machines",
+            key="keydata_cf_bucket_name_input",
+        )
+    with bucket_col2:
+        save_bucket = st.button("Save bucket", key="keydata_cf_save_bucket_button")
+
+    if save_bucket:
+        sel_company_ids = []
+        for opt in options:
+            m_sel = re.search(r"\[id=(\d+)\]$", opt)
+            if m_sel:
+                sel_company_ids.append(int(m_sel.group(1)))
+
+        if not bucket_name or not bucket_name.strip():
+            st.error("Please provide a non-empty bucket name.")
+        elif not sel_company_ids:
+            st.error("Please select at least one company before saving a bucket.")
+        else:
+            bname = bucket_name.strip()
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT OR IGNORE INTO company_groups(name) VALUES(?)",
+                (bname,),
+            )
+            cur.execute(
+                "SELECT id FROM company_groups WHERE name = ?",
+                (bname,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                st.error("Unexpected error while creating bucket.")
+            else:
+                gid = int(row[0])
+                # Append current selection to existing membership (keep existing companies in the bucket)
+                cur.executemany(
+                    "INSERT OR IGNORE INTO company_group_members(group_id, company_id) VALUES(?, ?)",
+                    [(gid, cid) for cid in sel_company_ids],
+                )
+                conn.commit()
+                st.success(f"Saved bucket '{bname}' with {len(sel_company_ids)} companies.")
+
+    # Bucket selection: use previously saved buckets to drive the analysis
+    groups_df = pd.read_sql_query(
+        "SELECT id, name FROM company_groups ORDER BY name",
+        conn,
+    )
+    bucket_names_selected = []
+    group_name_to_id: Dict[str, int] = {}
+    if not groups_df.empty:
+        group_name_to_id = {str(row["name"]): int(row["id"]) for _, row in groups_df.iterrows()}
+        bucket_names_selected = st.multiselect(
+            "Or select one or more saved buckets",
+            options=list(group_name_to_id.keys()),
+            key="keydata_cf_bucket_select",
+        )
+
+    yr_input = st.text_input(
+        "Year range (e.g., 'Recent - 2020' or '2023-2018')",
+        value="Recent - 2020",
+        key="keydata_cf_year_range",
+    )
+
+    stdev_mode = st.radio(
+        "Standard deviation mode",
+        ["Sample (ddof=1)", "Population (ddof=0)"],
+        horizontal=True,
+        key="keydata_cf_stdev_mode",
+    )
+    sample = (stdev_mode == "Sample (ddof=1)")
+
+    def parse_range(s: str, available_years: List[int]) -> Tuple[int, int]:
+        s = (s or "").strip()
+        if not available_years:
+            raise ValueError("No annual years available.")
+        most_recent = max(available_years)
+        m_recent = re.match(r"^recent\s*[-–]\s*(\d{4})$", s, flags=re.IGNORECASE)
+        m_two = re.match(r"^(\d{4})\s*[-–]\s*(\d{4})$", s)
+        if m_recent:
+            end = int(m_recent.group(1))
+            return most_recent, end
+        if m_two:
+            start, end = int(m_two.group(1)), int(m_two.group(2))
+            return start, end
+        raise ValueError("Could not parse the year range. Use 'Recent - YYYY' or 'YYYY-YYYY'.")
+
+    # Determine final set of company ids based on direct selection + buckets
+    selected_company_ids: List[int] = []
+    for opt in options:
+        m = re.search(r"\[id=(\d+)\]$", opt)
+        if m:
+            selected_company_ids.append(int(m.group(1)))
+
+    bucket_company_ids: List[int] = []
+    if bucket_names_selected:
+        group_ids = [group_name_to_id[name] for name in bucket_names_selected]
+        placeholders = ",".join(["?"] * len(group_ids))
+        bucket_df2 = pd.read_sql_query(
+            f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
+            conn,
+            params=group_ids,
+        )
+        if not bucket_df2.empty:
+            bucket_company_ids = [int(x) for x in bucket_df2["company_id"].tolist()]
+
+    all_company_ids = sorted(set(selected_company_ids + bucket_company_ids))
+    if not all_company_ids:
+        st.info("Select at least one company or a saved bucket to view Cash Flow & Reinvestment key data.")
+        return
+
+    def fmt_money(x: Optional[float]) -> str:
+        if x is None or pd.isna(x):
+            return "—"
+        try:
+            return f"{float(x):,.2f}"
+        except Exception:
+            return str(x)
+
+    def fmt_pct_from_decimal(x: Optional[float]) -> str:
+        if x is None or pd.isna(x):
+            return "—"
+        try:
+            return f"{float(x) * 100.0:.2f}%"
+        except Exception:
+            return str(x)
+
+    st.markdown("---")
+
+    def build_metric(
+        ann_df: pd.DataFrame,
+        value_col: str,
+        yr_start: int,
+        yr_end: int,
+        stdev_sample: bool,
+    ) -> Tuple[Dict[int, Optional[float]], Dict[int, Optional[float]], Optional[float], Optional[float]]:
+        """Return (values_by_year, yoy_growth_by_year, median_growth, stdev_growth)."""
+        if ann_df is None or ann_df.empty:
+            return {}, {}, None, None
+        df_m = ann_df.copy()
+        df_m = df_m[(df_m["year"] >= yr_end) & (df_m["year"] <= yr_start)].sort_values("year")
+        if df_m.empty or value_col not in df_m.columns:
+            return {}, {}, None, None
+
+        df_m["yoy_growth"] = pd.to_numeric(df_m[value_col], errors="coerce").astype(float).pct_change()
+        med_g, std_g = compute_growth_stats(
+            ann_df,
+            yr_start,
+            yr_end,
+            stdev_sample=stdev_sample,
+            value_col=value_col,
+        )
+
+        val_by_year = {int(y): (None if pd.isna(v) else float(v)) for y, v in zip(df_m["year"], df_m[value_col])}
+        growth_by_year = {
+            int(y): (None if pd.isna(g) else float(g)) for y, g in zip(df_m["year"], df_m["yoy_growth"])
+        }
+        return val_by_year, growth_by_year, med_g, std_g
+
+    def compute_value_stats(
+        ann_df: pd.DataFrame,
+        value_col: str,
+        yr_start: int,
+        yr_end: int,
+        stdev_sample: bool,
+    ) -> Tuple[Optional[float], Optional[float]]:
+        """Return (median_value, stdev_value) for a value column over the chosen year range."""
+        if ann_df is None or ann_df.empty or value_col not in ann_df.columns:
+            return None, None
+        df_v = ann_df.copy()
+        df_v = df_v[(df_v["year"] >= yr_end) & (df_v["year"] <= yr_start)].sort_values("year")
+        if df_v.empty:
+            return None, None
+        arr = pd.to_numeric(df_v[value_col], errors="coerce").dropna().astype(float).to_numpy()
+        if arr.size == 0:
+            return None, None
+        median = float(np.median(arr))
+        ddof = 1 if stdev_sample and arr.size > 1 else 0
+        stdev = float(np.std(arr, ddof=ddof)) if arr.size > 1 or ddof == 0 else None
+        return median, stdev
+
+    def any_available_years(conn_in: sqlite3.Connection, company_id: int) -> List[int]:
+        years: List[int] = []
+        for df in [
+            get_annual_fcff_series(conn_in, company_id),
+            get_annual_fcfe_series(conn_in, company_id),
+            get_annual_reinvestment_rate_series(conn_in, company_id),
+            get_annual_rd_spend_rate_series(conn_in, company_id),
+        ]:
+            if df is not None and not df.empty and "year" in df.columns:
+                years.extend([int(y) for y in df["year"].tolist() if pd.notna(y)])
+        return years
+
+    per_company = []
+    year_set = set()
+
+    for cid in all_company_ids:
+        # Ensure derived metrics exist in DB (safe to call repeatedly)
+        try:
+            compute_and_store_fcff_and_reinvestment_rate(conn, cid)
+        except Exception:
+            pass
+        try:
+            compute_and_store_fcfe(conn, cid)
+        except Exception:
+            pass
+        try:
+            compute_and_store_rd_spend_rate(conn, cid)
+        except Exception:
+            pass
+
+        years = any_available_years(conn, cid)
+        if not years:
+            continue
+
+        try:
+            yr_start, yr_end = parse_range(yr_input, years)
+            if yr_start < yr_end:
+                yr_start, yr_end = yr_end, yr_start
+        except Exception as e:
+            st.error(f"Year range error: {e}")
+            return
+
+        # Company label
+        rowc = companies_df[companies_df["id"] == cid]
+        if not rowc.empty:
+            name = rowc.iloc[0]["name"]
+            ticker = rowc.iloc[0]["ticker"]
+        else:
+            name = f"Company {cid}"
+            ticker = ""
+
+        # Pull required annual series
+        ann_fcff = get_annual_fcff_series(conn, cid)
+        ann_fcfe = get_annual_fcfe_series(conn, cid)
+        ann_rr = get_annual_reinvestment_rate_series(conn, cid)
+        ann_rd = get_annual_rd_spend_rate_series(conn, cid)
+
+        fcff_by_year, fcff_growth_by_year, fcff_med_g, fcff_std_g = build_metric(
+            ann_fcff, "fcff", yr_start, yr_end, stdev_sample=sample
+        )
+        fcfe_by_year, fcfe_growth_by_year, fcfe_med_g, fcfe_std_g = build_metric(
+            ann_fcfe, "fcfe", yr_start, yr_end, stdev_sample=sample
+        )
+
+        rr_by_year, rr_growth_by_year, _, _ = build_metric(
+            ann_rr, "reinvestment_rate", yr_start, yr_end, stdev_sample=sample
+        )
+        rr_med_v, rr_std_v = compute_value_stats(ann_rr, "reinvestment_rate", yr_start, yr_end, stdev_sample=sample)
+
+        rd_by_year, rd_growth_by_year, _, _ = build_metric(
+            ann_rd, "rd_spend_rate", yr_start, yr_end, stdev_sample=sample
+        )
+        rd_med_v, rd_std_v = compute_value_stats(ann_rd, "rd_spend_rate", yr_start, yr_end, stdev_sample=sample)
+
+        for d in [fcff_by_year, fcfe_by_year, rr_by_year, rd_by_year]:
+            year_set.update(d.keys())
+
+        per_company.append(
+            {
+                "name": str(name),
+                "ticker": str(ticker),
+                "fcff_by_year": fcff_by_year,
+                "fcff_growth_by_year": fcff_growth_by_year,
+                "fcff_median_growth": fcff_med_g,
+                "fcff_stdev_growth": fcff_std_g,
+                "fcfe_by_year": fcfe_by_year,
+                "fcfe_growth_by_year": fcfe_growth_by_year,
+                "fcfe_median_growth": fcfe_med_g,
+                "fcfe_stdev_growth": fcfe_std_g,
+                "rr_by_year": rr_by_year,
+                "rr_growth_by_year": rr_growth_by_year,
+                "rr_median": rr_med_v,
+                "rr_stdev": rr_std_v,
+                "rd_by_year": rd_by_year,
+                "rd_growth_by_year": rd_growth_by_year,
+                "rd_median": rd_med_v,
+                "rd_stdev": rd_std_v,
+            }
+        )
+
+    if not per_company:
+        st.info("No annual Cash Flow & Reinvestment data found for the selected companies in the chosen year range.")
+        return
+
+    year_cols = sorted(year_set)
+
+    rows = []
+    for item in per_company:
+        # FCFF
+        fcff = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "FCFF",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            fcff[y] = fmt_money(item["fcff_by_year"].get(y))
+        rows.append(fcff)
+
+        fcffg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item["fcff_median_growth"]),
+            "Standard Deviation": fmt_pct_from_decimal(item["fcff_stdev_growth"]),
+        }
+        for y in year_cols:
+            gv = item["fcff_growth_by_year"].get(y)
+            fcffg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(fcffg)
+
+        # FCFE
+        fcfe = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "FCFE",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            fcfe[y] = fmt_money(item["fcfe_by_year"].get(y))
+        rows.append(fcfe)
+
+        fcfe_g = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item["fcfe_median_growth"]),
+            "Standard Deviation": fmt_pct_from_decimal(item["fcfe_stdev_growth"]),
+        }
+        for y in year_cols:
+            gv = item["fcfe_growth_by_year"].get(y)
+            fcfe_g[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(fcfe_g)
+
+        # Reinvestment Rate % (median/std only for actual)
+        rr = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Reinvestment Rate %",
+            "Median": fmt_pct_from_decimal(item.get("rr_median")),
+            "Standard Deviation": fmt_pct_from_decimal(item.get("rr_stdev")),
+        }
+        for y in year_cols:
+            rr[y] = fmt_pct_from_decimal(item["rr_by_year"].get(y))
+        rows.append(rr)
+
+        rrg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            gv = item["rr_growth_by_year"].get(y)
+            rrg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(rrg)
+
+        # R&D Spend Rate % (median/std only for actual)
+        rd = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "R&D Spend Rate %",
+            "Median": fmt_pct_from_decimal(item.get("rd_median")),
+            "Standard Deviation": fmt_pct_from_decimal(item.get("rd_stdev")),
+        }
+        for y in year_cols:
+            rd[y] = fmt_pct_from_decimal(item["rd_by_year"].get(y))
+        rows.append(rd)
+
+        rdg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Key": "Growth%",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            gv = item["rd_growth_by_year"].get(y)
+            rdg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(rdg)
+
+    ordered_cols = ["Company", "Ticker", "Key"] + year_cols + ["Median", "Standard Deviation"]
+    disp = pd.DataFrame(rows)
+    disp = disp.reindex(columns=ordered_cols)
+
+    # Visually "merge" Company/Ticker cells (Excel-like) by blanking repeated values
     dup_mask = disp["Company"].eq(disp["Company"].shift())
     disp.loc[dup_mask, ["Company", "Ticker"]] = ""
 

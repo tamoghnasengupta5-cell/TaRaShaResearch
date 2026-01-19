@@ -68,13 +68,51 @@ def _inject_shell_css() -> None:
             padding-right: 10px !important;
           }
 
-          /* Keep tabs readable while the page is full-bleed */
-          [data-baseweb="tab-list"] {
-            gap: 0.75rem;
+          /* StockAnalysis-like tabs (applies to top-level tabs and nested sub-tabs) */
+          [data-testid="stTabs"] [data-baseweb="tab-list"] {
+            gap: 0.25rem;
             padding-left: 10px;
             padding-right: 10px;
+            border-bottom: 1px solid rgba(226, 232, 240, 1);
           }
 
+          [data-testid="stTabs"] button[role="tab"] {
+            background: transparent !important;
+            color: rgba(71, 85, 105, 1) !important;
+            font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Apple Color Emoji", "Segoe UI Emoji" !important;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            font-weight: 600 !important;
+            font-size: 0.95rem !important;
+            line-height: 1.15 !important;
+            padding: 0.55rem 0.75rem !important;
+            border: none !important;
+            border-bottom: 2px solid transparent !important;
+            border-radius: 0 !important;
+            margin: 0 !important;
+          }
+
+          [data-testid="stTabs"] button[role="tab"]:hover {
+            color: rgba(15, 23, 42, 1) !important;
+            background: rgba(241, 245, 249, 0.6) !important;
+          }
+
+          [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
+            color: rgba(15, 23, 42, 1) !important;
+            border-bottom: 2px solid rgba(59, 130, 246, 1) !important;
+            background: transparent !important;
+          }
+
+          [data-testid="stTabs"] button[role="tab"]:focus,
+          [data-testid="stTabs"] button[role="tab"]:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+          }
+
+          /* Disable BaseWeb underline so our border-bottom is the single source of truth */
+          [data-testid="stTabs"] div[data-baseweb="tab-highlight"] {
+            display: none !important;
+          }
 
           /* Header logo: reduce vertical real estate */
           div[data-testid="stImage"] {
@@ -101,15 +139,16 @@ def _inject_shell_css() -> None:
             }
 
             /* Make tabs horizontally scrollable instead of overflowing */
-            [data-baseweb="tab-list"] {
+            [data-testid="stTabs"] [data-baseweb="tab-list"] {
               gap: 0.45rem;
               overflow-x: auto;
               flex-wrap: nowrap;
               -webkit-overflow-scrolling: touch;
               padding-left: 6px;
               padding-right: 6px;
+              border-bottom: 1px solid rgba(226, 232, 240, 1);
             }
-            button[role="tab"] {
+            [data-testid="stTabs"] button[role="tab"] {
               flex: 0 0 auto;
               white-space: nowrap;
             }
