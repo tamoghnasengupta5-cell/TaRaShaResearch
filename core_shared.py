@@ -1,9 +1,9 @@
 import threading
-import sqlite3
 
 import streamlit as st
 
-from core_backend import get_conn, init_db
+from db_session import DbCompat, SessionLocal
+from core_backend import init_db
 
 # ---------------------------
 # Shared connection helper (Streamlit cached)
@@ -13,17 +13,16 @@ _DB_INIT_LOCK = threading.Lock()
 
 
 @st.cache_resource
-def _get_shared_conn() -> sqlite3.Connection:
+def _get_shared_session():
     """
-    One shared DB connection per app process.
-    This dramatically reduces 'database is locked' errors on Azure.
+    One shared DB session per app process.
     """
     with _DB_INIT_LOCK:
-        conn = get_conn()
-        init_db(conn)
-    return conn
+        session = SessionLocal()
+        init_db(session)
+    return DbCompat(session)
 
 
-def get_db() -> sqlite3.Connection:
-    """Get the shared SQLite connection."""
-    return _get_shared_conn()
+def get_db():
+    """Get the shared SQLAlchemy-backed DB compatibility wrapper."""
+    return _get_shared_session()

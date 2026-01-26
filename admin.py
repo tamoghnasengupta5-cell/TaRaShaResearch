@@ -145,7 +145,7 @@ def render_admin_tab():
     with tab_weights:
         st.subheader("Growth Weight Factors")
 
-        growth_df = pd.read_sql_query(
+        growth_df = read_df(
             "SELECT id, factor, weight FROM growth_weight_factors ORDER BY id",
             conn,
         )
@@ -166,20 +166,14 @@ def render_admin_tab():
 
             submitted_growth = st.form_submit_button("Save Growth Weights")
             if submitted_growth:
-                cur = conn.cursor()
-                for row_id, w in new_growth_weights.items():
-                    cur.execute(
-                        "UPDATE growth_weight_factors SET weight = ? WHERE id = ?",
-                        (w, row_id),
-                    )
-                conn.commit()
+                update_growth_weight_factors(conn, new_growth_weights)
                 st.success("Growth weight factors updated successfully.")
 
         st.markdown("---")
 
         st.subheader("Standard Deviation Weight Factors")
 
-        stddev_df = pd.read_sql_query(
+        stddev_df = read_df(
             "SELECT id, factor, weight FROM stddev_weight_factors ORDER BY id",
             conn,
         )
@@ -200,13 +194,7 @@ def render_admin_tab():
 
             submitted_stddev = st.form_submit_button("Save Standard Deviation Weights")
             if submitted_stddev:
-                cur = conn.cursor()
-                for row_id, w in new_stddev_weights.items():
-                    cur.execute(
-                        "UPDATE stddev_weight_factors SET weight = ? WHERE id = ?",
-                        (w, row_id),
-                    )
-                conn.commit()
+                update_stddev_weight_factors(conn, new_stddev_weights)
                 st.success("Standard deviation weight factors updated successfully.")
 
     # -----------------------------
@@ -216,7 +204,7 @@ def render_admin_tab():
         st.subheader("Bucket Management")
 
         # Summary of all buckets
-        buckets_df = pd.read_sql_query(
+        buckets_df = read_df(
             """
             SELECT g.id, g.name, COUNT(m.company_id) AS company_count
             FROM company_groups g
@@ -244,7 +232,7 @@ def render_admin_tab():
         bucket_names = buckets_df["name"].tolist()
 
         # Orphan companies: companies not assigned to any bucket
-        orphan_df = pd.read_sql_query(
+        orphan_df = read_df(
             """
             SELECT c.id, c.name, c.ticker
             FROM companies c
@@ -294,19 +282,9 @@ def render_admin_tab():
                             .tolist()
                         )
                         if ids:
-                            cur = conn.cursor()
-                            cur.execute(
-                                "SELECT id FROM company_groups WHERE name = ?",
-                                (target_bucket_name,),
-                            )
-                            row = cur.fetchone()
-                            if row is not None:
-                                target_gid = int(row[0])
-                                cur.executemany(
-                                    "INSERT OR IGNORE INTO company_group_members(group_id, company_id) VALUES(?, ?)",
-                                    [(target_gid, cid) for cid in ids],
-                                )
-                                conn.commit()
+                            target_gid = get_company_group_id(conn, target_bucket_name, create=False)
+                            if target_gid is not None:
+                                add_company_group_members(conn, target_gid, ids)
                                 st.success(
                                     f"Assigned {len(ids)} company(ies) to bucket '{target_bucket_name}'."
                                 )
@@ -321,7 +299,7 @@ def render_admin_tab():
         group_id = int(selected_row["id"])
 
         # Load companies in the selected bucket
-        members_df = pd.read_sql_query(
+        members_df = read_df(
             """
             SELECT c.id, c.name, c.ticker
             FROM company_group_members m
@@ -365,14 +343,7 @@ def render_admin_tab():
                 disabled=len(to_remove) == 0,
             ):
                 ids_to_delete = [label_to_id[lbl] for lbl in to_remove]
-                cur = conn.cursor()
-                placeholders = ",".join(["?"] * len(ids_to_delete))
-                cur.execute(
-                    f"DELETE FROM company_group_members "
-                    f"WHERE group_id = ? AND company_id IN ({placeholders})",
-                    [group_id, *ids_to_delete],
-                )
-                conn.commit()
+                remove_company_group_members(conn, group_id, ids_to_delete)
                 st.success(
                     f"Removed {len(ids_to_delete)} compan"
                     f"{'y' if len(ids_to_delete) == 1 else 'ies'} from bucket "
@@ -394,9 +365,7 @@ def render_admin_tab():
                 type="secondary",
                 disabled=not confirm_delete,
             ):
-                cur = conn.cursor()
-                cur.execute("DELETE FROM company_groups WHERE id = ?", (group_id,))
-                conn.commit()
+                delete_company_group(conn, group_id)
                 st.success(f"Bucket '{selected_bucket_name}' deleted.")
                 st.experimental_rerun()
     
@@ -410,7 +379,7 @@ def render_admin_tab():
             "When you add the ensuing year, the previous year becomes read-only automatically."
         )
 
-        rfr_df = pd.read_sql_query(
+        rfr_df = read_df(
             """
             SELECT
                 year,
@@ -480,23 +449,15 @@ def render_admin_tab():
 
                 save_latest = st.form_submit_button("Save latest-year rates")
                 if save_latest:
-                    cur = conn.cursor()
-                    cur.execute(
-                        """
-                        UPDATE risk_free_rates
-                        SET usa_rf = ?, india_rf = ?, china_rf = ?, japan_rf = ?, updated_at = ?
-                        WHERE year = ?
-                        """,
-                        (
-                            float(usa_new),
-                            float(india_new),
-                            float(china_new),
-                            float(japan_new),
-                            datetime.utcnow().isoformat(),
-                            int(latest_year),
-                        ),
+                    upsert_risk_free_rate(
+                        conn,
+                        int(latest_year),
+                        float(usa_new),
+                        float(india_new),
+                        float(china_new),
+                        float(japan_new),
+                        datetime.utcnow().isoformat(),
                     )
-                    conn.commit()
                     st.success(f"Saved risk-free rates for {latest_year}.")
                     st.experimental_rerun()
 
@@ -553,22 +514,15 @@ def render_admin_tab():
                         st.error(f"Please add only the ensuing year: {next_year}.")
                     else:
                         try:
-                            cur = conn.cursor()
-                            cur.execute(
-                                """
-                                INSERT INTO risk_free_rates(year, usa_rf, india_rf, china_rf, japan_rf, updated_at)
-                                VALUES(?, ?, ?, ?, ?, ?)
-                                """,
-                                (
-                                    int(next_year),
-                                    float(usa_add),
-                                    float(india_add),
-                                    float(china_add),
-                                    float(japan_add),
-                                    datetime.utcnow().isoformat(),
-                                ),
+                            upsert_risk_free_rate(
+                                conn,
+                                int(next_year),
+                                float(usa_add),
+                                float(india_add),
+                                float(china_add),
+                                float(japan_add),
+                                datetime.utcnow().isoformat(),
                             )
-                            conn.commit()
                             st.success(f"Added risk-free rates for {next_year}.")
                             st.experimental_rerun()
                         except Exception as e:
@@ -587,7 +541,7 @@ def render_admin_tab():
             "When you add the ensuing year, the previous year becomes read-only automatically."
         )
 
-        iapm_df = pd.read_sql_query(
+        iapm_df = read_df(
             """
             SELECT
                 year,
@@ -639,21 +593,13 @@ def render_admin_tab():
 
                 save_latest = st.form_submit_button("Save latest-year values")
                 if save_latest:
-                    cur = conn.cursor()
-                    cur.execute(
-                        """
-                        UPDATE index_annual_price_movement
-                        SET nasdaq_composite = ?, sp500 = ?, updated_at = ?
-                        WHERE year = ?
-                        """,
-                        (
-                            float(nas_new),
-                            float(sp_new),
-                            datetime.utcnow().isoformat(),
-                            int(latest_year),
-                        ),
+                    upsert_index_annual_price_movement(
+                        conn,
+                        int(latest_year),
+                        float(nas_new),
+                        float(sp_new),
+                        datetime.utcnow().isoformat(),
                     )
-                    conn.commit()
                     st.success(f"Saved index values for {latest_year}.")
                     st.experimental_rerun()
 
@@ -695,20 +641,13 @@ def render_admin_tab():
                         st.error(f"Please add only the ensuing year: {next_year}.")
                     else:
                         try:
-                            cur = conn.cursor()
-                            cur.execute(
-                                """
-                                INSERT INTO index_annual_price_movement(year, nasdaq_composite, sp500, updated_at)
-                                VALUES(?, ?, ?, ?)
-                                """,
-                                (
-                                    int(next_year),
-                                    float(nas_add),
-                                    float(sp_add),
-                                    datetime.utcnow().isoformat(),
-                                ),
+                            upsert_index_annual_price_movement(
+                                conn,
+                                int(next_year),
+                                float(nas_add),
+                                float(sp_add),
+                                datetime.utcnow().isoformat(),
                             )
-                            conn.commit()
                             st.success(f"Added index values for {next_year}.")
                             st.experimental_rerun()
                         except Exception as e:
@@ -722,7 +661,7 @@ def render_admin_tab():
         st.subheader("US Implied Equity Risk Premium")
         st.caption("Stored as % values in the database. Only the latest year is editable.")
 
-        erp_df = pd.read_sql_query(
+        erp_df = read_df(
             """
             SELECT
                 year AS year,
@@ -765,11 +704,12 @@ def render_admin_tab():
                 if save_btn:
                     try:
                         ts = datetime.utcnow().isoformat()
-                        conn.execute(
-                            "UPDATE implied_equity_risk_premium_usa SET implied_erp = ?, updated_at = ? WHERE year = ?",
-                            (float(new_erp), ts, int(latest_year)),
+                        update_implied_equity_risk_premium(
+                            conn,
+                            int(latest_year),
+                            float(new_erp),
+                            ts,
                         )
-                        conn.commit()
                         st.success(f"Saved implied equity risk premium for {latest_year}.")
                         st.experimental_rerun()
                     except Exception as e:
@@ -783,7 +723,7 @@ def render_admin_tab():
             "Values are stored as percentages. Edit the rate and notes, add/remove countries, then click Save."
         )
 
-        mctr_df = pd.read_sql_query(
+        mctr_df = read_df(
             """
             SELECT
                 country AS 'Country',
@@ -861,14 +801,8 @@ def render_admin_tab():
                                 )
                             )
 
-                        cur = conn.cursor()
                         # Rewrite the table to match the editor (supports add/edit/delete)
-                        cur.execute("DELETE FROM marginal_corporate_tax_rates")
-                        cur.executemany(
-                            "INSERT INTO marginal_corporate_tax_rates(country, effective_rate, notes, updated_at) VALUES(?, ?, ?, ?)",
-                            rows,
-                        )
-                        conn.commit()
+                        replace_marginal_corporate_tax_rates(conn, rows)
                         st.success("Saved marginal corporate tax rates.")
                         st.experimental_rerun()
 
@@ -885,7 +819,7 @@ def render_admin_tab():
             "Edit existing rows or add new bucket/sector combinations, then click Save."
         )
 
-        ib_df = pd.read_sql_query(
+        ib_df = read_df(
             """
             SELECT
                 user_industry_bucket AS "User's Industry Bucket",
@@ -962,22 +896,17 @@ def render_admin_tab():
                 st.error("Duplicate bucket + sector combinations found. Please make them unique.")
             else:
                 ts = datetime.utcnow().isoformat()
-                cur = conn.cursor()
-                cur.execute("DELETE FROM industry_betas")
-                cur.executemany(
-                    "INSERT INTO industry_betas(user_industry_bucket, mapped_sector, unlevered_beta, cash_adjusted_beta, updated_at) VALUES(?, ?, ?, ?, ?)",
-                    [
-                        (
-                            str(r["User's Industry Bucket"]),
-                            str(r["Mapped Sector"]),
-                            float(r["Unlevered Beta"]),
-                            float(r["Cash-Adjusted Beta"]),
-                            ts,
-                        )
-                        for _, r in df.iterrows()
-                    ],
-                )
-                conn.commit()
+                rows = [
+                    (
+                        str(r["User's Industry Bucket"]),
+                        str(r["Mapped Sector"]),
+                        float(r["Unlevered Beta"]),
+                        float(r["Cash-Adjusted Beta"]),
+                        ts,
+                    )
+                    for _, r in df.iterrows()
+                ]
+                replace_industry_betas(conn, rows)
                 st.success("Industry beta table saved.")
                 st.experimental_rerun()
 
@@ -989,7 +918,7 @@ def render_admin_tab():
             "across all annual/TTM tables. Bucket definitions and the companies themselves are **not** deleted."
         )
 
-        buckets_df = pd.read_sql_query(
+        buckets_df = read_df(
             "SELECT id, name FROM company_groups ORDER BY name",
             conn,
         )
@@ -1025,7 +954,7 @@ def render_admin_tab():
             ):
                 group_ids = [bucket_name_to_id[name] for name in selected_bucket_names]
                 placeholders = ",".join(["?"] * len(group_ids))
-                bucket_members_df = pd.read_sql_query(
+                bucket_members_df = read_df(
                     f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
                     conn,
                     params=group_ids,
@@ -1054,7 +983,7 @@ def render_admin_tab():
             )
 
             single_bucket_id = bucket_name_to_id.get(single_bucket_name)
-            members_df = pd.read_sql_query(
+            members_df = read_df(
                 """
                 SELECT DISTINCT c.id, c.name, c.ticker
                 FROM company_group_members m

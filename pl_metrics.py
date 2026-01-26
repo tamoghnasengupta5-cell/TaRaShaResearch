@@ -17,7 +17,7 @@ def render_pl_metrics_tab():
 
                 # Default selection: companies not present in any bucket
                 try:
-                    bucket_df = pd.read_sql_query(
+                    bucket_df = read_df(
                         "SELECT DISTINCT company_id FROM company_group_members",
                         conn,
                     )
@@ -80,31 +80,16 @@ def render_pl_metrics_tab():
                         st.error("Please select at least one company before saving a bucket.")
                     else:
                         bname = bucket_name.strip()
-                        cur = conn.cursor()
-                        # Create bucket if it does not exist
-                        cur.execute(
-                            "INSERT OR IGNORE INTO company_groups(name) VALUES(?)",
-                            (bname,),
-                        )
-                        cur.execute(
-                            "SELECT id FROM company_groups WHERE name = ?",
-                            (bname,),
-                        )
-                        row = cur.fetchone()
-                        if row is None:
+                        gid = get_company_group_id(conn, bname, create=True)
+                        if gid is None:
                             st.error("Unexpected error while creating bucket.")
                         else:
-                            gid = int(row[0])
                             # Append current selection to existing membership (keep existing companies in the bucket)
-                            cur.executemany(
-                                "INSERT OR IGNORE INTO company_group_members(group_id, company_id) VALUES(?, ?)",
-                                [(gid, cid) for cid in sel_company_ids],
-                            )
-                            conn.commit()
+                            add_company_group_members(conn, gid, sel_company_ids)
                             st.success(f"Saved bucket '{bname}' with {len(sel_company_ids)} companies.")
 
                 # Bucket selection: use previously saved buckets to drive the analysis
-                groups_df = pd.read_sql_query(
+                groups_df = read_df(
                     "SELECT id, name FROM company_groups ORDER BY name",
                     conn,
                 )
@@ -158,7 +143,7 @@ def render_pl_metrics_tab():
                 if bucket_names_selected:
                     group_ids = [group_name_to_id[name] for name in bucket_names_selected]
                     placeholders = ",".join(["?"] * len(group_ids))
-                    bucket_df = pd.read_sql_query(
+                    bucket_df = read_df(
                         f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
                         conn,
                         params=group_ids,
@@ -337,11 +322,11 @@ def render_pl_metrics_tab():
                 raise ValueError("Could not parse the year range. Use 'Recent - YYYY' or 'YYYY-YYYY'.")
 
             # Load weight factors once
-            growth_weights_df = pd.read_sql_query(
+            growth_weights_df = read_df(
                 "SELECT factor, weight FROM growth_weight_factors",
                 conn,
             )
-            stddev_weights_df = pd.read_sql_query(
+            stddev_weights_df = read_df(
                 "SELECT factor, weight FROM stddev_weight_factors",
                 conn,
             )
@@ -356,7 +341,7 @@ def render_pl_metrics_tab():
                 return None
 
             # Bucket-based company selection for P&L Score Dashboard
-            groups_df = pd.read_sql_query(
+            groups_df = read_df(
                 "SELECT id, name FROM company_groups ORDER BY name",
                 conn,
             )
@@ -379,7 +364,7 @@ def render_pl_metrics_tab():
                 group_ids = [group_name_to_id[name] for name in bucket_names_selected if name in group_name_to_id]
                 if group_ids:
                     placeholders = ",".join(["?"] * len(group_ids))
-                    bucket_members_df = pd.read_sql_query(
+                    bucket_members_df = read_df(
                         f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
                         conn,
                         params=group_ids,

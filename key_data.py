@@ -169,7 +169,7 @@ def _render_pl_key_data() -> None:
 
     # Default selection: companies not present in any bucket (same behavior as P&L Metrics)
     try:
-        bucket_df = pd.read_sql_query(
+        bucket_df = read_df(
             "SELECT DISTINCT company_id FROM company_group_members",
             conn,
         )
@@ -228,31 +228,16 @@ def _render_pl_key_data() -> None:
             st.error("Please select at least one company before saving a bucket.")
         else:
             bname = bucket_name.strip()
-            cur = conn.cursor()
-            # Create bucket if it does not exist
-            cur.execute(
-                "INSERT OR IGNORE INTO company_groups(name) VALUES(?)",
-                (bname,),
-            )
-            cur.execute(
-                "SELECT id FROM company_groups WHERE name = ?",
-                (bname,),
-            )
-            row = cur.fetchone()
-            if row is None:
+            gid = get_company_group_id(conn, bname, create=True)
+            if gid is None:
                 st.error("Unexpected error while creating bucket.")
             else:
-                gid = int(row[0])
                 # Append current selection to existing membership (keep existing companies in the bucket)
-                cur.executemany(
-                    "INSERT OR IGNORE INTO company_group_members(group_id, company_id) VALUES(?, ?)",
-                    [(gid, cid) for cid in sel_company_ids],
-                )
-                conn.commit()
+                add_company_group_members(conn, gid, sel_company_ids)
                 st.success(f"Saved bucket '{bname}' with {len(sel_company_ids)} companies.")
 
     # Bucket selection: use previously saved buckets to drive the analysis
-    groups_df = pd.read_sql_query(
+    groups_df = read_df(
         "SELECT id, name FROM company_groups ORDER BY name",
         conn,
     )
@@ -306,7 +291,7 @@ def _render_pl_key_data() -> None:
     if bucket_names_selected:
         group_ids = [group_name_to_id[name] for name in bucket_names_selected]
         placeholders = ",".join(["?"] * len(group_ids))
-        bucket_df2 = pd.read_sql_query(
+        bucket_df2 = read_df(
             f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
             conn,
             params=group_ids,
@@ -336,7 +321,7 @@ def _render_pl_key_data() -> None:
     # Build a horizontal table (years as columns) for the selected companies/buckets.
     # This keeps the same underlying calculations but pivots the display to match the requested layout.
     def get_annual_operating_income_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-        return pd.read_sql_query(
+        return read_df(
             """
             SELECT fiscal_year AS year, operating_income
             FROM operating_income_annual
@@ -726,7 +711,7 @@ def _render_bs_key_data() -> None:
 
     # Default selection: companies not present in any bucket (same behavior as P&L Metrics)
     try:
-        bucket_df = pd.read_sql_query(
+        bucket_df = read_df(
             "SELECT DISTINCT company_id FROM company_group_members",
             conn,
         )
@@ -774,31 +759,16 @@ def _render_bs_key_data() -> None:
         elif not sel_company_ids:
             st.error("Please select at least one company to save a bucket.")
         else:
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT OR IGNORE INTO company_groups(name) VALUES(?)",
-                (bname,),
-            )
-            conn.commit()
-            cur.execute(
-                "SELECT id FROM company_groups WHERE name = ?",
-                (bname,),
-            )
-            row = cur.fetchone()
-            if row is None:
+            gid = get_company_group_id(conn, bname, create=True)
+            if gid is None:
                 st.error("Unexpected error while creating bucket.")
             else:
-                gid = int(row[0])
                 # Append current selection to existing membership (keep existing companies in the bucket)
-                cur.executemany(
-                    "INSERT OR IGNORE INTO company_group_members(group_id, company_id) VALUES(?, ?)",
-                    [(gid, cid) for cid in sel_company_ids],
-                )
-                conn.commit()
+                add_company_group_members(conn, gid, sel_company_ids)
                 st.success(f"Saved bucket '{bname}' with {len(sel_company_ids)} companies.")
 
     # Bucket selection: use previously saved buckets to drive the analysis
-    groups_df = pd.read_sql_query(
+    groups_df = read_df(
         "SELECT id, name FROM company_groups ORDER BY name",
         conn,
     )
@@ -853,7 +823,7 @@ def _render_bs_key_data() -> None:
     if bucket_names_selected:
         group_ids = [group_name_to_id[name] for name in bucket_names_selected]
         placeholders = ",".join(["?"] * len(group_ids))
-        bucket_df2 = pd.read_sql_query(
+        bucket_df2 = read_df(
             f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
             conn,
             params=tuple(group_ids),
@@ -1300,7 +1270,7 @@ def _render_cs_spread_key_data() -> None:
 
     # Default selection: companies not present in any bucket (same behavior as other tabs)
     try:
-        bucket_df = pd.read_sql_query(
+        bucket_df = read_df(
             "SELECT DISTINCT company_id FROM company_group_members",
             conn,
         )
@@ -1359,30 +1329,16 @@ def _render_cs_spread_key_data() -> None:
             st.error("Please select at least one company before saving a bucket.")
         else:
             bname = bucket_name.strip()
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT OR IGNORE INTO company_groups(name) VALUES(?)",
-                (bname,),
-            )
-            cur.execute(
-                "SELECT id FROM company_groups WHERE name = ?",
-                (bname,),
-            )
-            row = cur.fetchone()
-            if row is None:
+            gid = get_company_group_id(conn, bname, create=True)
+            if gid is None:
                 st.error("Unexpected error while creating bucket.")
             else:
-                gid = int(row[0])
                 # Append current selection to existing membership (keep existing companies in the bucket)
-                cur.executemany(
-                    "INSERT OR IGNORE INTO company_group_members(group_id, company_id) VALUES(?, ?)",
-                    [(gid, cid) for cid in sel_company_ids],
-                )
-                conn.commit()
+                add_company_group_members(conn, gid, sel_company_ids)
                 st.success(f"Saved bucket '{bname}' with {len(sel_company_ids)} companies.")
 
     # Bucket selection: use previously saved buckets to drive the analysis
-    groups_df = pd.read_sql_query(
+    groups_df = read_df(
         "SELECT id, name FROM company_groups ORDER BY name",
         conn,
     )
@@ -1436,7 +1392,7 @@ def _render_cs_spread_key_data() -> None:
     if bucket_names_selected:
         group_ids = [group_name_to_id[name] for name in bucket_names_selected]
         placeholders = ",".join(["?"] * len(group_ids))
-        bucket_df2 = pd.read_sql_query(
+        bucket_df2 = read_df(
             f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
             conn,
             params=group_ids,
@@ -2144,7 +2100,7 @@ def _render_cf_reinvestment_key_data() -> None:
 
     # Default selection: companies not present in any bucket (same behavior as other Key Data tabs)
     try:
-        bucket_df = pd.read_sql_query(
+        bucket_df = read_df(
             "SELECT DISTINCT company_id FROM company_group_members",
             conn,
         )
@@ -2203,30 +2159,16 @@ def _render_cf_reinvestment_key_data() -> None:
             st.error("Please select at least one company before saving a bucket.")
         else:
             bname = bucket_name.strip()
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT OR IGNORE INTO company_groups(name) VALUES(?)",
-                (bname,),
-            )
-            cur.execute(
-                "SELECT id FROM company_groups WHERE name = ?",
-                (bname,),
-            )
-            row = cur.fetchone()
-            if row is None:
+            gid = get_company_group_id(conn, bname, create=True)
+            if gid is None:
                 st.error("Unexpected error while creating bucket.")
             else:
-                gid = int(row[0])
                 # Append current selection to existing membership (keep existing companies in the bucket)
-                cur.executemany(
-                    "INSERT OR IGNORE INTO company_group_members(group_id, company_id) VALUES(?, ?)",
-                    [(gid, cid) for cid in sel_company_ids],
-                )
-                conn.commit()
+                add_company_group_members(conn, gid, sel_company_ids)
                 st.success(f"Saved bucket '{bname}' with {len(sel_company_ids)} companies.")
 
     # Bucket selection: use previously saved buckets to drive the analysis
-    groups_df = pd.read_sql_query(
+    groups_df = read_df(
         "SELECT id, name FROM company_groups ORDER BY name",
         conn,
     )
@@ -2280,7 +2222,7 @@ def _render_cf_reinvestment_key_data() -> None:
     if bucket_names_selected:
         group_ids = [group_name_to_id[name] for name in bucket_names_selected]
         placeholders = ",".join(["?"] * len(group_ids))
-        bucket_df2 = pd.read_sql_query(
+        bucket_df2 = read_df(
             f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
             conn,
             params=group_ids,

@@ -9,20 +9,79 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from sqlalchemy import inspect
+
+import db_models
+from db_orm import (
+    Companies,
+    CompanyGroups,
+    CompanyGroupMembers,
+    GrowthWeightFactors,
+    StddevWeightFactors,
+    RiskFreeRates,
+    IndexAnnualPriceMovement,
+    ImpliedEquityRiskPremiumUsa,
+    MarginalCorporateTaxRates,
+    IndustryBetas,
+)
+from db_orm import (
+    RevenuesAnnual, RevenuesTtm,
+    OpMarginAnnual, OpMarginTtm,
+    PretaxIncomeAnnual, PretaxIncomeTtm,
+    NetIncomeAnnual, NetIncomeTtm,
+    EffTaxRateAnnual, EffTaxRateTtm,
+    EbitAnnual, EbitTtm,
+    InterestExpenseAnnual, InterestExpenseTtm,
+    OperatingIncomeAnnual, OperatingIncomeTtm,
+    NopatAnnual,
+    PriceChangeAnnual,
+    TotalAssetsAnnual, TotalAssetsTtm,
+    TotalCurrentLiabilitiesAnnual, TotalCurrentLiabilitiesTtm,
+    TotalLongTermLiabilitiesAnnual, TotalLongTermLiabilitiesTtm,
+    TotalDebtAnnual, TotalDebtTtm,
+    MarketCapitalizationAnnual,
+    RoicDirectUploadAnnual,
+    DebtEquityAnnual,
+    LeveredBetaAnnual,
+    TotalCurrentAssetsAnnual, TotalCurrentAssetsTtm,
+    CurrentDebtAnnual, CurrentDebtTtm,
+    CashAndCashEquivalentsAnnual, CashAndCashEquivalentsTtm,
+    LongTermInvestmentsAnnual, LongTermInvestmentsTtm,
+    CapitalEmployedAnnual,
+    InvestedCapitalAnnual,
+    ShareholdersEquityAnnual, ShareholdersEquityTtm,
+    RetainedEarningsAnnual, RetainedEarningsTtm,
+    ComprehensiveIncomeAnnual, ComprehensiveIncomeTtm,
+    AccumulatedProfitAnnual,
+    TotalEquityAnnual,
+    AverageEquityAnnual,
+    RoeAnnual,
+    RoceAnnual,
+    InterestCoverageAnnual,
+    InterestLoadAnnual,
+    DefaultSpreadAnnual,
+    NonCashWorkingCapitalAnnual,
+    RevenueYieldNonCashWorkingCapitalAnnual,
+    ResearchAndDevelopmentExpenseAnnual,
+    CapitalExpendituresAnnual,
+    DepreciationAmortizationAnnual,
+    NetDebtIssuedPaidAnnual,
+    FcffAnnual,
+    FcfeAnnual,
+    ReinvestmentRateAnnual,
+    RdSpendRateAnnual,
+)
+from db_config import get_sqlite_path, get_db_url, is_sqlite_url
+from db_session import DbCompat, execute, read_sql_df
 
 
 # ---------------------------
-# Database helpers (SQLite)
+# Database helpers (SQLite + Postgres)
 # ---------------------------
 
 def _is_azure_app_service() -> bool:
     """Detect Azure App Service environment."""
     return bool(os.environ.get("WEBSITE_SITE_NAME") or os.environ.get("WEBSITE_INSTANCE_ID"))
-
-
-def _repo_dir() -> str:
-    """Directory containing this code (and typically the seeded app.db committed to the repo)."""
-    return os.path.dirname(os.path.abspath(__file__))
 
 
 def get_db_path() -> str:
@@ -33,17 +92,7 @@ def get_db_path() -> str:
       2) Azure App Service default: $HOME/app.db (persistent disk)
       3) Local default: <repo_dir>/app.db
     """
-    env_path = (os.environ.get("TARASHA_DB_PATH") or "").strip()
-    if env_path:
-        if os.path.isabs(env_path):
-            return env_path
-        return os.path.join(_repo_dir(), env_path)
-
-    if _is_azure_app_service():
-        home = os.environ.get("HOME") or "/home"
-        return os.path.join(home, "app.db")
-
-    return os.path.join(_repo_dir(), "app.db")
+    return str(get_sqlite_path())
 
 
 # Guard seeding in multi-threaded / multi-request environments
@@ -75,6 +124,8 @@ def _sqlite_companies_count(db_path: str) -> int | None:
 
 def _seed_azure_db_if_needed(target_db_path: str) -> None:
     """On Azure, seed the persistent DB from the repo DB once (if needed)."""
+    if not is_sqlite_url(get_db_url()):
+        return
     if not _is_azure_app_service():
         return
 
@@ -89,7 +140,7 @@ def _seed_azure_db_if_needed(target_db_path: str) -> None:
         if target_db_path in _DB_SEED_STATUS:
             return
 
-        seed_db_path = os.path.join(_repo_dir(), "app.db")
+        seed_db_path = str(get_sqlite_path())
 
         # Nothing to seed from (repo DB not packaged / not committed)
         if not os.path.exists(seed_db_path):
@@ -146,20 +197,391 @@ def get_conn(db_path: str | None = None) -> sqlite3.Connection:
     return conn
 
 
-def _ensure_companies_country_column(conn: sqlite3.Connection) -> None:
+def _ensure_companies_country_column(conn) -> None:
     """Backwards-compatible schema migration: ensure companies.country exists and is populated."""
     try:
-        cur = conn.execute("PRAGMA table_info(companies)")
-        cols = [r[1] for r in cur.fetchall()]
+        inspector = inspect(conn.get_bind())
+        cols = [c["name"] for c in inspector.get_columns("companies")]
         if "country" not in cols:
-            conn.execute("ALTER TABLE companies ADD COLUMN country TEXT NOT NULL DEFAULT 'USA'")
+            execute(conn, "ALTER TABLE companies ADD COLUMN country TEXT NOT NULL DEFAULT 'USA'")
             conn.commit()
 
         # Backfill any blanks/nulls
-        conn.execute("UPDATE companies SET country = 'USA' WHERE country IS NULL OR TRIM(country) = ''")
+        execute(conn, "UPDATE companies SET country = 'USA' WHERE country IS NULL OR TRIM(country) = ''")
         conn.commit()
     except Exception:
         return
+
+
+def _read_df(sql: str, conn, params=None) -> pd.DataFrame:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        return read_sql_df(session, sql, params=params)
+    return pd.read_sql_query(sql, conn, params=params)
+
+
+def read_df(sql: str, conn, params=None) -> pd.DataFrame:
+    """Public helper for reading dataframes using the active DB backend."""
+    return _read_df(sql, conn, params=params)
+
+
+def get_company_group_id(conn, name: str, create: bool = False) -> Optional[int]:
+    """Return company_groups.id for the given name, optionally creating it."""
+    bname = (name or "").strip()
+    if not bname:
+        return None
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        row = session.query(CompanyGroups).filter(CompanyGroups.name == bname).first()
+        if row is not None:
+            return int(row.id)
+        if not create:
+            return None
+
+        obj = CompanyGroups(name=bname)
+        session.add(obj)
+        try:
+            session.flush()
+        except Exception:
+            session.rollback()
+            row = session.query(CompanyGroups).filter(CompanyGroups.name == bname).first()
+            if row is None:
+                return None
+            return int(row.id)
+        session.commit()
+        return int(obj.id)
+
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM company_groups WHERE name = ?", (bname,))
+    row = cur.fetchone()
+    if row is not None:
+        return int(row[0])
+    if not create:
+        return None
+
+    cur.execute(
+        "INSERT INTO company_groups(name) VALUES(?) ON CONFLICT DO NOTHING",
+        (bname,),
+    )
+    conn.commit()
+    cur.execute("SELECT id FROM company_groups WHERE name = ?", (bname,))
+    row = cur.fetchone()
+    if row is None:
+        return None
+    return int(row[0])
+
+
+def add_company_group_members(conn, group_id: int, company_ids: List[int]) -> int:
+    """Add company IDs to a group. Returns number of requested inserts."""
+    if not company_ids:
+        return 0
+    ids = sorted({int(x) for x in company_ids})
+    if not ids:
+        return 0
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = {
+            int(r[0])
+            for r in session.query(CompanyGroupMembers.company_id)
+            .filter(CompanyGroupMembers.group_id == group_id)
+            .filter(CompanyGroupMembers.company_id.in_(ids))
+            .all()
+        }
+        new_ids = [cid for cid in ids if cid not in existing]
+        if new_ids:
+            session.add_all(
+                [CompanyGroupMembers(group_id=group_id, company_id=cid) for cid in new_ids]
+            )
+            session.commit()
+        return len(ids)
+
+    cur = conn.cursor()
+    cur.executemany(
+        "INSERT INTO company_group_members(group_id, company_id) VALUES(?, ?) ON CONFLICT DO NOTHING",
+        [(group_id, cid) for cid in ids],
+    )
+    conn.commit()
+    return len(ids)
+
+
+def remove_company_group_members(conn, group_id: int, company_ids: List[int]) -> int:
+    """Remove company IDs from a group. Returns count of requested removals."""
+    if not company_ids:
+        return 0
+    ids = sorted({int(x) for x in company_ids})
+    if not ids:
+        return 0
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        session.query(CompanyGroupMembers).filter(
+            CompanyGroupMembers.group_id == group_id,
+            CompanyGroupMembers.company_id.in_(ids),
+        ).delete(synchronize_session=False)
+        session.commit()
+        return len(ids)
+
+    placeholders = ",".join(["?"] * len(ids))
+    cur = conn.cursor()
+    cur.execute(
+        f"DELETE FROM company_group_members WHERE group_id = ? AND company_id IN ({placeholders})",
+        [group_id, *ids],
+    )
+    conn.commit()
+    return len(ids)
+
+
+def delete_company_group(conn, group_id: int) -> None:
+    """Delete a company group by id."""
+    session = getattr(conn, "session", None)
+    if session is not None:
+        session.query(CompanyGroups).filter(CompanyGroups.id == group_id).delete()
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    cur.execute("DELETE FROM company_groups WHERE id = ?", (group_id,))
+    conn.commit()
+
+
+def update_growth_weight_factors(conn, weights: Dict[int, float]) -> None:
+    """Update growth_weight_factors weights by id."""
+    if not weights:
+        return
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for row_id, weight in weights.items():
+            obj = session.get(GrowthWeightFactors, int(row_id))
+            if obj is not None:
+                obj.weight = float(weight)
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for row_id, weight in weights.items():
+        cur.execute(
+            "UPDATE growth_weight_factors SET weight = ? WHERE id = ?",
+            (float(weight), int(row_id)),
+        )
+    conn.commit()
+
+
+def update_stddev_weight_factors(conn, weights: Dict[int, float]) -> None:
+    """Update stddev_weight_factors weights by id."""
+    if not weights:
+        return
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for row_id, weight in weights.items():
+            obj = session.get(StddevWeightFactors, int(row_id))
+            if obj is not None:
+                obj.weight = float(weight)
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for row_id, weight in weights.items():
+        cur.execute(
+            "UPDATE stddev_weight_factors SET weight = ? WHERE id = ?",
+            (float(weight), int(row_id)),
+        )
+    conn.commit()
+
+
+def upsert_risk_free_rate(
+    conn,
+    year: int,
+    usa_rf: float,
+    india_rf: float,
+    china_rf: float,
+    japan_rf: float,
+    updated_at: str,
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        obj = session.get(RiskFreeRates, int(year))
+        if obj is None:
+            obj = RiskFreeRates(
+                year=int(year),
+                usa_rf=float(usa_rf),
+                india_rf=float(india_rf),
+                china_rf=float(china_rf),
+                japan_rf=float(japan_rf),
+                updated_at=updated_at,
+            )
+            session.add(obj)
+        else:
+            obj.usa_rf = float(usa_rf)
+            obj.india_rf = float(india_rf)
+            obj.china_rf = float(china_rf)
+            obj.japan_rf = float(japan_rf)
+            obj.updated_at = updated_at
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE risk_free_rates
+        SET usa_rf = ?, india_rf = ?, china_rf = ?, japan_rf = ?, updated_at = ?
+        WHERE year = ?
+        """,
+        (float(usa_rf), float(india_rf), float(china_rf), float(japan_rf), updated_at, int(year)),
+    )
+    if cur.rowcount == 0:
+        cur.execute(
+            """
+            INSERT INTO risk_free_rates(year, usa_rf, india_rf, china_rf, japan_rf, updated_at)
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            (int(year), float(usa_rf), float(india_rf), float(china_rf), float(japan_rf), updated_at),
+        )
+    conn.commit()
+
+
+def upsert_index_annual_price_movement(
+    conn,
+    year: int,
+    nasdaq_composite: float,
+    sp500: float,
+    updated_at: str,
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        obj = session.get(IndexAnnualPriceMovement, int(year))
+        if obj is None:
+            obj = IndexAnnualPriceMovement(
+                year=int(year),
+                nasdaq_composite=float(nasdaq_composite),
+                sp500=float(sp500),
+                updated_at=updated_at,
+            )
+            session.add(obj)
+        else:
+            obj.nasdaq_composite = float(nasdaq_composite)
+            obj.sp500 = float(sp500)
+            obj.updated_at = updated_at
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE index_annual_price_movement
+        SET nasdaq_composite = ?, sp500 = ?, updated_at = ?
+        WHERE year = ?
+        """,
+        (float(nasdaq_composite), float(sp500), updated_at, int(year)),
+    )
+    if cur.rowcount == 0:
+        cur.execute(
+            """
+            INSERT INTO index_annual_price_movement(year, nasdaq_composite, sp500, updated_at)
+            VALUES(?, ?, ?, ?)
+            """,
+            (int(year), float(nasdaq_composite), float(sp500), updated_at),
+        )
+    conn.commit()
+
+
+def update_implied_equity_risk_premium(
+    conn,
+    year: int,
+    implied_erp: float,
+    updated_at: str,
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        obj = session.get(ImpliedEquityRiskPremiumUsa, int(year))
+        if obj is None:
+            obj = ImpliedEquityRiskPremiumUsa(
+                year=int(year),
+                implied_erp=float(implied_erp),
+                updated_at=updated_at,
+            )
+            session.add(obj)
+        else:
+            obj.implied_erp = float(implied_erp)
+            obj.updated_at = updated_at
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE implied_equity_risk_premium_usa SET implied_erp = ?, updated_at = ? WHERE year = ?",
+        (float(implied_erp), updated_at, int(year)),
+    )
+    if cur.rowcount == 0:
+        cur.execute(
+            "INSERT INTO implied_equity_risk_premium_usa(year, implied_erp, updated_at) VALUES(?, ?, ?)",
+            (int(year), float(implied_erp), updated_at),
+        )
+    conn.commit()
+
+
+def replace_marginal_corporate_tax_rates(
+    conn,
+    rows: List[Tuple[str, float, Optional[str], str]],
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        session.query(MarginalCorporateTaxRates).delete(synchronize_session=False)
+        session.add_all(
+            [
+                MarginalCorporateTaxRates(
+                    country=str(country),
+                    effective_rate=float(rate),
+                    notes=notes,
+                    updated_at=updated_at,
+                )
+                for country, rate, notes, updated_at in rows
+            ]
+        )
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    cur.execute("DELETE FROM marginal_corporate_tax_rates")
+    cur.executemany(
+        "INSERT INTO marginal_corporate_tax_rates(country, effective_rate, notes, updated_at) VALUES(?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+
+
+def replace_industry_betas(
+    conn,
+    rows: List[Tuple[str, str, float, float, str]],
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        session.query(IndustryBetas).delete(synchronize_session=False)
+        session.add_all(
+            [
+                IndustryBetas(
+                    user_industry_bucket=str(bucket),
+                    mapped_sector=str(sector),
+                    unlevered_beta=float(unlevered),
+                    cash_adjusted_beta=float(cash_adjusted),
+                    updated_at=updated_at,
+                )
+                for bucket, sector, unlevered, cash_adjusted, updated_at in rows
+            ]
+        )
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    cur.execute("DELETE FROM industry_betas")
+    cur.executemany(
+        "INSERT INTO industry_betas(user_industry_bucket, mapped_sector, unlevered_beta, cash_adjusted_beta, updated_at) VALUES(?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
 
 
 def _canonicalize_country(country: Optional[str]) -> str:
@@ -191,711 +613,22 @@ def _canonicalize_country(country: Optional[str]) -> str:
 def _get_company_country(conn: sqlite3.Connection, company_id: int) -> str:
     """Return the stored country for the company, falling back to USA."""
     try:
-        row = conn.execute("SELECT country FROM companies WHERE id = ?", (company_id,)).fetchone()
+        session = getattr(conn, "session", None)
+        if session is not None:
+            row = session.query(Companies.country).filter(Companies.id == company_id).first()
+        else:
+            row = conn.execute("SELECT country FROM companies WHERE id = ?", (company_id,)).fetchone()
         if row is not None and row[0] is not None and str(row[0]).strip():
             return _canonicalize_country(str(row[0]))
     except Exception:
         pass
     return "USA"
-def init_db(conn: sqlite3.Connection) -> None:
-    conn.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS companies (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            ticker TEXT NOT NULL,
-            country TEXT NOT NULL DEFAULT 'USA',
-            UNIQUE(name, ticker)
-        );
-
-        CREATE TABLE IF NOT EXISTS revenues_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            revenue REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS revenues_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            revenue REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- operating margin storage --- */
-        CREATE TABLE IF NOT EXISTS op_margin_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            margin REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS op_margin_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            margin REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- pretax income storage --- */
-        CREATE TABLE IF NOT EXISTS pretax_income_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            pretax_income REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS pretax_income_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            pretax_income REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- net income storage --- */
-        CREATE TABLE IF NOT EXISTS net_income_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            net_income REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS net_income_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            net_income REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- effective tax rate storage --- */
-        CREATE TABLE IF NOT EXISTS eff_tax_rate_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            eff_tax_rate REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS eff_tax_rate_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            eff_tax_rate REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- EBIT storage --- */
-        CREATE TABLE IF NOT EXISTS ebit_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            ebit REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS ebit_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            ebit REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        
-        /* --- Interest Expense storage --- */
-        CREATE TABLE IF NOT EXISTS interest_expense_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            interest_expense REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS interest_expense_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            interest_expense REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Operating Income storage --- */
-        CREATE TABLE IF NOT EXISTS operating_income_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            operating_income REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS operating_income_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            operating_income REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-/* --- NOPAT storage --- */
-        CREATE TABLE IF NOT EXISTS nopat_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            nopat REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-
-
-/* --- Balance Sheet: Total Assets storage --- */
-CREATE TABLE IF NOT EXISTS total_assets_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    total_assets REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS total_assets_ttm (
-    company_id INTEGER PRIMARY KEY,
-    as_of TEXT NOT NULL,
-    total_assets REAL NOT NULL,
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-/* --- Balance Sheet: Total Current Liabilities storage --- */
-CREATE TABLE IF NOT EXISTS total_current_liabilities_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    total_current_liabilities REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS total_current_liabilities_ttm (
-    company_id INTEGER PRIMARY KEY,
-    as_of TEXT NOT NULL,
-    total_current_liabilities REAL NOT NULL,
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-/* --- Balance Sheet: Total Long-Term Liabilities storage --- */
-CREATE TABLE IF NOT EXISTS total_long_term_liabilities_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    total_long_term_liabilities REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS total_long_term_liabilities_ttm (
-    company_id INTEGER PRIMARY KEY,
-    as_of TEXT NOT NULL,
-    total_long_term_liabilities REAL NOT NULL,
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-/* --- Balance Sheet: Total Debt storage --- */
-CREATE TABLE IF NOT EXISTS total_debt_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    total_debt REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS total_debt_ttm (
-    company_id INTEGER PRIMARY KEY,
-    as_of TEXT NOT NULL,
-    total_debt REAL NOT NULL,
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-
-
-/* --- Market Capitalization storage (from Ratios sheets) --- */
-CREATE TABLE IF NOT EXISTS market_capitalization_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    market_capitalization REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-
-/* --- ROIC storage (direct upload from Ratios sheets) --- */
-CREATE TABLE IF NOT EXISTS roic_direct_upload_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    roic_pct REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-/* --- Capital Structure: Debt/Equity storage (derived) --- */
-CREATE TABLE IF NOT EXISTS debt_equity_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    debt_equity REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-/* --- Capital Structure: Levered Beta storage (derived) --- */
-CREATE TABLE IF NOT EXISTS levered_beta_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    levered_beta REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-/* --- Capital Structure: Cost of Equity storage (derived) --- */
-CREATE TABLE IF NOT EXISTS cost_of_equity_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    cost_of_equity REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-
-
-
-/* --- Capital Structure: WACC storage (derived) --- */
-CREATE TABLE IF NOT EXISTS wacc_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    wacc REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-/* --- Capital Structure: ROIC - WACC Spread storage (derived) --- */
-CREATE TABLE IF NOT EXISTS roic_wacc_spread_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    spread_pct REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-/* --- Balance Sheet: Cash & Cash Equivalents storage --- */
-CREATE TABLE IF NOT EXISTS cash_and_cash_equivalents_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    cash_and_cash_equivalents REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS cash_and_cash_equivalents_ttm (
-    company_id INTEGER PRIMARY KEY,
-    as_of TEXT NOT NULL,
-    cash_and_cash_equivalents REAL NOT NULL,
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-/* --- Balance Sheet: Total Current Assets storage --- */
-CREATE TABLE IF NOT EXISTS total_current_assets_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    total_current_assets REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS total_current_assets_ttm (
-    company_id INTEGER PRIMARY KEY,
-    as_of TEXT NOT NULL,
-    total_current_assets REAL NOT NULL,
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-/* --- Balance Sheet: Current Debt storage --- */
-CREATE TABLE IF NOT EXISTS current_debt_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    current_debt REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS current_debt_ttm (
-    company_id INTEGER PRIMARY KEY,
-    as_of TEXT NOT NULL,
-    current_debt REAL NOT NULL,
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS non_cash_working_capital_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    non_cash_working_capital REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-CREATE TABLE IF NOT EXISTS revenue_yield_non_cash_working_capital_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    revenue_yield_ncwc REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-/* --- Cash Flow: CapEx & Depreciation/Amortization --- */
-CREATE TABLE IF NOT EXISTS research_and_development_expense_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    research_and_development_expense REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS capital_expenditures_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    capital_expenditures REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS depreciation_amortization_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    depreciation_amortization REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-
-CREATE TABLE IF NOT EXISTS net_debt_issued_paid_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    net_debt_issued_paid REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-/* --- Cash Flow: FCFF & Reinvestment Rate (computed) --- */
-CREATE TABLE IF NOT EXISTS fcfe_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    fcfe REAL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS fcff_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    fcff REAL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS reinvestment_rate_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    reinvestment_rate REAL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-
-
-CREATE TABLE IF NOT EXISTS rd_spend_rate_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    rd_spend_rate REAL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-/* --- Balance Sheet: Long-Term Investments storage --- */
-CREATE TABLE IF NOT EXISTS long_term_investments_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    long_term_investments REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS long_term_investments_ttm (
-    company_id INTEGER PRIMARY KEY,
-    as_of TEXT NOT NULL,
-    long_term_investments REAL NOT NULL,
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-/* --- Balance Sheet: Capital Employed storage --- */
-CREATE TABLE IF NOT EXISTS capital_employed_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    capital_employed REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-/* --- Balance Sheet: Invested Capital storage --- */
-CREATE TABLE IF NOT EXISTS invested_capital_annual (
-    company_id INTEGER NOT NULL,
-    fiscal_year INTEGER NOT NULL,
-    invested_capital REAL NOT NULL,
-    PRIMARY KEY (company_id, fiscal_year),
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
-        /* --- Balance Sheet: Shareholders Equity storage --- */
-        CREATE TABLE IF NOT EXISTS shareholders_equity_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            shareholders_equity REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS shareholders_equity_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            shareholders_equity REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Balance Sheet: Retained Earnings storage --- */
-        CREATE TABLE IF NOT EXISTS retained_earnings_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            retained_earnings REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS retained_earnings_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            retained_earnings REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Balance Sheet: Comprehensive Income storage --- */
-        CREATE TABLE IF NOT EXISTS comprehensive_income_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            comprehensive_income REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        CREATE TABLE IF NOT EXISTS comprehensive_income_ttm (
-            company_id INTEGER PRIMARY KEY,
-            as_of TEXT NOT NULL,
-            comprehensive_income REAL NOT NULL,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Balance Sheet: Accumulated Profit storage --- */
-        CREATE TABLE IF NOT EXISTS accumulated_profit_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            accumulated_profit REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        
-        /* --- Balance Sheet: Total Equity storage --- */
-        CREATE TABLE IF NOT EXISTS total_equity_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            total_equity REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Balance Sheet: Average Equity storage --- */
-        CREATE TABLE IF NOT EXISTS average_equity_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            average_equity REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Balance Sheet: ROE storage --- */
-        CREATE TABLE IF NOT EXISTS roe_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            roe REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Balance Sheet: ROCE storage --- */
-        CREATE TABLE IF NOT EXISTS roce_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            roce REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Balance Sheet: Interest Coverage Ratio storage --- */
-        CREATE TABLE IF NOT EXISTS interest_coverage_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            interest_coverage_ratio REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-        /* --- Balance Sheet: Interest Load %% storage --- */
-        CREATE TABLE IF NOT EXISTS interest_load_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            interest_load_pct REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Default Spread (synthetic, based on Interest Coverage Ratio) --- */
-        CREATE TABLE IF NOT EXISTS default_spread_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            default_spread REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-        /* --- Pre-Tax Cost of Debt (derived) --- */
-        CREATE TABLE IF NOT EXISTS pre_tax_cost_of_debt_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            pre_tax_cost_of_debt REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-
-
-
-
-
-        /* --- Price: Annual price change storage --- */
-        CREATE TABLE IF NOT EXISTS price_change_annual (
-            company_id INTEGER NOT NULL,
-            fiscal_year INTEGER NOT NULL,
-            price_change REAL NOT NULL,
-            PRIMARY KEY (company_id, fiscal_year),
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Company group storage --- */
-        CREATE TABLE IF NOT EXISTS company_groups (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE
-        );
-
-        CREATE TABLE IF NOT EXISTS company_group_members (
-            group_id INTEGER NOT NULL,
-            company_id INTEGER NOT NULL,
-            PRIMARY KEY (group_id, company_id),
-            FOREIGN KEY (group_id) REFERENCES company_groups(id) ON DELETE CASCADE,
-            FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-        );
-
-        /* --- Risk Free Rate: Annual 10Y Government Bond Yields (percent) --- */
-        CREATE TABLE IF NOT EXISTS risk_free_rates (
-            year INTEGER PRIMARY KEY,
-            usa_rf REAL NOT NULL,
-            india_rf REAL NOT NULL,
-            china_rf REAL NOT NULL,
-            japan_rf REAL NOT NULL,
-            updated_at TEXT
-        );
-        
-        
-        /* --- Index Annual Price Movement (percent) --- */
-        CREATE TABLE IF NOT EXISTS index_annual_price_movement (
-            year INTEGER PRIMARY KEY,
-            nasdaq_composite REAL NOT NULL,
-            sp500 REAL NOT NULL,
-            updated_at TEXT
-        );
-
-        /* --- Implied Equity Risk Premium: USA (percent) --- */
-        CREATE TABLE IF NOT EXISTS implied_equity_risk_premium_usa (
-            year INTEGER PRIMARY KEY,
-            implied_erp REAL NOT NULL,
-            notes TEXT,
-            updated_at TEXT
-        );
-
-
-
-
-        /* --- Country Risk Premium (percent) --- */
-        CREATE TABLE IF NOT EXISTS Country_Risk_Premium (
-            year INTEGER PRIMARY KEY,
-            india REAL NOT NULL,
-            china REAL NOT NULL,
-            japan REAL NOT NULL,
-            us REAL NOT NULL,
-            uk REAL NOT NULL,
-            uae REAL NOT NULL,
-            updated_at TEXT
-        );
-
-/* --- Marginal Corporate Tax Rate (percent) --- */
-        CREATE TABLE IF NOT EXISTS marginal_corporate_tax_rates (
-            country TEXT PRIMARY KEY,
-            effective_rate REAL NOT NULL,
-            notes TEXT,
-            updated_at TEXT
-        );
-
-        /* --- Industry Beta (per bucket and mapped sector) --- */
-        CREATE TABLE IF NOT EXISTS industry_betas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_industry_bucket TEXT NOT NULL,
-            mapped_sector TEXT NOT NULL,
-            unlevered_beta REAL NOT NULL,
-            cash_adjusted_beta REAL NOT NULL,
-            updated_at TEXT,
-            UNIQUE(user_industry_bucket, mapped_sector)
-        );
-
-        """
-    )
-    conn.commit()
+def init_db(conn) -> None:
+    db_models.metadata.create_all(conn.get_bind())
 
     # Backwards-compatible schema migration
     _ensure_companies_country_column(conn)
-
-    # Ensure admin weight tables exist
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS growth_weight_factors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            factor TEXT NOT NULL UNIQUE,
-            weight REAL NOT NULL
-        );
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS stddev_weight_factors (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            factor TEXT NOT NULL UNIQUE,
-            weight REAL NOT NULL
-        );
-        """
-    )
+    conn = DbCompat(conn)
 
     # Seed default rows if these tables are empty
     cur = conn.cursor()
@@ -1163,7 +896,7 @@ def compute_and_store_wacc(conn: sqlite3.Connection, company_id: int) -> None:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT OR REPLACE INTO wacc_annual(company_id, fiscal_year, wacc)
+            INSERT INTO wacc_annual(company_id, fiscal_year, wacc)
             SELECT
                 td.company_id,
                 td.fiscal_year,
@@ -1178,6 +911,7 @@ def compute_and_store_wacc(conn: sqlite3.Connection, company_id: int) -> None:
                 ON coe.company_id = td.company_id AND coe.fiscal_year = td.fiscal_year
             WHERE td.company_id = ?
               AND (td.total_debt + mc.market_capitalization) != 0.0
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET wacc=excluded.wacc
             """,
             (tax_rate, company_id),
         )
@@ -1203,7 +937,7 @@ def refresh_wacc_all_companies(conn: sqlite3.Connection) -> None:
 
 def get_annual_wacc_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
     """Retrieve the stored WACC series for a given company."""
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, wacc
         FROM wacc_annual
@@ -1223,12 +957,13 @@ def compute_and_store_roic_wacc_spread(conn: sqlite3.Connection, company_id: int
     try:
         conn.execute(
             """
-            INSERT OR REPLACE INTO roic_wacc_spread_annual (company_id, fiscal_year, spread_pct)
+            INSERT INTO roic_wacc_spread_annual (company_id, fiscal_year, spread_pct)
             SELECT r.company_id, r.fiscal_year, (r.roic_pct - w.wacc) AS spread_pct
             FROM roic_direct_upload_annual r
             JOIN wacc_annual w
                 ON w.company_id = r.company_id AND w.fiscal_year = r.fiscal_year
             WHERE r.company_id = ?
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET spread_pct=excluded.spread_pct
             """,
             (company_id,),
         )
@@ -1243,11 +978,12 @@ def refresh_roic_wacc_spread_all_companies(conn: sqlite3.Connection) -> None:
     try:
         conn.execute(
             """
-            INSERT OR REPLACE INTO roic_wacc_spread_annual (company_id, fiscal_year, spread_pct)
+            INSERT INTO roic_wacc_spread_annual (company_id, fiscal_year, spread_pct)
             SELECT r.company_id, r.fiscal_year, (r.roic_pct - w.wacc) AS spread_pct
             FROM roic_direct_upload_annual r
             JOIN wacc_annual w
                 ON w.company_id = r.company_id AND w.fiscal_year = r.fiscal_year
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET spread_pct=excluded.spread_pct
             """
         )
         conn.commit()
@@ -1257,7 +993,7 @@ def refresh_roic_wacc_spread_all_companies(conn: sqlite3.Connection) -> None:
 
 def get_annual_roic_wacc_spread_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
     """Retrieve the stored Spread series for a given company."""
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, spread_pct
         FROM roic_wacc_spread_annual
@@ -1809,12 +1545,23 @@ def upsert_company(conn: sqlite3.Connection, name: str, ticker: str, country: Op
     - country is stored in companies.country (canonicalized to the dropdown set).
     - If country is None, we do not overwrite any existing stored country.
     """
-    cur = conn.cursor()
-    cur.execute(
-        """INSERT OR IGNORE INTO companies(name, ticker) VALUES(?, ?)""", (name, ticker)
-    )
-    conn.commit()
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(Companies).filter(
+            Companies.name == name, Companies.ticker == ticker
+        ).one_or_none()
+        if existing is None:
+            existing = Companies(name=name, ticker=ticker, country=_canonicalize_country(country) if country else "USA")
+            session.add(existing)
+            session.flush()
+        elif country is not None:
+            existing.country = _canonicalize_country(country)
+        session.commit()
+        return int(existing.id)
 
+    cur = conn.cursor()
+    cur.execute("""INSERT INTO companies(name, ticker) VALUES(?, ?) ON CONFLICT DO NOTHING""", (name, ticker))
+    conn.commit()
     if country is not None:
         try:
             canonical = _canonicalize_country(country)
@@ -1825,13 +1572,26 @@ def upsert_company(conn: sqlite3.Connection, name: str, ticker: str, country: Op
             conn.commit()
         except Exception:
             pass
-
     cur.execute("SELECT id FROM companies WHERE name = ? AND ticker = ?", (name, ticker))
     row = cur.fetchone()
     assert row, "Company upsert failed."
     return int(row[0])
 
 def upsert_annual_revenues(conn: sqlite3.Connection, company_id: int, year_to_rev: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, rev in year_to_rev.items():
+            existing = session.query(RevenuesAnnual).filter(
+                RevenuesAnnual.company_id == company_id,
+                RevenuesAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(RevenuesAnnual(company_id=company_id, fiscal_year=year, revenue=rev))
+            else:
+                existing.revenue = rev
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, rev in year_to_rev.items():
         cur.execute(
@@ -1844,7 +1604,19 @@ def upsert_annual_revenues(conn: sqlite3.Connection, company_id: int, year_to_re
         )
     conn.commit()
 
+
 def upsert_ttm(conn: sqlite3.Connection, company_id: int, as_of: str, revenue: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(RevenuesTtm).filter(RevenuesTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(RevenuesTtm(company_id=company_id, as_of=as_of, revenue=revenue))
+        else:
+            existing.as_of = as_of
+            existing.revenue = revenue
+        session.commit()
+        return
+
     conn.execute(
         """
         INSERT INTO revenues_ttm(company_id, as_of, revenue)
@@ -1854,7 +1626,22 @@ def upsert_ttm(conn: sqlite3.Connection, company_id: int, as_of: str, revenue: f
     )
     conn.commit()
 
+
 def upsert_annual_op_margin(conn: sqlite3.Connection, company_id: int, year_to_margin: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, margin in year_to_margin.items():
+            existing = session.query(OpMarginAnnual).filter(
+                OpMarginAnnual.company_id == company_id,
+                OpMarginAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(OpMarginAnnual(company_id=company_id, fiscal_year=year, margin=margin))
+            else:
+                existing.margin = margin
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, margin in year_to_margin.items():
         cur.execute(
@@ -1866,7 +1653,19 @@ def upsert_annual_op_margin(conn: sqlite3.Connection, company_id: int, year_to_m
         )
     conn.commit()
 
+
 def upsert_ttm_op_margin(conn: sqlite3.Connection, company_id: int, as_of: str, margin: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(OpMarginTtm).filter(OpMarginTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(OpMarginTtm(company_id=company_id, as_of=as_of, margin=margin))
+        else:
+            existing.as_of = as_of
+            existing.margin = margin
+        session.commit()
+        return
+
     conn.execute(
         """
         INSERT INTO op_margin_ttm(company_id, as_of, margin)
@@ -1877,6 +1676,20 @@ def upsert_ttm_op_margin(conn: sqlite3.Connection, company_id: int, as_of: str, 
     conn.commit()
 
 def upsert_annual_pretax_income(conn: sqlite3.Connection, company_id: int, year_to_pretax: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_pretax.items():
+            existing = session.query(PretaxIncomeAnnual).filter(
+                PretaxIncomeAnnual.company_id == company_id,
+                PretaxIncomeAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(PretaxIncomeAnnual(company_id=company_id, fiscal_year=year, pretax_income=val))
+            else:
+                existing.pretax_income = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_pretax.items():
         cur.execute(
@@ -1888,7 +1701,19 @@ def upsert_annual_pretax_income(conn: sqlite3.Connection, company_id: int, year_
         )
     conn.commit()
 
+
 def upsert_ttm_pretax_income(conn: sqlite3.Connection, company_id: int, as_of: str, pretax: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(PretaxIncomeTtm).filter(PretaxIncomeTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(PretaxIncomeTtm(company_id=company_id, as_of=as_of, pretax_income=pretax))
+        else:
+            existing.as_of = as_of
+            existing.pretax_income = pretax
+        session.commit()
+        return
+
     conn.execute(
         """
         INSERT INTO pretax_income_ttm(company_id, as_of, pretax_income)
@@ -1899,7 +1724,7 @@ def upsert_ttm_pretax_income(conn: sqlite3.Connection, company_id: int, as_of: s
     conn.commit()
 
 def get_annual_pretax_income_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, pretax_income
         FROM pretax_income_annual
@@ -1909,6 +1734,20 @@ def get_annual_pretax_income_series(conn: sqlite3.Connection, company_id: int) -
     )
 
 def upsert_annual_net_income(conn: sqlite3.Connection, company_id: int, year_to_net: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_net.items():
+            existing = session.query(NetIncomeAnnual).filter(
+                NetIncomeAnnual.company_id == company_id,
+                NetIncomeAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(NetIncomeAnnual(company_id=company_id, fiscal_year=year, net_income=val))
+            else:
+                existing.net_income = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_net.items():
         cur.execute(
@@ -1921,7 +1760,19 @@ def upsert_annual_net_income(conn: sqlite3.Connection, company_id: int, year_to_
         )
     conn.commit()
 
+
 def upsert_ttm_net_income(conn: sqlite3.Connection, company_id: int, as_of: str, net_income: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(NetIncomeTtm).filter(NetIncomeTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(NetIncomeTtm(company_id=company_id, as_of=as_of, net_income=net_income))
+        else:
+            existing.as_of = as_of
+            existing.net_income = net_income
+        session.commit()
+        return
+
     conn.execute(
         """
         INSERT INTO net_income_ttm(company_id, as_of, net_income)
@@ -1932,7 +1783,7 @@ def upsert_ttm_net_income(conn: sqlite3.Connection, company_id: int, as_of: str,
     conn.commit()
 
 def get_annual_net_income_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, net_income
         FROM net_income_annual
@@ -1942,6 +1793,20 @@ def get_annual_net_income_series(conn: sqlite3.Connection, company_id: int) -> p
     )
 
 def upsert_annual_eff_tax_rate(conn: sqlite3.Connection, company_id: int, year_to_rate: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_rate.items():
+            existing = session.query(EffTaxRateAnnual).filter(
+                EffTaxRateAnnual.company_id == company_id,
+                EffTaxRateAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(EffTaxRateAnnual(company_id=company_id, fiscal_year=year, eff_tax_rate=val))
+            else:
+                existing.eff_tax_rate = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_rate.items():
         cur.execute(
@@ -1954,7 +1819,19 @@ def upsert_annual_eff_tax_rate(conn: sqlite3.Connection, company_id: int, year_t
         )
     conn.commit()
 
+
 def upsert_ttm_eff_tax_rate(conn: sqlite3.Connection, company_id: int, as_of: str, eff_tax_rate: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(EffTaxRateTtm).filter(EffTaxRateTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(EffTaxRateTtm(company_id=company_id, as_of=as_of, eff_tax_rate=eff_tax_rate))
+        else:
+            existing.as_of = as_of
+            existing.eff_tax_rate = eff_tax_rate
+        session.commit()
+        return
+
     conn.execute(
         """
         INSERT INTO eff_tax_rate_ttm(company_id, as_of, eff_tax_rate)
@@ -1965,6 +1842,20 @@ def upsert_ttm_eff_tax_rate(conn: sqlite3.Connection, company_id: int, as_of: st
     conn.commit()
 
 def upsert_annual_ebit(conn: sqlite3.Connection, company_id: int, year_to_ebit: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_ebit.items():
+            existing = session.query(EbitAnnual).filter(
+                EbitAnnual.company_id == company_id,
+                EbitAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(EbitAnnual(company_id=company_id, fiscal_year=year, ebit=val))
+            else:
+                existing.ebit = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_ebit.items():
         cur.execute(
@@ -1977,7 +1868,19 @@ def upsert_annual_ebit(conn: sqlite3.Connection, company_id: int, year_to_ebit: 
         )
     conn.commit()
 
+
 def upsert_ttm_ebit(conn: sqlite3.Connection, company_id: int, as_of: str, ebit: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(EbitTtm).filter(EbitTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(EbitTtm(company_id=company_id, as_of=as_of, ebit=ebit))
+        else:
+            existing.as_of = as_of
+            existing.ebit = ebit
+        session.commit()
+        return
+
     conn.execute(
         """
         INSERT INTO ebit_ttm(company_id, as_of, ebit)
@@ -1989,6 +1892,20 @@ def upsert_ttm_ebit(conn: sqlite3.Connection, company_id: int, as_of: str, ebit:
 
 
 def upsert_annual_interest_expense(conn: sqlite3.Connection, company_id: int, year_to_interest: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_interest.items():
+            existing = session.query(InterestExpenseAnnual).filter(
+                InterestExpenseAnnual.company_id == company_id,
+                InterestExpenseAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(InterestExpenseAnnual(company_id=company_id, fiscal_year=year, interest_expense=val))
+            else:
+                existing.interest_expense = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_interest.items():
         cur.execute(
@@ -2001,7 +1918,19 @@ def upsert_annual_interest_expense(conn: sqlite3.Connection, company_id: int, ye
         )
     conn.commit()
 
+
 def upsert_ttm_interest_expense(conn: sqlite3.Connection, company_id: int, as_of: str, interest_expense: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(InterestExpenseTtm).filter(InterestExpenseTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(InterestExpenseTtm(company_id=company_id, as_of=as_of, interest_expense=interest_expense))
+        else:
+            existing.as_of = as_of
+            existing.interest_expense = interest_expense
+        session.commit()
+        return
+
     conn.execute(
         """
         INSERT INTO interest_expense_ttm(company_id, as_of, interest_expense)
@@ -2013,6 +1942,20 @@ def upsert_ttm_interest_expense(conn: sqlite3.Connection, company_id: int, as_of
     conn.commit()
 
 def upsert_annual_operating_income(conn: sqlite3.Connection, company_id: int, year_to_operating_income: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_operating_income.items():
+            existing = session.query(OperatingIncomeAnnual).filter(
+                OperatingIncomeAnnual.company_id == company_id,
+                OperatingIncomeAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(OperatingIncomeAnnual(company_id=company_id, fiscal_year=year, operating_income=val))
+            else:
+                existing.operating_income = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_operating_income.items():
         cur.execute(
@@ -2025,7 +1968,19 @@ def upsert_annual_operating_income(conn: sqlite3.Connection, company_id: int, ye
         )
     conn.commit()
 
+
 def upsert_ttm_operating_income(conn: sqlite3.Connection, company_id: int, as_of: str, operating_income: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(OperatingIncomeTtm).filter(OperatingIncomeTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(OperatingIncomeTtm(company_id=company_id, as_of=as_of, operating_income=operating_income))
+        else:
+            existing.as_of = as_of
+            existing.operating_income = operating_income
+        session.commit()
+        return
+
     conn.execute(
         """
         INSERT INTO operating_income_ttm(company_id, as_of, operating_income)
@@ -2037,6 +1992,20 @@ def upsert_ttm_operating_income(conn: sqlite3.Connection, company_id: int, as_of
     conn.commit()
 
 def upsert_annual_nopat(conn: sqlite3.Connection, company_id: int, year_to_nopat: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_nopat.items():
+            existing = session.query(NopatAnnual).filter(
+                NopatAnnual.company_id == company_id,
+                NopatAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(NopatAnnual(company_id=company_id, fiscal_year=year, nopat=val))
+            else:
+                existing.nopat = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_nopat.items():
         cur.execute(
@@ -2050,7 +2019,7 @@ def upsert_annual_nopat(conn: sqlite3.Connection, company_id: int, year_to_nopat
     conn.commit()
 
 def get_annual_nopat_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, nopat
         FROM nopat_annual
@@ -2063,6 +2032,21 @@ def get_annual_nopat_series(conn: sqlite3.Connection, company_id: int) -> pd.Dat
 
 
 def upsert_annual_price_change(conn: sqlite3.Connection, company_id: int, year_to_price_change: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_price_change.items():
+            existing = session.query(PriceChangeAnnual).filter(
+                PriceChangeAnnual.company_id == company_id,
+                PriceChangeAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(PriceChangeAnnual(company_id=company_id, fiscal_year=year, price_change=val))
+            else:
+                existing.price_change = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_price_change.items():
         cur.execute(
@@ -2077,7 +2061,7 @@ def upsert_annual_price_change(conn: sqlite3.Connection, company_id: int, year_t
 
 
 def get_annual_price_change_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, price_change
         FROM price_change_annual
@@ -2090,6 +2074,21 @@ def get_annual_price_change_series(conn: sqlite3.Connection, company_id: int) ->
 
 
 def upsert_annual_total_assets(conn: sqlite3.Connection, company_id: int, year_to_ta: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_ta.items():
+            existing = session.query(TotalAssetsAnnual).filter(
+                TotalAssetsAnnual.company_id == company_id,
+                TotalAssetsAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(TotalAssetsAnnual(company_id=company_id, fiscal_year=year, total_assets=val))
+            else:
+                existing.total_assets = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_ta.items():
         cur.execute(
@@ -2101,6 +2100,18 @@ def upsert_annual_total_assets(conn: sqlite3.Connection, company_id: int, year_t
     conn.commit()
 
 def upsert_ttm_total_assets(conn: sqlite3.Connection, company_id: int, as_of: str, total_assets: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(TotalAssetsTtm).filter(TotalAssetsTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(TotalAssetsTtm(company_id=company_id, as_of=as_of, total_assets=total_assets))
+        else:
+            existing.as_of = as_of
+            existing.total_assets = total_assets
+        session.commit()
+        return
+
+    
     conn.execute(
         "INSERT INTO total_assets_ttm(company_id, as_of, total_assets) "
         "VALUES(?, ?, ?) "
@@ -2110,6 +2121,21 @@ def upsert_ttm_total_assets(conn: sqlite3.Connection, company_id: int, as_of: st
     conn.commit()
 
 def upsert_annual_total_current_liabilities(conn: sqlite3.Connection, company_id: int, year_to_tcl: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_tcl.items():
+            existing = session.query(TotalCurrentLiabilitiesAnnual).filter(
+                TotalCurrentLiabilitiesAnnual.company_id == company_id,
+                TotalCurrentLiabilitiesAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(TotalCurrentLiabilitiesAnnual(company_id=company_id, fiscal_year=year, total_current_liabilities=val))
+            else:
+                existing.total_current_liabilities = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_tcl.items():
         cur.execute(
@@ -2121,6 +2147,18 @@ def upsert_annual_total_current_liabilities(conn: sqlite3.Connection, company_id
     conn.commit()
 
 def upsert_ttm_total_current_liabilities(conn: sqlite3.Connection, company_id: int, as_of: str, total_current_liabilities: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(TotalCurrentLiabilitiesTtm).filter(TotalCurrentLiabilitiesTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(TotalCurrentLiabilitiesTtm(company_id=company_id, as_of=as_of, total_current_liabilities=total_current_liabilities))
+        else:
+            existing.as_of = as_of
+            existing.total_current_liabilities = total_current_liabilities
+        session.commit()
+        return
+
+    
     conn.execute(
         "INSERT INTO total_current_liabilities_ttm(company_id, as_of, total_current_liabilities) "
         "VALUES(?, ?, ?) "
@@ -2130,6 +2168,21 @@ def upsert_ttm_total_current_liabilities(conn: sqlite3.Connection, company_id: i
     conn.commit()
 
 def upsert_annual_total_long_term_liabilities(conn: sqlite3.Connection, company_id: int, year_to_tltl: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_tltl.items():
+            existing = session.query(TotalLongTermLiabilitiesAnnual).filter(
+                TotalLongTermLiabilitiesAnnual.company_id == company_id,
+                TotalLongTermLiabilitiesAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(TotalLongTermLiabilitiesAnnual(company_id=company_id, fiscal_year=year, total_long_term_liabilities=val))
+            else:
+                existing.total_long_term_liabilities = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_tltl.items():
         cur.execute(
@@ -2141,6 +2194,18 @@ def upsert_annual_total_long_term_liabilities(conn: sqlite3.Connection, company_
     conn.commit()
 
 def upsert_ttm_total_long_term_liabilities(conn: sqlite3.Connection, company_id: int, as_of: str, total_long_term_liabilities: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(TotalLongTermLiabilitiesTtm).filter(TotalLongTermLiabilitiesTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(TotalLongTermLiabilitiesTtm(company_id=company_id, as_of=as_of, total_long_term_liabilities=total_long_term_liabilities))
+        else:
+            existing.as_of = as_of
+            existing.total_long_term_liabilities = total_long_term_liabilities
+        session.commit()
+        return
+
+    
     conn.execute(
         "INSERT INTO total_long_term_liabilities_ttm(company_id, as_of, total_long_term_liabilities) "
         "VALUES(?, ?, ?) "
@@ -2150,6 +2215,21 @@ def upsert_ttm_total_long_term_liabilities(conn: sqlite3.Connection, company_id:
     conn.commit()
 
 def upsert_annual_total_debt(conn: sqlite3.Connection, company_id: int, year_to_debt: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_debt.items():
+            existing = session.query(TotalDebtAnnual).filter(
+                TotalDebtAnnual.company_id == company_id,
+                TotalDebtAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(TotalDebtAnnual(company_id=company_id, fiscal_year=year, total_debt=val))
+            else:
+                existing.total_debt = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_debt.items():
         cur.execute(
@@ -2161,6 +2241,18 @@ def upsert_annual_total_debt(conn: sqlite3.Connection, company_id: int, year_to_
     conn.commit()
 
 def upsert_ttm_total_debt(conn: sqlite3.Connection, company_id: int, as_of: str, total_debt: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(TotalDebtTtm).filter(TotalDebtTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(TotalDebtTtm(company_id=company_id, as_of=as_of, total_debt=total_debt))
+        else:
+            existing.as_of = as_of
+            existing.total_debt = total_debt
+        session.commit()
+        return
+
+    
     conn.execute(
         "INSERT INTO total_debt_ttm(company_id, as_of, total_debt) "
         "VALUES(?, ?, ?) "
@@ -2171,7 +2263,7 @@ def upsert_ttm_total_debt(conn: sqlite3.Connection, company_id: int, as_of: str,
 
 
 def get_annual_total_debt_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, total_debt
         FROM total_debt_annual
@@ -2184,7 +2276,7 @@ def get_annual_total_debt_series(conn: sqlite3.Connection, company_id: int) -> p
 
 
 def get_annual_market_capitalization_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, market_capitalization
         FROM market_capitalization_annual
@@ -2197,7 +2289,7 @@ def get_annual_market_capitalization_series(conn: sqlite3.Connection, company_id
 
 
 def get_annual_roic_direct_upload_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, roic_pct
         FROM roic_direct_upload_annual
@@ -2213,6 +2305,20 @@ def get_annual_roic_direct_upload_series(conn: sqlite3.Connection, company_id: i
 def upsert_annual_market_capitalization(
     conn: sqlite3.Connection, company_id: int, year_to_market_cap: Dict[int, float]
 ) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_market_cap.items():
+            existing = session.query(MarketCapitalizationAnnual).filter(
+                MarketCapitalizationAnnual.company_id == company_id,
+                MarketCapitalizationAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(MarketCapitalizationAnnual(company_id=company_id, fiscal_year=year, market_capitalization=val))
+            else:
+                existing.market_capitalization = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_market_cap.items():
         cur.execute(
@@ -2228,6 +2334,20 @@ def upsert_annual_roic_direct_upload(
     conn: sqlite3.Connection, company_id: int, year_to_roic_pct: Dict[int, float]
 ) -> None:
     """Upsert ROIC values (percentage points) that were directly uploaded from the spreadsheet."""
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_roic_pct.items():
+            existing = session.query(RoicDirectUploadAnnual).filter(
+                RoicDirectUploadAnnual.company_id == company_id,
+                RoicDirectUploadAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(RoicDirectUploadAnnual(company_id=company_id, fiscal_year=year, roic_pct=val))
+            else:
+                existing.roic_pct = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_roic_pct.items():
         cur.execute(
@@ -2246,6 +2366,20 @@ def upsert_annual_debt_equity(conn: sqlite3.Connection, company_id: int, year_to
     Debt/Equity is defined as:
         Total Debt / (Shareholders Equity + Retained Earnings + Comprehensive Income)
     """
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_de.items():
+            existing = session.query(DebtEquityAnnual).filter(
+                DebtEquityAnnual.company_id == company_id,
+                DebtEquityAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(DebtEquityAnnual(company_id=company_id, fiscal_year=year, debt_equity=float(val)))
+            else:
+                existing.debt_equity = float(val)
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_de.items():
         cur.execute(
@@ -2260,7 +2394,7 @@ def upsert_annual_debt_equity(conn: sqlite3.Connection, company_id: int, year_to
 
 
 def get_annual_debt_equity_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, debt_equity
         FROM debt_equity_annual
@@ -2276,6 +2410,20 @@ def upsert_annual_levered_beta(conn: sqlite3.Connection, company_id: int, year_t
 
     Levered Beta(y) = Unlevered Beta(bucket) * (1 + (1 - tax_rate) * Debt/Equity(y))
     """
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_beta.items():
+            existing = session.query(LeveredBetaAnnual).filter(
+                LeveredBetaAnnual.company_id == company_id,
+                LeveredBetaAnnual.fiscal_year == int(year),
+            ).one_or_none()
+            if existing is None:
+                session.add(LeveredBetaAnnual(company_id=company_id, fiscal_year=int(year), levered_beta=float(val)))
+            else:
+                existing.levered_beta = float(val)
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_beta.items():
         cur.execute(
@@ -2290,7 +2438,7 @@ def upsert_annual_levered_beta(conn: sqlite3.Connection, company_id: int, year_t
 
 
 def get_annual_levered_beta_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, levered_beta
         FROM levered_beta_annual
@@ -2303,6 +2451,20 @@ def get_annual_levered_beta_series(conn: sqlite3.Connection, company_id: int) ->
 
 
 def upsert_annual_total_current_assets(conn: sqlite3.Connection, company_id: int, year_to_tca: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_tca.items():
+            existing = session.query(TotalCurrentAssetsAnnual).filter(
+                TotalCurrentAssetsAnnual.company_id == company_id,
+                TotalCurrentAssetsAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(TotalCurrentAssetsAnnual(company_id=company_id, fiscal_year=year, total_current_assets=val))
+            else:
+                existing.total_current_assets = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_tca.items():
         cur.execute(
@@ -2313,7 +2475,19 @@ def upsert_annual_total_current_assets(conn: sqlite3.Connection, company_id: int
         )
     conn.commit()
 
+
 def upsert_ttm_total_current_assets(conn: sqlite3.Connection, company_id: int, as_of: str, total_current_assets: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(TotalCurrentAssetsTtm).filter(TotalCurrentAssetsTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(TotalCurrentAssetsTtm(company_id=company_id, as_of=as_of, total_current_assets=total_current_assets))
+        else:
+            existing.as_of = as_of
+            existing.total_current_assets = total_current_assets
+        session.commit()
+        return
+
     conn.execute(
         "INSERT INTO total_current_assets_ttm(company_id, as_of, total_current_assets) "
         "VALUES(?, ?, ?) "
@@ -2323,6 +2497,20 @@ def upsert_ttm_total_current_assets(conn: sqlite3.Connection, company_id: int, a
     conn.commit()
 
 def upsert_annual_current_debt(conn: sqlite3.Connection, company_id: int, year_to_cd: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_cd.items():
+            existing = session.query(CurrentDebtAnnual).filter(
+                CurrentDebtAnnual.company_id == company_id,
+                CurrentDebtAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(CurrentDebtAnnual(company_id=company_id, fiscal_year=year, current_debt=val))
+            else:
+                existing.current_debt = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_cd.items():
         cur.execute(
@@ -2333,7 +2521,19 @@ def upsert_annual_current_debt(conn: sqlite3.Connection, company_id: int, year_t
         )
     conn.commit()
 
+
 def upsert_ttm_current_debt(conn: sqlite3.Connection, company_id: int, as_of: str, current_debt: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(CurrentDebtTtm).filter(CurrentDebtTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(CurrentDebtTtm(company_id=company_id, as_of=as_of, current_debt=current_debt))
+        else:
+            existing.as_of = as_of
+            existing.current_debt = current_debt
+        session.commit()
+        return
+
     conn.execute(
         "INSERT INTO current_debt_ttm(company_id, as_of, current_debt) "
         "VALUES(?, ?, ?) "
@@ -2343,6 +2543,20 @@ def upsert_ttm_current_debt(conn: sqlite3.Connection, company_id: int, as_of: st
     conn.commit()
 
 def upsert_annual_cash_and_cash_equivalents(conn: sqlite3.Connection, company_id: int, year_to_cash: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_cash.items():
+            existing = session.query(CashAndCashEquivalentsAnnual).filter(
+                CashAndCashEquivalentsAnnual.company_id == company_id,
+                CashAndCashEquivalentsAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(CashAndCashEquivalentsAnnual(company_id=company_id, fiscal_year=year, cash_and_cash_equivalents=val))
+            else:
+                existing.cash_and_cash_equivalents = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_cash.items():
         cur.execute(
@@ -2353,7 +2567,19 @@ def upsert_annual_cash_and_cash_equivalents(conn: sqlite3.Connection, company_id
         )
     conn.commit()
 
+
 def upsert_ttm_cash_and_cash_equivalents(conn: sqlite3.Connection, company_id: int, as_of: str, cash_and_cash_equivalents: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(CashAndCashEquivalentsTtm).filter(CashAndCashEquivalentsTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(CashAndCashEquivalentsTtm(company_id=company_id, as_of=as_of, cash_and_cash_equivalents=cash_and_cash_equivalents))
+        else:
+            existing.as_of = as_of
+            existing.cash_and_cash_equivalents = cash_and_cash_equivalents
+        session.commit()
+        return
+
     conn.execute(
         "INSERT INTO cash_and_cash_equivalents_ttm(company_id, as_of, cash_and_cash_equivalents) "
         "VALUES(?, ?, ?) "
@@ -2363,6 +2589,20 @@ def upsert_ttm_cash_and_cash_equivalents(conn: sqlite3.Connection, company_id: i
     conn.commit()
 
 def upsert_annual_long_term_investments(conn: sqlite3.Connection, company_id: int, year_to_lti: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_lti.items():
+            existing = session.query(LongTermInvestmentsAnnual).filter(
+                LongTermInvestmentsAnnual.company_id == company_id,
+                LongTermInvestmentsAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(LongTermInvestmentsAnnual(company_id=company_id, fiscal_year=year, long_term_investments=val))
+            else:
+                existing.long_term_investments = val
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, val in year_to_lti.items():
         cur.execute(
@@ -2373,7 +2613,19 @@ def upsert_annual_long_term_investments(conn: sqlite3.Connection, company_id: in
         )
     conn.commit()
 
+
 def upsert_ttm_long_term_investments(conn: sqlite3.Connection, company_id: int, as_of: str, long_term_investments: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(LongTermInvestmentsTtm).filter(LongTermInvestmentsTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(LongTermInvestmentsTtm(company_id=company_id, as_of=as_of, long_term_investments=long_term_investments))
+        else:
+            existing.as_of = as_of
+            existing.long_term_investments = long_term_investments
+        session.commit()
+        return
+
     conn.execute(
         "INSERT INTO long_term_investments_ttm(company_id, as_of, long_term_investments) "
         "VALUES(?, ?, ?) "
@@ -2383,6 +2635,21 @@ def upsert_ttm_long_term_investments(conn: sqlite3.Connection, company_id: int, 
     conn.commit()
 
 def upsert_annual_capital_employed(conn: sqlite3.Connection, company_id: int, year_to_ce: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_ce.items():
+            existing = session.query(CapitalEmployedAnnual).filter(
+                CapitalEmployedAnnual.company_id == company_id,
+                CapitalEmployedAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(CapitalEmployedAnnual(company_id=company_id, fiscal_year=year, capital_employed=val))
+            else:
+                existing.capital_employed = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_ce.items():
         cur.execute(
@@ -2394,6 +2661,21 @@ def upsert_annual_capital_employed(conn: sqlite3.Connection, company_id: int, ye
     conn.commit()
 
 def upsert_annual_invested_capital(conn: sqlite3.Connection, company_id: int, year_to_ic: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_ic.items():
+            existing = session.query(InvestedCapitalAnnual).filter(
+                InvestedCapitalAnnual.company_id == company_id,
+                InvestedCapitalAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(InvestedCapitalAnnual(company_id=company_id, fiscal_year=year, invested_capital=val))
+            else:
+                existing.invested_capital = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_ic.items():
         cur.execute(
@@ -2406,6 +2688,21 @@ def upsert_annual_invested_capital(conn: sqlite3.Connection, company_id: int, ye
 
 
 def upsert_annual_shareholders_equity(conn: sqlite3.Connection, company_id: int, year_to_equity: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_equity.items():
+            existing = session.query(ShareholdersEquityAnnual).filter(
+                ShareholdersEquityAnnual.company_id == company_id,
+                ShareholdersEquityAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(ShareholdersEquityAnnual(company_id=company_id, fiscal_year=year, shareholders_equity=val))
+            else:
+                existing.shareholders_equity = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_equity.items():
         cur.execute(
@@ -2419,6 +2716,18 @@ def upsert_annual_shareholders_equity(conn: sqlite3.Connection, company_id: int,
     conn.commit()
 
 def upsert_ttm_shareholders_equity(conn: sqlite3.Connection, company_id: int, as_of: str, equity: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(ShareholdersEquityTtm).filter(ShareholdersEquityTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(ShareholdersEquityTtm(company_id=company_id, as_of=as_of, shareholders_equity=equity))
+        else:
+            existing.as_of = as_of
+            existing.shareholders_equity = equity
+        session.commit()
+        return
+
+    
     conn.execute(
         """
         INSERT INTO shareholders_equity_ttm(company_id, as_of, shareholders_equity)
@@ -2431,7 +2740,7 @@ def upsert_ttm_shareholders_equity(conn: sqlite3.Connection, company_id: int, as
 
 
 def get_annual_shareholders_equity_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, shareholders_equity
         FROM shareholders_equity_annual
@@ -2443,6 +2752,21 @@ def get_annual_shareholders_equity_series(conn: sqlite3.Connection, company_id: 
     )
 
 def upsert_annual_retained_earnings(conn: sqlite3.Connection, company_id: int, year_to_re: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_re.items():
+            existing = session.query(RetainedEarningsAnnual).filter(
+                RetainedEarningsAnnual.company_id == company_id,
+                RetainedEarningsAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(RetainedEarningsAnnual(company_id=company_id, fiscal_year=year, retained_earnings=val))
+            else:
+                existing.retained_earnings = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_re.items():
         cur.execute(
@@ -2456,6 +2780,18 @@ def upsert_annual_retained_earnings(conn: sqlite3.Connection, company_id: int, y
     conn.commit()
 
 def upsert_ttm_retained_earnings(conn: sqlite3.Connection, company_id: int, as_of: str, retained_earnings: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(RetainedEarningsTtm).filter(RetainedEarningsTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(RetainedEarningsTtm(company_id=company_id, as_of=as_of, retained_earnings=retained_earnings))
+        else:
+            existing.as_of = as_of
+            existing.retained_earnings = retained_earnings
+        session.commit()
+        return
+
+    
     conn.execute(
         """
         INSERT INTO retained_earnings_ttm(company_id, as_of, retained_earnings)
@@ -2468,7 +2804,7 @@ def upsert_ttm_retained_earnings(conn: sqlite3.Connection, company_id: int, as_o
 
 
 def get_annual_retained_earnings_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, retained_earnings
         FROM retained_earnings_annual
@@ -2480,6 +2816,21 @@ def get_annual_retained_earnings_series(conn: sqlite3.Connection, company_id: in
     )
 
 def upsert_annual_comprehensive_income(conn: sqlite3.Connection, company_id: int, year_to_ci: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_ci.items():
+            existing = session.query(ComprehensiveIncomeAnnual).filter(
+                ComprehensiveIncomeAnnual.company_id == company_id,
+                ComprehensiveIncomeAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(ComprehensiveIncomeAnnual(company_id=company_id, fiscal_year=year, comprehensive_income=val))
+            else:
+                existing.comprehensive_income = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_ci.items():
         cur.execute(
@@ -2493,6 +2844,18 @@ def upsert_annual_comprehensive_income(conn: sqlite3.Connection, company_id: int
     conn.commit()
 
 def upsert_ttm_comprehensive_income(conn: sqlite3.Connection, company_id: int, as_of: str, comprehensive_income: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(ComprehensiveIncomeTtm).filter(ComprehensiveIncomeTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(ComprehensiveIncomeTtm(company_id=company_id, as_of=as_of, comprehensive_income=comprehensive_income))
+        else:
+            existing.as_of = as_of
+            existing.comprehensive_income = comprehensive_income
+        session.commit()
+        return
+
+    
     conn.execute(
         """
         INSERT INTO comprehensive_income_ttm(company_id, as_of, comprehensive_income)
@@ -2505,7 +2868,7 @@ def upsert_ttm_comprehensive_income(conn: sqlite3.Connection, company_id: int, a
 
 
 def get_annual_comprehensive_income_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, comprehensive_income
         FROM comprehensive_income_annual
@@ -2517,6 +2880,21 @@ def get_annual_comprehensive_income_series(conn: sqlite3.Connection, company_id:
     )
 
 def upsert_annual_accumulated_profit(conn: sqlite3.Connection, company_id: int, year_to_accumulated: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_accumulated.items():
+            existing = session.query(AccumulatedProfitAnnual).filter(
+                AccumulatedProfitAnnual.company_id == company_id,
+                AccumulatedProfitAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(AccumulatedProfitAnnual(company_id=company_id, fiscal_year=year, accumulated_profit=val))
+            else:
+                existing.accumulated_profit = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_accumulated.items():
         cur.execute(
@@ -2530,7 +2908,7 @@ def upsert_annual_accumulated_profit(conn: sqlite3.Connection, company_id: int, 
     conn.commit()
 
 def get_annual_accumulated_profit_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, accumulated_profit
         FROM accumulated_profit_annual
@@ -2543,6 +2921,21 @@ def get_annual_accumulated_profit_series(conn: sqlite3.Connection, company_id: i
 
 
 def upsert_annual_total_equity(conn: sqlite3.Connection, company_id: int, year_to_total: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_total.items():
+            existing = session.query(TotalEquityAnnual).filter(
+                TotalEquityAnnual.company_id == company_id,
+                TotalEquityAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(TotalEquityAnnual(company_id=company_id, fiscal_year=year, total_equity=val))
+            else:
+                existing.total_equity = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_total.items():
         cur.execute(
@@ -2557,6 +2950,21 @@ def upsert_annual_total_equity(conn: sqlite3.Connection, company_id: int, year_t
 
 
 def upsert_annual_average_equity(conn: sqlite3.Connection, company_id: int, year_to_avg: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_avg.items():
+            existing = session.query(AverageEquityAnnual).filter(
+                AverageEquityAnnual.company_id == company_id,
+                AverageEquityAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(AverageEquityAnnual(company_id=company_id, fiscal_year=year, average_equity=val))
+            else:
+                existing.average_equity = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_avg.items():
         cur.execute(
@@ -2571,6 +2979,21 @@ def upsert_annual_average_equity(conn: sqlite3.Connection, company_id: int, year
 
 
 def upsert_annual_roe(conn: sqlite3.Connection, company_id: int, year_to_roe: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_roe.items():
+            existing = session.query(RoeAnnual).filter(
+                RoeAnnual.company_id == company_id,
+                RoeAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(RoeAnnual(company_id=company_id, fiscal_year=year, roe=val))
+            else:
+                existing.roe = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_roe.items():
         cur.execute(
@@ -2585,7 +3008,7 @@ def upsert_annual_roe(conn: sqlite3.Connection, company_id: int, year_to_roe: Di
 
 
 def get_annual_roe_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, roe
         FROM roe_annual
@@ -2600,6 +3023,21 @@ def get_annual_roe_series(conn: sqlite3.Connection, company_id: int) -> pd.DataF
 
 
 def upsert_annual_roce(conn: sqlite3.Connection, company_id: int, year_to_roce: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_roce.items():
+            existing = session.query(RoceAnnual).filter(
+                RoceAnnual.company_id == company_id,
+                RoceAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(RoceAnnual(company_id=company_id, fiscal_year=year, roce=val))
+            else:
+                existing.roce = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_roce.items():
         cur.execute(
@@ -2614,7 +3052,7 @@ def upsert_annual_roce(conn: sqlite3.Connection, company_id: int, year_to_roce: 
 
 
 def get_annual_roce_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, roce
         FROM roce_annual
@@ -2628,6 +3066,21 @@ def get_annual_roce_series(conn: sqlite3.Connection, company_id: int) -> pd.Data
 
 
 def upsert_annual_interest_coverage(conn: sqlite3.Connection, company_id: int, year_to_ratio: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_ratio.items():
+            existing = session.query(InterestCoverageAnnual).filter(
+                InterestCoverageAnnual.company_id == company_id,
+                InterestCoverageAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(InterestCoverageAnnual(company_id=company_id, fiscal_year=year, interest_coverage_ratio=val))
+            else:
+                existing.interest_coverage_ratio = val
+        session.commit()
+        return
+
+    
     cur = conn.cursor()
     for year, val in year_to_ratio.items():
         cur.execute(
@@ -2641,7 +3094,7 @@ def upsert_annual_interest_coverage(conn: sqlite3.Connection, company_id: int, y
     conn.commit()
 
 def get_annual_interest_coverage_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, interest_coverage_ratio
         FROM interest_coverage_annual
@@ -2654,11 +3107,30 @@ def get_annual_interest_coverage_series(conn: sqlite3.Connection, company_id: in
 
 
 def list_companies(conn: sqlite3.Connection) -> pd.DataFrame:
-    return pd.read_sql_query("SELECT id, name, ticker FROM companies ORDER BY name", conn)
+    session = getattr(conn, "session", None)
+    if session is not None:
+        rows = session.query(Companies.id, Companies.name, Companies.ticker).order_by(Companies.name).all()
+        return pd.DataFrame(rows, columns=["id", "name", "ticker"])
+    return _read_df("SELECT id, name, ticker FROM companies ORDER BY name", conn)
 
 
 
 def upsert_annual_interest_load(conn: sqlite3.Connection, company_id: int, year_to_load: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_load.items():
+            existing = session.query(InterestLoadAnnual).filter(
+                InterestLoadAnnual.company_id == company_id,
+                InterestLoadAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(InterestLoadAnnual(company_id=company_id, fiscal_year=year, interest_load_pct=val))
+            else:
+                existing.interest_load_pct = val
+        session.commit()
+        return
+
+    
     """
     Store per-year Interest Load % values for a company.
 
@@ -2686,7 +3158,7 @@ def get_annual_interest_load_series(conn: sqlite3.Connection, company_id: int) -
         - year
         - interest_load_pct
     """
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, interest_load_pct
         FROM interest_load_annual
@@ -2702,6 +3174,21 @@ def get_annual_interest_load_series(conn: sqlite3.Connection, company_id: int) -
 
 
 def upsert_annual_default_spread(conn: sqlite3.Connection, company_id: int, year_to_spread: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_spread.items():
+            existing = session.query(DefaultSpreadAnnual).filter(
+                DefaultSpreadAnnual.company_id == company_id,
+                DefaultSpreadAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(DefaultSpreadAnnual(company_id=company_id, fiscal_year=year, default_spread=val))
+            else:
+                existing.default_spread = val
+        session.commit()
+        return
+
+    
     """Store per-year Default Spread values for a company.
 
     Notes:
@@ -2723,7 +3210,7 @@ def upsert_annual_default_spread(conn: sqlite3.Connection, company_id: int, year
 
 def get_annual_default_spread_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
     """Retrieve the stored Default Spread series for a given company."""
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, default_spread
         FROM default_spread_annual
@@ -2737,6 +3224,21 @@ def get_annual_default_spread_series(conn: sqlite3.Connection, company_id: int) 
 
 
 def upsert_annual_non_cash_working_capital(conn: sqlite3.Connection, company_id: int, year_to_ncwc: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_ncwc.items():
+            existing = session.query(NonCashWorkingCapitalAnnual).filter(
+                NonCashWorkingCapitalAnnual.company_id == company_id,
+                NonCashWorkingCapitalAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(NonCashWorkingCapitalAnnual(company_id=company_id, fiscal_year=year, non_cash_working_capital=val))
+            else:
+                existing.non_cash_working_capital = val
+        session.commit()
+        return
+
+    
     """
     Store per-year Non-Cash Working Capital values for a company.
 
@@ -2767,7 +3269,7 @@ def get_annual_non_cash_working_capital_series(conn: sqlite3.Connection, company
         - year
         - non_cash_working_capital
     """
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, non_cash_working_capital
         FROM non_cash_working_capital_annual
@@ -2788,11 +3290,31 @@ def upsert_annual_revenue_yield_non_cash_working_capital(
     Store per-year Revenue Yield of Non-Cash Working Capital values for a company.
 
     Revenue Yield of Non-Cash Working Capital is defined as:
-        1 - (Non-Cash Working Capital ÷ Revenue)
+        1 - (Non-Cash Working Capital / Revenue)
 
     Values are stored as decimals (for example, 0.40 for 40%).
     """
     if not year_to_revenue_yield:
+        return
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_revenue_yield.items():
+            existing = session.query(RevenueYieldNonCashWorkingCapitalAnnual).filter(
+                RevenueYieldNonCashWorkingCapitalAnnual.company_id == company_id,
+                RevenueYieldNonCashWorkingCapitalAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(
+                    RevenueYieldNonCashWorkingCapitalAnnual(
+                        company_id=company_id,
+                        fiscal_year=year,
+                        revenue_yield_ncwc=val,
+                    )
+                )
+            else:
+                existing.revenue_yield_ncwc = val
+        session.commit()
         return
 
     cur = conn.cursor()
@@ -2820,6 +3342,27 @@ def upsert_annual_research_and_development_expense(
     """Store per-year Research & Development (R&D) expense values for a company."""
     if not year_to_rd:
         return
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, rd_expense in year_to_rd.items():
+            existing = session.query(ResearchAndDevelopmentExpenseAnnual).filter(
+                ResearchAndDevelopmentExpenseAnnual.company_id == company_id,
+                ResearchAndDevelopmentExpenseAnnual.fiscal_year == int(year),
+            ).one_or_none()
+            if existing is None:
+                session.add(
+                    ResearchAndDevelopmentExpenseAnnual(
+                        company_id=company_id,
+                        fiscal_year=int(year),
+                        research_and_development_expense=float(rd_expense),
+                    )
+                )
+            else:
+                existing.research_and_development_expense = float(rd_expense)
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, rd_expense in year_to_rd.items():
         cur.execute(
@@ -2847,6 +3390,21 @@ def get_annual_research_and_development_expense_series(conn: sqlite3.Connection,
     return {int(y): float(v) for y, v in rows}
 
 def upsert_annual_capital_expenditures(conn: sqlite3.Connection, company_id: int, year_to_capex: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_capex.items():
+            existing = session.query(CapitalExpendituresAnnual).filter(
+                CapitalExpendituresAnnual.company_id == company_id,
+                CapitalExpendituresAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(CapitalExpendituresAnnual(company_id=company_id, fiscal_year=year, capital_expenditures=val))
+            else:
+                existing.capital_expenditures = val
+        session.commit()
+        return
+
+    
     """Store per-year Capital Expenditures (CapEx) values for a company.
 
     Note: in many cash flow statements CapEx is shown as a negative cash outflow.
@@ -2876,6 +3434,21 @@ def get_annual_capital_expenditures_series(conn: sqlite3.Connection, company_id:
     return {int(y): float(v) for y, v in rows}
 
 def upsert_annual_depreciation_amortization(conn: sqlite3.Connection, company_id: int, year_to_da: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_da.items():
+            existing = session.query(DepreciationAmortizationAnnual).filter(
+                DepreciationAmortizationAnnual.company_id == company_id,
+                DepreciationAmortizationAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(DepreciationAmortizationAnnual(company_id=company_id, fiscal_year=year, depreciation_amortization=val))
+            else:
+                existing.depreciation_amortization = val
+        session.commit()
+        return
+
+    
     """Store per-year Depreciation & Amortization (D&A) values for a company."""
     if not year_to_da:
         return
@@ -2908,6 +3481,27 @@ def upsert_annual_net_debt_issued_paid(
     """Store per-year Net Debt Issued/Paid values for a company."""
     if not year_to_net_debt:
         return
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, net_debt in year_to_net_debt.items():
+            existing = session.query(NetDebtIssuedPaidAnnual).filter(
+                NetDebtIssuedPaidAnnual.company_id == company_id,
+                NetDebtIssuedPaidAnnual.fiscal_year == int(year),
+            ).one_or_none()
+            if existing is None:
+                session.add(
+                    NetDebtIssuedPaidAnnual(
+                        company_id=company_id,
+                        fiscal_year=int(year),
+                        net_debt_issued_paid=float(net_debt),
+                    )
+                )
+            else:
+                existing.net_debt_issued_paid = float(net_debt)
+        session.commit()
+        return
+
     cur = conn.cursor()
     for year, net_debt in year_to_net_debt.items():
         cur.execute(
@@ -2942,7 +3536,7 @@ def get_annual_revenue_yield_non_cash_working_capital_series(
         - year
         - revenue_yield_ncwc
     """
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, revenue_yield_ncwc
         FROM revenue_yield_non_cash_working_capital_annual
@@ -2955,7 +3549,7 @@ def get_annual_revenue_yield_non_cash_working_capital_series(
 
 
 def get_annual_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, revenue
         FROM revenues_annual
@@ -2965,7 +3559,7 @@ def get_annual_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame
     )
 
 def get_annual_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, revenue
         FROM revenues_annual
@@ -2982,7 +3576,7 @@ def get_annual_price_change_series(conn: sqlite3.Connection, company_id: int) ->
         - year
         - price_change (stored as a decimal, e.g. 0.15 for 15%)
     """
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, price_change
         FROM price_change_annual
@@ -2994,7 +3588,7 @@ def get_annual_price_change_series(conn: sqlite3.Connection, company_id: int) ->
     )
 
 def get_annual_op_margin_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, margin
         FROM op_margin_annual
@@ -3119,6 +3713,21 @@ def compute_margin_growth_stats(
 # ---------------------------
 
 def upsert_annual_fcff(conn: sqlite3.Connection, company_id: int, year_to_fcff: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_fcff.items():
+            existing = session.query(FcffAnnual).filter(
+                FcffAnnual.company_id == company_id,
+                FcffAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(FcffAnnual(company_id=company_id, fiscal_year=year, fcff=val))
+            else:
+                existing.fcff = val
+        session.commit()
+        return
+
+    
     """Store per-year Free Cash Flow to the Firm (FCFF) values for a company."""
     if not year_to_fcff:
         return
@@ -3137,7 +3746,7 @@ def upsert_annual_fcff(conn: sqlite3.Connection, company_id: int, year_to_fcff: 
 
 def get_annual_fcff_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
     """Retrieve stored FCFF series for a company (year, fcff)."""
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, fcff
         FROM fcff_annual
@@ -3151,6 +3760,21 @@ def get_annual_fcff_series(conn: sqlite3.Connection, company_id: int) -> pd.Data
 
 
 def upsert_annual_fcfe(conn: sqlite3.Connection, company_id: int, year_to_fcfe: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_fcfe.items():
+            existing = session.query(FcfeAnnual).filter(
+                FcfeAnnual.company_id == company_id,
+                FcfeAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(FcfeAnnual(company_id=company_id, fiscal_year=year, fcfe=val))
+            else:
+                existing.fcfe = val
+        session.commit()
+        return
+
+    
     """Store per-year Free Cash Flow to Equity (FCFE) values for a company."""
     if not year_to_fcfe:
         return
@@ -3169,7 +3793,7 @@ def upsert_annual_fcfe(conn: sqlite3.Connection, company_id: int, year_to_fcfe: 
 
 def get_annual_fcfe_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
     """Retrieve stored FCFE series for a company (year, fcfe)."""
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, fcfe
         FROM fcfe_annual
@@ -3181,17 +3805,23 @@ def get_annual_fcfe_series(conn: sqlite3.Connection, company_id: int) -> pd.Data
     )
 
 def upsert_annual_reinvestment_rate(
-    conn: sqlite3.Connection,
-    company_id: int,
-    year_to_rate: Dict[int, float],
+    conn: sqlite3.Connection, company_id: int, year_to_rate: Dict[int, float]
 ) -> None:
-    """Store per-year Reinvestment Rate values for a company.
-
-    Reinvestment Rate = (Net CapEx + ΔNCWC) / NOPAT
-    Stored as a fraction (0.25 == 25%).
-    """
-    if not year_to_rate:
+    """Store annual Reinvestment Rate values for a company."""
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_rate.items():
+            existing = session.query(ReinvestmentRateAnnual).filter(
+                ReinvestmentRateAnnual.company_id == company_id,
+                ReinvestmentRateAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(ReinvestmentRateAnnual(company_id=company_id, fiscal_year=year, reinvestment_rate=val))
+            else:
+                existing.reinvestment_rate = val
+        session.commit()
         return
+
     cur = conn.cursor()
     for year, val in year_to_rate.items():
         cur.execute(
@@ -3199,15 +3829,14 @@ def upsert_annual_reinvestment_rate(
             INSERT INTO reinvestment_rate_annual(company_id, fiscal_year, reinvestment_rate)
             VALUES(?, ?, ?)
             ON CONFLICT(company_id, fiscal_year) DO UPDATE SET reinvestment_rate=excluded.reinvestment_rate
-            """,
-            (company_id, int(year), float(val) if val is not None else None),
+            """, (company_id, year, val)
         )
     conn.commit()
 
 
 def get_annual_reinvestment_rate_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
     """Retrieve stored Reinvestment Rate series for a company (year, reinvestment_rate)."""
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, reinvestment_rate
         FROM reinvestment_rate_annual
@@ -3223,12 +3852,21 @@ def get_annual_reinvestment_rate_series(conn: sqlite3.Connection, company_id: in
 def upsert_annual_rd_spend_rate(
     conn: sqlite3.Connection, company_id: int, year_to_rate: Dict[int, float]
 ) -> None:
-    """Store per-year R&D Spend Rate for a company.
-
-    R&D Spend Rate is stored as a decimal (for example, 0.10 for 10%).
-    """
-    if not year_to_rate:
+    """Store annual R&D Spend Rate values for a company."""
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_rate.items():
+            existing = session.query(RdSpendRateAnnual).filter(
+                RdSpendRateAnnual.company_id == company_id,
+                RdSpendRateAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(RdSpendRateAnnual(company_id=company_id, fiscal_year=year, rd_spend_rate=val))
+            else:
+                existing.rd_spend_rate = val
+        session.commit()
         return
+
     cur = conn.cursor()
     for year, val in year_to_rate.items():
         cur.execute(
@@ -3236,15 +3874,14 @@ def upsert_annual_rd_spend_rate(
             INSERT INTO rd_spend_rate_annual(company_id, fiscal_year, rd_spend_rate)
             VALUES(?, ?, ?)
             ON CONFLICT(company_id, fiscal_year) DO UPDATE SET rd_spend_rate=excluded.rd_spend_rate
-            """,
-            (company_id, int(year), float(val) if val is not None else None),
+            """, (company_id, year, val)
         )
     conn.commit()
 
 
 def get_annual_rd_spend_rate_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
     """Retrieve stored R&D Spend Rate series for a company (year, rd_spend_rate)."""
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, rd_spend_rate
         FROM rd_spend_rate_annual
@@ -3567,7 +4204,7 @@ def compute_and_store_cost_of_equity(conn: sqlite3.Connection, company_id: int) 
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT OR REPLACE INTO cost_of_equity_annual(company_id, fiscal_year, cost_of_equity)
+            INSERT INTO cost_of_equity_annual(company_id, fiscal_year, cost_of_equity)
             SELECT
                 lb.company_id,
                 lb.fiscal_year,
@@ -3602,6 +4239,7 @@ def compute_and_store_cost_of_equity(conn: sqlite3.Connection, company_id: int) 
             LEFT JOIN Country_Risk_Premium crp
                 ON crp.year = lb.fiscal_year
             WHERE lb.company_id = ?
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET cost_of_equity=excluded.cost_of_equity
             """,
             (company_id,),
         )
@@ -3617,7 +4255,7 @@ def refresh_cost_of_equity_all_companies(conn: sqlite3.Connection) -> None:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT OR REPLACE INTO cost_of_equity_annual(company_id, fiscal_year, cost_of_equity)
+            INSERT INTO cost_of_equity_annual(company_id, fiscal_year, cost_of_equity)
             SELECT
                 lb.company_id,
                 lb.fiscal_year,
@@ -3650,6 +4288,7 @@ def refresh_cost_of_equity_all_companies(conn: sqlite3.Connection) -> None:
                 ON r.year = lb.fiscal_year
             LEFT JOIN Country_Risk_Premium crp
                 ON crp.year = lb.fiscal_year
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET cost_of_equity=excluded.cost_of_equity
             """
         )
         conn.commit()
@@ -3681,7 +4320,7 @@ def compute_and_store_default_spread(conn: sqlite3.Connection, company_id: int) 
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT OR REPLACE INTO default_spread_annual(company_id, fiscal_year, default_spread)
+            INSERT INTO default_spread_annual(company_id, fiscal_year, default_spread)
             SELECT
                 ic.company_id,
                 ic.fiscal_year,
@@ -3704,6 +4343,7 @@ def compute_and_store_default_spread(conn: sqlite3.Connection, company_id: int) 
                 END AS default_spread
             FROM interest_coverage_annual ic
             WHERE ic.company_id = ?
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET default_spread=excluded.default_spread
             """,
             (company_id,),
         )
@@ -3718,7 +4358,7 @@ def refresh_default_spread_all_companies(conn: sqlite3.Connection) -> None:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT OR REPLACE INTO default_spread_annual(company_id, fiscal_year, default_spread)
+            INSERT INTO default_spread_annual(company_id, fiscal_year, default_spread)
             SELECT
                 ic.company_id,
                 ic.fiscal_year,
@@ -3740,6 +4380,7 @@ def refresh_default_spread_all_companies(conn: sqlite3.Connection) -> None:
                     ELSE 0.59
                 END AS default_spread
             FROM interest_coverage_annual ic
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET default_spread=excluded.default_spread
             """
         )
         conn.commit()
@@ -3764,7 +4405,7 @@ def compute_and_store_pre_tax_cost_of_debt(conn: sqlite3.Connection, company_id:
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT OR REPLACE INTO pre_tax_cost_of_debt_annual(company_id, fiscal_year, pre_tax_cost_of_debt)
+            INSERT INTO pre_tax_cost_of_debt_annual(company_id, fiscal_year, pre_tax_cost_of_debt)
             SELECT
                 ds.company_id,
                 ds.fiscal_year,
@@ -3783,6 +4424,7 @@ def compute_and_store_pre_tax_cost_of_debt(conn: sqlite3.Connection, company_id:
             JOIN risk_free_rates r
                 ON r.year = ds.fiscal_year
             WHERE ds.company_id = ?
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET pre_tax_cost_of_debt=excluded.pre_tax_cost_of_debt
             """,
             (company_id,),
         )
@@ -3797,7 +4439,7 @@ def refresh_pre_tax_cost_of_debt_all_companies(conn: sqlite3.Connection) -> None
         cur = conn.cursor()
         cur.execute(
             """
-            INSERT OR REPLACE INTO pre_tax_cost_of_debt_annual(company_id, fiscal_year, pre_tax_cost_of_debt)
+            INSERT INTO pre_tax_cost_of_debt_annual(company_id, fiscal_year, pre_tax_cost_of_debt)
             SELECT
                 ds.company_id,
                 ds.fiscal_year,
@@ -3815,6 +4457,7 @@ def refresh_pre_tax_cost_of_debt_all_companies(conn: sqlite3.Connection) -> None
                 ON c.id = ds.company_id
             JOIN risk_free_rates r
                 ON r.year = ds.fiscal_year
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET pre_tax_cost_of_debt=excluded.pre_tax_cost_of_debt
             """
         )
         conn.commit()
@@ -3824,7 +4467,7 @@ def refresh_pre_tax_cost_of_debt_all_companies(conn: sqlite3.Connection) -> None
 
 def get_annual_pre_tax_cost_of_debt_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
     """Retrieve the stored Pre-Tax Cost of Debt series for a given company."""
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, pre_tax_cost_of_debt
         FROM pre_tax_cost_of_debt_annual
@@ -3838,7 +4481,7 @@ def get_annual_pre_tax_cost_of_debt_series(conn: sqlite3.Connection, company_id:
 
 
 def get_annual_cost_of_equity_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
-    return pd.read_sql_query(
+    return _read_df(
         """
         SELECT fiscal_year AS year, cost_of_equity
         FROM cost_of_equity_annual
