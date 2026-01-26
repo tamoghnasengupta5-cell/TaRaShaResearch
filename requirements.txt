@@ -3,3 +3,6 @@ pandas
 numpy
 openpyxl
 pymupdf
+SQLAlchemy
+alembic
+psycopg

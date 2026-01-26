@@ -12,6 +12,7 @@ from core import (
     compute_and_store_fcfe,
     compute_and_store_rd_spend_rate,
     compute_growth_stats,
+    read_df,
     get_annual_fcff_series,
     get_annual_fcfe_series,
     get_annual_reinvestment_rate_series,
@@ -45,7 +46,7 @@ def render_cash_flow_and_spread_tab() -> None:
 
         # Default selection: companies not present in any bucket (same behavior as other tabs)
         try:
-            bucket_df = pd.read_sql_query(
+            bucket_df = read_df(
                 "SELECT DISTINCT company_id FROM company_group_members",
                 conn,
             )
@@ -80,7 +81,7 @@ def render_cash_flow_and_spread_tab() -> None:
         )
 
         # Bucket selection: use previously saved buckets to drive the analysis
-        groups_df = pd.read_sql_query(
+        groups_df = read_df(
             "SELECT id, name FROM company_groups ORDER BY name",
             conn,
         )
@@ -141,7 +142,7 @@ def render_cash_flow_and_spread_tab() -> None:
             ]
             if bucket_ids:
                 q_marks = ",".join("?" for _ in bucket_ids)
-                bucket_members_df = pd.read_sql_query(
+                bucket_members_df = read_df(
                     f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({q_marks})",
                     conn,
                     params=bucket_ids,

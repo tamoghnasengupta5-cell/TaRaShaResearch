@@ -17,3 +17,15 @@ This repo includes .github/workflows/main_tarasha.yml which deploys using a publ
 Create a repo secret:
 - Name: TARASHA_AZURE_WEBAPP_PUBLISH_PROFILE
 - Value: paste the contents of your downloaded .PublishSettings file.
+
+## Postgres + Alembic migration
+1) Configure the Postgres URL for Alembic:
+   - Windows (PowerShell):
+     $env:TARASHA_DB_URL="postgresql+psycopg://user:password@localhost:5432/tarasha"
+
+2) Run migrations:
+   - alembic upgrade head
+
+3) (Optional) Migrate existing SQLite data to Postgres:
+   - $env:POSTGRES_URL="postgresql+psycopg://user:password@localhost:5432/tarasha"
+   - python scripts/migrate_sqlite_to_postgres.py --sqlite-path app.db --truncate

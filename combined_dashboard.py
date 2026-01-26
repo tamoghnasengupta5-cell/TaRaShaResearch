@@ -86,11 +86,11 @@ def render_combined_dashboard_tab() -> None:
         # -----------------------------
         # Load growth / stddev weights
         # -----------------------------
-        growth_weights_df = pd.read_sql_query(
+        growth_weights_df = read_df(
             "SELECT factor, weight FROM growth_weight_factors",
             conn,
         )
-        stddev_weights_df = pd.read_sql_query(
+        stddev_weights_df = read_df(
             "SELECT factor, weight FROM stddev_weight_factors",
             conn,
         )
@@ -194,7 +194,7 @@ def render_combined_dashboard_tab() -> None:
         # -----------------------------
         # Bucket / company selection
         # -----------------------------
-        groups_df = pd.read_sql_query(
+        groups_df = read_df(
             "SELECT id, name FROM company_groups ORDER BY name",
             conn,
         )
@@ -216,7 +216,7 @@ def render_combined_dashboard_tab() -> None:
             group_ids = [group_name_to_id[name] for name in bucket_names_selected if name in group_name_to_id]
             if group_ids:
                 placeholders = ",".join(["?"] * len(group_ids))
-                bucket_members_df = pd.read_sql_query(
+                bucket_members_df = read_df(
                     f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
                     conn,
                     params=group_ids,
