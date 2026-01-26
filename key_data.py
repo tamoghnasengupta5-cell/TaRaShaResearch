@@ -2,6 +2,139 @@ import streamlit as st
 
 from core import *  # noqa: F401,F403
 
+# --- Key Data display helpers (country, units) ---
+# Money values in this module are assumed to be stored in *millions of local currency*.
+# Display rule:
+#   - USA: show in USD Millions ($ M)  -> scale = 1.0
+#   - India: show in INR Crores (₹ Cr) -> 1 Cr = 10 M, so scale = 0.1
+# Other countries default to "Millions" (M) with their currency symbol where obvious.
+
+
+def _canonicalize_country(country: Optional[str]) -> str:
+    """Normalize country values used by the app to the canonical set."""
+    if country is None:
+        return "USA"
+    c = str(country).strip()
+    if not c:
+        return "USA"
+    cu = c.upper()
+
+    if cu in ("USA", "US", "UNITED STATES", "UNITED STATES OF AMERICA"):
+        return "USA"
+    if cu in ("INDIA", "IN", "REPUBLIC OF INDIA"):
+        return "India"
+    if cu in ("CHINA", "CN", "PRC", "PEOPLE'S REPUBLIC OF CHINA", "PEOPLES REPUBLIC OF CHINA"):
+        return "China"
+    if cu in ("JAPAN", "JP"):
+        return "Japan"
+    if cu in ("UK", "UNITED KINGDOM", "GREAT BRITAIN", "BRITAIN", "GB"):
+        return "UK"
+    if cu in ("UAE", "UNITED ARAB EMIRATES", "AE"):
+        return "UAE"
+
+    # Unknown country string: keep as-is (trimmed)
+    return c
+
+
+def _get_company_country(conn: sqlite3.Connection, company_id: int) -> str:
+    """Return the stored country for the company, falling back to USA."""
+    try:
+        row = conn.execute("SELECT country FROM companies WHERE id = ?", (company_id,)).fetchone()
+        if row is not None and row[0] is not None and str(row[0]).strip():
+            return _canonicalize_country(str(row[0]))
+    except Exception:
+        pass
+    return "USA"
+
+_COUNTRY_TO_FLAG = {
+    "USA": "🇺🇸",
+    "India": "🇮🇳",
+    "China": "🇨🇳",
+    "Japan": "🇯🇵",
+    "UK": "🇬🇧",
+    "UAE": "🇦🇪",
+}
+
+_COUNTRY_TO_UNIT = {
+    "USA": "$ M",
+    "India": "₹ Cr",
+    "China": "CN¥ M",
+    "Japan": "JP¥ M",
+    "UK": "£ M",
+    "UAE": "AED M",
+}
+
+def _country_display_and_units(country: Optional[str]) -> Tuple[str, str, float]:
+    c = _canonicalize_country(country)
+    flag = _COUNTRY_TO_FLAG.get(c, "🏳️")
+    unit = _COUNTRY_TO_UNIT.get(c, "M")
+    scale = 0.1 if c == "India" else 1.0
+    return f"{flag} {c}", unit, scale
+
+def _fmt_money_by_country(x: Optional[float], country: Optional[str]) -> str:
+    if x is None or pd.isna(x):
+        return "—"
+    try:
+        xv = float(x)
+    except Exception:
+        return str(x)
+    _, _, scale = _country_display_and_units(country)
+    return f"{xv * scale:,.2f}"
+
+
+def _apply_key_filter(disp: pd.DataFrame, widget_key: str) -> pd.DataFrame:
+    """Apply a Key filter to a Key Data table.
+
+    - Multi-select keys (default = all).
+    - 'Growth%' rows are grouped under the most recent non-'Growth%' key within each company block,
+      so selecting a metric (e.g., 'Revenue') keeps its associated 'Growth%' row(s) as well.
+    """
+    if disp is None or disp.empty:
+        return disp
+    if "Key" not in disp.columns or "Company" not in disp.columns:
+        return disp
+
+    companies = disp["Company"].astype(str).tolist()
+    keys = disp["Key"].astype(str).tolist()
+
+    key_groups = []
+    options = []
+    seen = set()
+
+    last_company = None
+    last_non_growth = None
+    for c, k in zip(companies, keys):
+        if c != last_company:
+            last_company = c
+            last_non_growth = None
+        if k != "Growth%":
+            last_non_growth = k
+        g = last_non_growth if last_non_growth is not None else k
+        key_groups.append(g)
+        if g not in seen and str(g).strip() != "":
+            options.append(g)
+            seen.add(g)
+
+    if not options:
+        return disp
+
+    selected = st.multiselect(
+        "Filter Keys",
+        options=options,
+        default=options,
+        key=widget_key,
+    )
+
+    disp2 = disp.copy()
+    disp2["_KeyGroup"] = key_groups
+
+    if selected:
+        disp2 = disp2[disp2["_KeyGroup"].isin(selected)].copy()
+    else:
+        disp2 = disp2.iloc[0:0].copy()
+
+    disp2 = disp2.drop(columns=["_KeyGroup"])
+    return disp2
 
 def render_key_data_tab() -> None:
     """Master tab: Key Data."""
@@ -186,13 +319,8 @@ def _render_pl_key_data() -> None:
         st.info("Select at least one company or a saved bucket to view P&L key data.")
         return
 
-    def fmt_money(x: Optional[float]) -> str:
-        if x is None or pd.isna(x):
-            return "—"
-        try:
-            return f"{float(x):,.2f}"
-        except Exception:
-            return str(x)
+    def fmt_money(x: Optional[float], country: Optional[str]) -> str:
+        return _fmt_money_by_country(x, country)
 
     def fmt_pct_from_decimal(x: Optional[float]) -> str:
         if x is None or pd.isna(x):
@@ -202,6 +330,8 @@ def _render_pl_key_data() -> None:
         except Exception:
             return str(x)
     st.markdown("---")
+
+    st.caption("Money values are displayed based on the company\'s country in the database: 🇺🇸 USA = USD Millions ($ M); 🇮🇳 India = INR Crores (₹ Cr).")
 
     # Build a horizontal table (years as columns) for the selected companies/buckets.
     # This keeps the same underlying calculations but pivots the display to match the requested layout.
@@ -285,6 +415,9 @@ def _render_pl_key_data() -> None:
         else:
             name = f"Company {cid}"
             ticker = ""
+
+        country = _get_company_country(conn, cid)
+        country_disp, unit_label, _ = _country_display_and_units(country)
 
         rev_by_year = {int(y): (None if pd.isna(v) else float(v)) for y, v in zip(df_rev["year"], df_rev["revenue"])}
         growth_by_year = {int(y): (None if pd.isna(g) else float(g)) for y, g in zip(df_rev["year"], df_rev["yoy_growth"])}
@@ -376,6 +509,9 @@ def _render_pl_key_data() -> None:
             {
                 "name": str(name),
                 "ticker": str(ticker),
+                "country": str(country),
+                "country_disp": str(country_disp),
+                "unit_label": str(unit_label),
                 "rev_by_year": rev_by_year,
                 "growth_by_year": growth_by_year,
                 "median_growth": med_rev_g,
@@ -424,17 +560,21 @@ def _render_pl_key_data() -> None:
         r = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Revenue",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            r[y] = fmt_money(item["rev_by_year"].get(y))
+            r[y] = fmt_money(item["rev_by_year"].get(y), item["country"])
         rows.append(r)
 
         g = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["stdev_growth"]),
@@ -448,17 +588,21 @@ def _render_pl_key_data() -> None:
         p = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Pretax Income",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            p[y] = fmt_money(item["pretax_by_year"].get(y))
+            p[y] = fmt_money(item["pretax_by_year"].get(y), item["country"])
         rows.append(p)
 
         pg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["pretax_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["pretax_stdev_growth"]),
@@ -472,17 +616,21 @@ def _render_pl_key_data() -> None:
         n = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Net Income",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            n[y] = fmt_money(item["net_by_year"].get(y))
+            n[y] = fmt_money(item["net_by_year"].get(y), item["country"])
         rows.append(n)
 
         ng = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["net_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["net_stdev_growth"]),
@@ -496,17 +644,21 @@ def _render_pl_key_data() -> None:
         no = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "NOPAT",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            no[y] = fmt_money(item["nopat_by_year"].get(y))
+            no[y] = fmt_money(item["nopat_by_year"].get(y), item["country"])
         rows.append(no)
 
         nog = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["nopat_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["nopat_stdev_growth"]),
@@ -521,6 +673,8 @@ def _render_pl_key_data() -> None:
         opm = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Operating Margin",
             "Median": fmt_margin_value(item.get("opm_median"), values_are_fraction),
             "Standard Deviation": fmt_margin_value(item.get("opm_stdev"), values_are_fraction),
@@ -532,6 +686,8 @@ def _render_pl_key_data() -> None:
         opmg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item.get("opm_median_growth")),
             "Standard Deviation": fmt_pct_from_decimal(item.get("opm_stdev_growth")),
@@ -541,14 +697,15 @@ def _render_pl_key_data() -> None:
             opmg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
         rows.append(opmg)
     # Final display
-    ordered_cols = ["Company", "Ticker", "Key"] + year_cols + ["Median", "Standard Deviation"]
+    ordered_cols = ["Company", "Ticker", "Country", "Units", "Key"] + year_cols + ["Median", "Standard Deviation"]
     disp = pd.DataFrame(rows)
     disp = disp.reindex(columns=ordered_cols)
 
     # Visually "merge" Company/Ticker cells (Excel-like) by blanking repeated values
     # for consecutive rows belonging to the same company.
+    disp = _apply_key_filter(disp, "keydata_pl_key_filter")
     dup_mask = disp["Company"].eq(disp["Company"].shift())
-    disp.loc[dup_mask, ["Company", "Ticker"]] = ""
+    disp.loc[dup_mask, ["Company", "Ticker", "Country", "Units"]] = ""
 
     st.dataframe(disp, use_container_width=True)
 
@@ -800,6 +957,9 @@ def _render_bs_key_data() -> None:
             name = f"Company {cid}"
             ticker = ""
 
+        country = _get_company_country(conn, cid)
+        country_disp, unit_label, _ = _country_display_and_units(country)
+
         # Pull required annual series
         ann_acc = get_annual_accumulated_profit_series(conn, cid)
         ann_roe = get_annual_roe_series(conn, cid)
@@ -844,6 +1004,9 @@ def _render_bs_key_data() -> None:
             {
                 "name": str(name),
                 "ticker": str(ticker),
+                "country": str(country),
+                "country_disp": str(country_disp),
+                "unit_label": str(unit_label),
                 "acc_by_year": acc_by_year,
                 "acc_growth_by_year": acc_growth_by_year,
                 "acc_median_growth": acc_med_g,
@@ -881,22 +1044,8 @@ def _render_bs_key_data() -> None:
 
     year_cols = sorted(year_set)
 
-    def fmt_money(x: Optional[float]) -> str:
-        if x is None or pd.isna(x):
-            return "—"
-        try:
-            xv = float(x)
-        except Exception:
-            return str(x)
-        sign = "-" if xv < 0 else ""
-        xv = abs(xv)
-        if xv >= 1e9:
-            return f"{sign}{xv/1e9:.2f}B"
-        if xv >= 1e6:
-            return f"{sign}{xv/1e6:.2f}M"
-        if xv >= 1e3:
-            return f"{sign}{xv/1e3:.2f}K"
-        return f"{sign}{xv:.0f}"
+    def fmt_money(x: Optional[float], country: Optional[str]) -> str:
+        return _fmt_money_by_country(x, country)
 
     def fmt_pct_from_decimal(x: Optional[float]) -> str:
         if x is None or pd.isna(x):
@@ -924,23 +1073,29 @@ def _render_bs_key_data() -> None:
 
     st.markdown("---")
 
+    st.caption("Money values are displayed based on the company\'s country in the database: 🇺🇸 USA = USD Millions ($ M); 🇮🇳 India = INR Crores (₹ Cr).")
+
     rows = []
     for item in per_company:
         # Accumulated Profit
         a = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Accumulated Profit",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            a[y] = fmt_money(item["acc_by_year"].get(y))
+            a[y] = fmt_money(item["acc_by_year"].get(y), item["country"])
         rows.append(a)
 
         ag = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["acc_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["acc_stdev_growth"]),
@@ -954,6 +1109,8 @@ def _render_bs_key_data() -> None:
         r = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "ROE",
             "Median": fmt_pct_from_decimal(item["roe_median"]),
             "Standard Deviation": fmt_pct_from_decimal(item["roe_stdev"]),
@@ -965,6 +1122,8 @@ def _render_bs_key_data() -> None:
         rg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -978,6 +1137,8 @@ def _render_bs_key_data() -> None:
         rc = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "ROCE",
             "Median": fmt_pct_from_decimal(item["roce_median"]),
             "Standard Deviation": fmt_pct_from_decimal(item["roce_stdev"]),
@@ -989,6 +1150,8 @@ def _render_bs_key_data() -> None:
         rcg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -1002,17 +1165,21 @@ def _render_bs_key_data() -> None:
         n = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Non-Cash Working Capital",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            n[y] = fmt_money(item["ncwc_by_year"].get(y))
+            n[y] = fmt_money(item["ncwc_by_year"].get(y), item["country"])
         rows.append(n)
 
         ng = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["ncwc_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["ncwc_stdev_growth"]),
@@ -1026,6 +1193,8 @@ def _render_bs_key_data() -> None:
         ry = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Revenue Yield of Non-Cash Working Capital",
             "Median": "",
             "Standard Deviation": "",
@@ -1037,6 +1206,8 @@ def _render_bs_key_data() -> None:
         ryg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["ry_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["ry_stdev_growth"]),
@@ -1050,6 +1221,8 @@ def _render_bs_key_data() -> None:
         ic = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Interest Coverage Ratio",
             "Median": "",
             "Standard Deviation": "",
@@ -1061,6 +1234,8 @@ def _render_bs_key_data() -> None:
         icg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["ic_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["ic_stdev_growth"]),
@@ -1074,6 +1249,8 @@ def _render_bs_key_data() -> None:
         il = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Interest Load%",
             "Median": "",
             "Standard Deviation": "",
@@ -1085,6 +1262,8 @@ def _render_bs_key_data() -> None:
         ilg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["il_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["il_stdev_growth"]),
@@ -1094,15 +1273,16 @@ def _render_bs_key_data() -> None:
             ilg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
         rows.append(ilg)
 
-    ordered_cols = ["Company", "Ticker", "Key"] + year_cols + ["Median", "Standard Deviation"]
+    ordered_cols = ["Company", "Ticker", "Country", "Units", "Key"] + year_cols + ["Median", "Standard Deviation"]
     disp = pd.DataFrame(rows)
     disp = disp.reindex(columns=ordered_cols)
 
+    disp = _apply_key_filter(disp, "keydata_bs_key_filter")
+
     dup_mask = disp["Company"].eq(disp["Company"].shift())
-    disp.loc[dup_mask, ["Company", "Ticker"]] = ""
+    disp.loc[dup_mask, ["Company", "Ticker", "Country", "Units"]] = ""
 
     st.dataframe(disp, use_container_width=True)
-
 
 def _render_cs_spread_key_data() -> None:
     st.subheader("Capital Structure & Spread")
@@ -1445,6 +1625,9 @@ def _render_cs_spread_key_data() -> None:
             name = f"Company {cid}"
             ticker = ""
 
+        country = _get_company_country(conn, cid)
+        country_disp, unit_label, _ = _country_display_and_units(country)
+
         # Pull required annual series
         ann_mc = get_annual_market_capitalization_series(conn, cid)
         ann_td = get_annual_total_debt_series(conn, cid)
@@ -1538,6 +1721,9 @@ def _render_cs_spread_key_data() -> None:
             {
                 "name": str(name),
                 "ticker": str(ticker),
+                "country": str(country),
+                "country_disp": str(country_disp),
+                "unit_label": str(unit_label),
                 "mc_by_year": mc_by_year,
                 "mc_growth_by_year": mc_growth_by_year,
                 "mc_median_growth": mc_med_g,
@@ -1587,22 +1773,8 @@ def _render_cs_spread_key_data() -> None:
 
     year_cols = sorted(year_set)
 
-    def fmt_money(x: Optional[float]) -> str:
-        if x is None or pd.isna(x):
-            return "—"
-        try:
-            xv = float(x)
-        except Exception:
-            return str(x)
-        sign = "-" if xv < 0 else ""
-        xv = abs(xv)
-        if xv >= 1e9:
-            return f"{sign}{xv/1e9:.2f}B"
-        if xv >= 1e6:
-            return f"{sign}{xv/1e6:.2f}M"
-        if xv >= 1e3:
-            return f"{sign}{xv/1e3:.2f}K"
-        return f"{sign}{xv:.0f}"
+    def fmt_money(x: Optional[float], country: Optional[str]) -> str:
+        return _fmt_money_by_country(x, country)
 
     def fmt_ratio(x: Optional[float]) -> str:
         if x is None or pd.isna(x):
@@ -1631,23 +1803,29 @@ def _render_cs_spread_key_data() -> None:
 
     st.markdown("---")
 
+    st.caption("Money values are displayed based on the company\'s country in the database: 🇺🇸 USA = USD Millions ($ M); 🇮🇳 India = INR Crores (₹ Cr).")
+
     rows = []
     for item in per_company:
         # Market Cap
         mc = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Market Cap",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            mc[y] = fmt_money(item["mc_by_year"].get(y))
+            mc[y] = fmt_money(item["mc_by_year"].get(y), item["country"])
         rows.append(mc)
 
         mcg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item.get("mc_median_growth")),
             "Standard Deviation": fmt_pct_from_decimal(item.get("mc_stdev_growth")),
@@ -1661,17 +1839,21 @@ def _render_cs_spread_key_data() -> None:
         td = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Total Debt",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            td[y] = fmt_money(item["td_by_year"].get(y))
+            td[y] = fmt_money(item["td_by_year"].get(y), item["country"])
         rows.append(td)
 
         tdg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item.get("td_median_growth")),
             "Standard Deviation": fmt_pct_from_decimal(item.get("td_stdev_growth")),
@@ -1685,6 +1867,8 @@ def _render_cs_spread_key_data() -> None:
         ed = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Shareholder Equity/Total Debt",
             "Median": "",
             "Standard Deviation": "",
@@ -1696,6 +1880,8 @@ def _render_cs_spread_key_data() -> None:
         edg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item.get("eqd_median_growth")),
             "Standard Deviation": fmt_pct_from_decimal(item.get("eqd_stdev_growth")),
@@ -1709,6 +1895,8 @@ def _render_cs_spread_key_data() -> None:
         md = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Market Cap/Total Debt",
             "Median": "",
             "Standard Deviation": "",
@@ -1720,6 +1908,8 @@ def _render_cs_spread_key_data() -> None:
         mdg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item.get("mcd_median_growth")),
             "Standard Deviation": fmt_pct_from_decimal(item.get("mcd_stdev_growth")),
@@ -1733,6 +1923,8 @@ def _render_cs_spread_key_data() -> None:
         roic = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "ROIC%",
             "Median": fmt_pct_points(item.get("roic_median")),
             "Standard Deviation": fmt_pct_points(item.get("roic_stdev")),
@@ -1744,6 +1936,8 @@ def _render_cs_spread_key_data() -> None:
         roicg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -1757,6 +1951,8 @@ def _render_cs_spread_key_data() -> None:
         ub = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Unlevered Beta (Industry)",
             "Median": "",
             "Standard Deviation": "",
@@ -1768,6 +1964,8 @@ def _render_cs_spread_key_data() -> None:
         ubg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -1781,6 +1979,8 @@ def _render_cs_spread_key_data() -> None:
         cab = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Cash-Adjusted Beta (Industry)",
             "Median": "",
             "Standard Deviation": "",
@@ -1792,6 +1992,8 @@ def _render_cs_spread_key_data() -> None:
         cabg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -1805,6 +2007,8 @@ def _render_cs_spread_key_data() -> None:
         coe = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Cost of Equity %",
             "Median": fmt_pct_points(item.get("coe_median")),
             "Standard Deviation": fmt_pct_points(item.get("coe_stdev")),
@@ -1816,6 +2020,8 @@ def _render_cs_spread_key_data() -> None:
         coeg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -1829,6 +2035,8 @@ def _render_cs_spread_key_data() -> None:
         pcd = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Pre-Tax Cost of Debt %",
             "Median": fmt_pct_points(item.get("pcd_median")),
             "Standard Deviation": fmt_pct_points(item.get("pcd_stdev")),
@@ -1840,6 +2048,8 @@ def _render_cs_spread_key_data() -> None:
         pcdg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -1853,6 +2063,8 @@ def _render_cs_spread_key_data() -> None:
         w = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Weighted Average Cost of Capital (WACC) %",
             "Median": fmt_pct_points(item.get("wacc_median")),
             "Standard Deviation": fmt_pct_points(item.get("wacc_stdev")),
@@ -1864,6 +2076,8 @@ def _render_cs_spread_key_data() -> None:
         wg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -1877,6 +2091,8 @@ def _render_cs_spread_key_data() -> None:
         sp = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Spread%",
             "Median": fmt_pct_points(item.get("spread_median")),
             "Standard Deviation": fmt_pct_points(item.get("spread_stdev")),
@@ -1888,6 +2104,8 @@ def _render_cs_spread_key_data() -> None:
         spg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -1897,13 +2115,14 @@ def _render_cs_spread_key_data() -> None:
             spg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
         rows.append(spg)
 
-    ordered_cols = ["Company", "Ticker", "Key"] + year_cols + ["Median", "Standard Deviation"]
+    ordered_cols = ["Company", "Ticker", "Country", "Units", "Key"] + year_cols + ["Median", "Standard Deviation"]
     disp = pd.DataFrame(rows)
     disp = disp.reindex(columns=ordered_cols)
 
     # Visually "merge" Company/Ticker cells (Excel-like) by blanking repeated values
+    disp = _apply_key_filter(disp, "keydata_cs_key_filter")
     dup_mask = disp["Company"].eq(disp["Company"].shift())
-    disp.loc[dup_mask, ["Company", "Ticker"]] = ""
+    disp.loc[dup_mask, ["Company", "Ticker", "Country", "Units"]] = ""
 
     st.dataframe(disp, use_container_width=True)
 
@@ -2074,13 +2293,8 @@ def _render_cf_reinvestment_key_data() -> None:
         st.info("Select at least one company or a saved bucket to view Cash Flow & Reinvestment key data.")
         return
 
-    def fmt_money(x: Optional[float]) -> str:
-        if x is None or pd.isna(x):
-            return "—"
-        try:
-            return f"{float(x):,.2f}"
-        except Exception:
-            return str(x)
+    def fmt_money(x: Optional[float], country: Optional[str]) -> str:
+        return _fmt_money_by_country(x, country)
 
     def fmt_pct_from_decimal(x: Optional[float]) -> str:
         if x is None or pd.isna(x):
@@ -2091,6 +2305,8 @@ def _render_cf_reinvestment_key_data() -> None:
             return str(x)
 
     st.markdown("---")
+
+    st.caption("Money values are displayed based on the company\'s country in the database: 🇺🇸 USA = USD Millions ($ M); 🇮🇳 India = INR Crores (₹ Cr).")
 
     def build_metric(
         ann_df: pd.DataFrame,
@@ -2195,6 +2411,9 @@ def _render_cf_reinvestment_key_data() -> None:
             name = f"Company {cid}"
             ticker = ""
 
+        country = _get_company_country(conn, cid)
+        country_disp, unit_label, _ = _country_display_and_units(country)
+
         # Pull required annual series
         ann_fcff = get_annual_fcff_series(conn, cid)
         ann_fcfe = get_annual_fcfe_series(conn, cid)
@@ -2225,6 +2444,9 @@ def _render_cf_reinvestment_key_data() -> None:
             {
                 "name": str(name),
                 "ticker": str(ticker),
+                "country": str(country),
+                "country_disp": str(country_disp),
+                "unit_label": str(unit_label),
                 "fcff_by_year": fcff_by_year,
                 "fcff_growth_by_year": fcff_growth_by_year,
                 "fcff_median_growth": fcff_med_g,
@@ -2256,17 +2478,21 @@ def _render_cf_reinvestment_key_data() -> None:
         fcff = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "FCFF",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            fcff[y] = fmt_money(item["fcff_by_year"].get(y))
+            fcff[y] = fmt_money(item["fcff_by_year"].get(y), item["country"])
         rows.append(fcff)
 
         fcffg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["fcff_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["fcff_stdev_growth"]),
@@ -2280,17 +2506,21 @@ def _render_cf_reinvestment_key_data() -> None:
         fcfe = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "FCFE",
             "Median": "",
             "Standard Deviation": "",
         }
         for y in year_cols:
-            fcfe[y] = fmt_money(item["fcfe_by_year"].get(y))
+            fcfe[y] = fmt_money(item["fcfe_by_year"].get(y), item["country"])
         rows.append(fcfe)
 
         fcfe_g = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": fmt_pct_from_decimal(item["fcfe_median_growth"]),
             "Standard Deviation": fmt_pct_from_decimal(item["fcfe_stdev_growth"]),
@@ -2304,6 +2534,8 @@ def _render_cf_reinvestment_key_data() -> None:
         rr = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Reinvestment Rate %",
             "Median": fmt_pct_from_decimal(item.get("rr_median")),
             "Standard Deviation": fmt_pct_from_decimal(item.get("rr_stdev")),
@@ -2315,6 +2547,8 @@ def _render_cf_reinvestment_key_data() -> None:
         rrg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -2328,6 +2562,8 @@ def _render_cf_reinvestment_key_data() -> None:
         rd = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "R&D Spend Rate %",
             "Median": fmt_pct_from_decimal(item.get("rd_median")),
             "Standard Deviation": fmt_pct_from_decimal(item.get("rd_stdev")),
@@ -2339,6 +2575,8 @@ def _render_cf_reinvestment_key_data() -> None:
         rdg = {
             "Company": item["name"],
             "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
             "Key": "Growth%",
             "Median": "",
             "Standard Deviation": "",
@@ -2348,12 +2586,13 @@ def _render_cf_reinvestment_key_data() -> None:
             rdg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
         rows.append(rdg)
 
-    ordered_cols = ["Company", "Ticker", "Key"] + year_cols + ["Median", "Standard Deviation"]
+    ordered_cols = ["Company", "Ticker", "Country", "Units", "Key"] + year_cols + ["Median", "Standard Deviation"]
     disp = pd.DataFrame(rows)
     disp = disp.reindex(columns=ordered_cols)
 
     # Visually "merge" Company/Ticker cells (Excel-like) by blanking repeated values
+    disp = _apply_key_filter(disp, "keydata_cf_key_filter")
     dup_mask = disp["Company"].eq(disp["Company"].shift())
-    disp.loc[dup_mask, ["Company", "Ticker"]] = ""
+    disp.loc[dup_mask, ["Company", "Ticker", "Country", "Units"]] = ""
 
     st.dataframe(disp, use_container_width=True)
