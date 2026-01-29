@@ -1,4 +1,4 @@
-import streamlit as st
+﻿import streamlit as st
 from core import *  # noqa: F401,F403
 from typing import List
 
@@ -74,6 +74,14 @@ METRIC_TABLES_FOR_CLEANUP: List[str] = [
 ]
 
 
+def _rerun() -> None:
+    """Compatibility wrapper for Streamlit rerun API across versions."""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
+
+
 def delete_company_metric_data(conn, company_ids: List[int]) -> None:
     """Delete all stored metric rows for the given companies.
 
@@ -100,7 +108,45 @@ def render_admin_tab():
     )
 
     conn = get_db()
-    tab_weights, tab_buckets, tab_rfr, tab_iapm, tab_erp, tab_mctr, tab_industry_beta, tab_cleanup, tab_formula = st.tabs(
+
+    def _rename_weight_factor_in_db(table: str, old: str, new: str) -> None:
+        try:
+            new_row = conn.execute(
+                f"SELECT id, weight FROM {table} WHERE factor = ?",
+                (new,),
+            ).fetchone()
+            old_row = conn.execute(
+                f"SELECT id, weight FROM {table} WHERE factor = ?",
+                (old,),
+            ).fetchone()
+            if old_row and not new_row:
+                conn.execute(
+                    f"UPDATE {table} SET factor = ? WHERE factor = ?",
+                    (new, old),
+                )
+                conn.commit()
+            elif old_row and new_row:
+                old_weight = old_row[1] if len(old_row) > 1 else None
+                if old_weight is not None:
+                    conn.execute(
+                        f"UPDATE {table} SET weight = ? WHERE factor = ?",
+                        (old_weight, new),
+                    )
+                conn.execute(
+                    f"DELETE FROM {table} WHERE factor = ?",
+                    (old,),
+                )
+                conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+    # Ensure legacy "FCFE Growth" labels are renamed to "FCFF Growth".
+    _rename_weight_factor_in_db("growth_weight_factors", "FCFE Growth", "FCFF Growth")
+    _rename_weight_factor_in_db("stddev_weight_factors", "FCFE Growth", "FCFF Growth")
+    tab_weights, tab_buckets, tab_rfr, tab_iapm, tab_erp, tab_crp, tab_mctr, tab_industry_beta, tab_cleanup, tab_formula = st.tabs(
 
 
         [
@@ -119,6 +165,9 @@ def render_admin_tab():
 
 
             "Implied Equity Risk Premium",
+
+
+            "Country Risk Premium",
 
 
             "Marginal Corporate Tax Rate",
@@ -151,7 +200,7 @@ def render_admin_tab():
         )
 
         with st.form("growth_weight_factors_form"):
-            st.write("Adjust the weight for each growth metric (for example, 0–100).")
+            st.write("Adjust the weight for each growth metric (for example, 0â€“100).")
             new_growth_weights = {}
             for _, row in growth_df.iterrows():
                 new_val = st.number_input(
@@ -288,7 +337,7 @@ def render_admin_tab():
                                 st.success(
                                     f"Assigned {len(ids)} company(ies) to bucket '{target_bucket_name}'."
                                 )
-                                st.experimental_rerun()
+                                _rerun()
 
         selected_bucket_name = st.selectbox(
             "Select a bucket to manage",
@@ -349,7 +398,7 @@ def render_admin_tab():
                     f"{'y' if len(ids_to_delete) == 1 else 'ies'} from bucket "
                     f"'{selected_bucket_name}'."
                 )
-                st.experimental_rerun()
+                _rerun()
 
         st.markdown("---")
         col_confirm, col_delete = st.columns([3, 1])
@@ -367,7 +416,7 @@ def render_admin_tab():
             ):
                 delete_company_group(conn, group_id)
                 st.success(f"Bucket '{selected_bucket_name}' deleted.")
-                st.experimental_rerun()
+                _rerun()
     
     # -----------------------------
     # Risk Free Rate sub-tab
@@ -459,7 +508,7 @@ def render_admin_tab():
                         datetime.utcnow().isoformat(),
                     )
                     st.success(f"Saved risk-free rates for {latest_year}.")
-                    st.experimental_rerun()
+                    _rerun()
 
             # Add the ensuing year
             st.markdown("---")
@@ -524,7 +573,7 @@ def render_admin_tab():
                                 datetime.utcnow().isoformat(),
                             )
                             st.success(f"Added risk-free rates for {next_year}.")
-                            st.experimental_rerun()
+                            _rerun()
                         except Exception as e:
                             st.error(f"Could not add {next_year}. Reason: {e}")
 # -----------------------------
@@ -601,7 +650,7 @@ def render_admin_tab():
                         datetime.utcnow().isoformat(),
                     )
                     st.success(f"Saved index values for {latest_year}.")
-                    st.experimental_rerun()
+                    _rerun()
 
             # Add the ensuing year
             st.markdown("---")
@@ -649,7 +698,7 @@ def render_admin_tab():
                                 datetime.utcnow().isoformat(),
                             )
                             st.success(f"Added index values for {next_year}.")
-                            st.experimental_rerun()
+                            _rerun()
                         except Exception as e:
                             st.error(f"Could not add {next_year}. Reason: {e}")
 
@@ -711,9 +760,131 @@ def render_admin_tab():
                             ts,
                         )
                         st.success(f"Saved implied equity risk premium for {latest_year}.")
-                        st.experimental_rerun()
+                        _rerun()
                     except Exception as e:
                         st.error(f"Could not save. Reason: {e}")
+
+    # -----------------------------
+    # Country Risk Premium sub-tab
+    # -----------------------------
+    with tab_crp:
+        st.subheader("Country Risk Premium")
+        st.caption(
+            "Values are stored as percentages. Add new years or edit existing rows, then click Save."
+        )
+
+        crp_df = read_df(
+            """
+            SELECT
+                year  AS "Year",
+                india AS "India %",
+                china AS "China %",
+                japan AS "Japan %",
+                us    AS "US %",
+                uk    AS "UK %",
+                uae   AS "UAE %"
+            FROM Country_Risk_Premium
+            ORDER BY year
+            """,
+            conn,
+        )
+
+        if crp_df.empty:
+            crp_df = pd.DataFrame(
+                columns=["Year", "India %", "China %", "Japan %", "US %", "UK %", "UAE %"]
+            )
+
+        display_df = crp_df.copy()
+        for c in ["India %", "China %", "Japan %", "US %", "UK %", "UAE %"]:
+            display_df[c] = pd.to_numeric(display_df[c], errors="coerce").round(2)
+
+        edited_df = st.data_editor(
+            display_df,
+            use_container_width=True,
+            hide_index=True,
+            num_rows="dynamic",
+            key="country_risk_premium_editor",
+            column_config={
+                "Year": st.column_config.NumberColumn(
+                    "Year",
+                    step=1,
+                    format="%d",
+                    required=True,
+                ),
+                "India %": st.column_config.NumberColumn(
+                    "India %",
+                    step=0.01,
+                    format="%.2f",
+                    required=True,
+                ),
+                "China %": st.column_config.NumberColumn(
+                    "China %",
+                    step=0.01,
+                    format="%.2f",
+                    required=True,
+                ),
+                "Japan %": st.column_config.NumberColumn(
+                    "Japan %",
+                    step=0.01,
+                    format="%.2f",
+                    required=True,
+                ),
+                "US %": st.column_config.NumberColumn(
+                    "US %",
+                    step=0.01,
+                    format="%.2f",
+                    required=True,
+                ),
+                "UK %": st.column_config.NumberColumn(
+                    "UK %",
+                    step=0.01,
+                    format="%.2f",
+                    required=True,
+                ),
+                "UAE %": st.column_config.NumberColumn(
+                    "UAE %",
+                    step=0.01,
+                    format="%.2f",
+                    required=True,
+                ),
+            },
+        )
+
+        if st.button("Save country risk premium", type="primary"):
+            df = edited_df.copy()
+            df["Year"] = pd.to_numeric(df["Year"], errors="coerce")
+            df = df[df["Year"].notna()].copy()
+
+            if df.empty:
+                st.error("Please add at least one valid year row before saving.")
+            else:
+                df["Year"] = df["Year"].astype(int)
+                if df["Year"].duplicated().any():
+                    st.error("Duplicate years are not allowed. Please make each year unique.")
+                else:
+                    for c in ["India %", "China %", "Japan %", "US %", "UK %", "UAE %"]:
+                        df[c] = pd.to_numeric(df[c], errors="coerce")
+
+                    if df[["India %", "China %", "Japan %", "US %", "UK %", "UAE %"]].isna().any().any():
+                        st.error("All country columns must have numeric values for every row.")
+                    else:
+                        ts = datetime.utcnow().isoformat()
+                        rows = [
+                            (
+                                int(r["Year"]),
+                                float(r["India %"]),
+                                float(r["China %"]),
+                                float(r["Japan %"]),
+                                float(r["US %"]),
+                                float(r["UK %"]),
+                                float(r["UAE %"]),
+                                ts,
+                            )
+                            for _, r in df.iterrows()
+                        ]
+                        replace_country_risk_premium(conn, rows)
+                        st.success("Country risk premium table saved.")
+                        _rerun()
 
 # Marginal Corporate Tax Rate sub-tab
     # -----------------------------
@@ -804,7 +975,7 @@ def render_admin_tab():
                         # Rewrite the table to match the editor (supports add/edit/delete)
                         replace_marginal_corporate_tax_rates(conn, rows)
                         st.success("Saved marginal corporate tax rates.")
-                        st.experimental_rerun()
+                        _rerun()
 
 # Data Cleanup sub-tab
     # -----------------------------
@@ -908,7 +1079,7 @@ def render_admin_tab():
                 ]
                 replace_industry_betas(conn, rows)
                 st.success("Industry beta table saved.")
-                st.experimental_rerun()
+                _rerun()
 
     with tab_cleanup:
         st.subheader("Data cleanup by bucket")
@@ -1043,88 +1214,256 @@ def render_admin_tab():
             "P&L Metrics, Balance Sheet Metrics, and Combined Dashboard tabs."
         )
 
-        st.markdown(
-            """
-### P&L (Profit and Loss) Score
-
-**a) Weighted P&L (Profit and Loss) Growth Score**
-
-Let **WeightedAvg(pairs)** be:
-
-> WeightedAvg = Σ(valueᵢ × weightᵢ) / Σ(weightᵢ), using only rows where valueᵢ is present and weightᵢ > 0.
-
-Then:
-
-- **Weighted P&L Growth Score** = WeightedAvg of these (all in % units over the selected year-range):
-  - Median Revenue Growth (%)
-  - Median Pretax Income Growth (%) (Pretax = Profit Before Tax)
-  - Median Net Income Growth (%)
-  - Median NOPAT (Net Operating Profit After Tax) Growth (%)
-  - Median Operating Margin (%)
-  - Median YoY (Year-over-Year) Operating Margin Growth (%)
-
-**b) Weighted P&L (Profit and Loss) Standard Deviation Score**
-
-- **Weighted P&L Standard Deviation Score** = WeightedAvg of these (all in % units over the selected year-range):
-  - Revenue Growth Standard Deviation
-  - Pretax Income Growth Standard Deviation
-  - Net Income Growth Standard Deviation
-  - NOPAT (Net Operating Profit After Tax) Growth Standard Deviation
-  - Operating Margin Standard Deviation
-  - YoY (Year-over-Year) Operating Margin Growth Standard Deviation
-
-**c) Additive Volatility-Adjusted P&L (Profit and Loss) Growth Score**
-
-- **Additive Volatility-Adjusted P&L Growth Score** = (Weighted P&L Growth Score) − (Weighted P&L Standard Deviation Score)
-
-**d) Scaled Volatility-Adjusted P&L (Profit and Loss) Growth Score**
-
-- **Scaled Volatility-Adjusted P&L Growth Score** = (Weighted P&L Growth Score) ÷ (1 + Weighted P&L Standard Deviation Score)
-
-
-### Balance Sheet Score
-
-**e) Weighted Balance Sheet Strength Score**
-
-- **Weighted Balance Sheet Strength Score** = WeightedAvg of these (all in % units over the selected year-range):
-  - Median Accumulated Equity Growth (%)
-  - Median Return on Equity (ROE) Growth (%)
-  - Median Return on Capital Employed (ROCE) (%)
-
-**f) Weighted Balance Sheet Standard Deviation Score**
-
-- **Weighted Balance Sheet Standard Deviation Score** = WeightedAvg of these (all in % units over the selected year-range):
-  - Accumulated Equity Growth Standard Deviation
-  - Return on Equity (ROE) Standard Deviation
-  - Return on Capital Employed (ROCE) Standard Deviation
-
-**g) Additive Volatility-Adjusted Balance Sheet Strength Score**
-
-- **Additive Volatility-Adjusted Balance Sheet Strength Score** = (Weighted Balance Sheet Strength Score) − (Weighted Balance Sheet Standard Deviation Score)
-
-**h) Scaled Volatility-Adjusted Balance Sheet Strength Score**
-
-- **Scaled Volatility-Adjusted Balance Sheet Strength Score** = (Weighted Balance Sheet Strength Score) ÷ (1 + Weighted Balance Sheet Standard Deviation Score)
-
-**i) Debt-Adjusted Balance Sheet Strength Score**
-
-- **Debt-Adjusted Balance Sheet Strength Score** = (Scaled Volatility-Adjusted Balance Sheet Strength Score) ÷ (1 + Median Interest Load % ÷ 100)
-
-> Median Interest Load % is the median Interest Load percentage over the selected year-range (higher debt load reduces this score).
-
-
-### Combined / Overall Scores
-
-**j) Total Additive Volatility-Adjusted Score**
-
-- **Total Additive Volatility-Adjusted Score** = (Additive Volatility-Adjusted Balance Sheet Strength Score) + (Additive Volatility-Adjusted P&L Growth Score)
-
-**k) Total Scaled Volatility-Adjusted Score**
-
-- **Total Scaled Volatility-Adjusted Score** = (Scaled Volatility-Adjusted Balance Sheet Strength Score) + (Scaled Volatility-Adjusted P&L Growth Score)
-
-**l) Total Debt-Adjusted Scaled Volatility-Adjusted Score**
-
-- **Total Debt-Adjusted Scaled Volatility-Adjusted Score** = (Debt-Adjusted Balance Sheet Strength Score) + (Scaled Volatility-Adjusted P&L Growth Score)
-"""
+        growth_weights_df = read_df(
+            "SELECT factor, weight FROM growth_weight_factors ORDER BY id",
+            conn,
         )
+        stddev_weights_df = read_df(
+            "SELECT factor, weight FROM stddev_weight_factors ORDER BY id",
+            conn,
+        )
+
+        def _weight_map(df) -> dict:
+            weights: dict = {}
+            if df is not None and not df.empty:
+                for _, row in df.iterrows():
+                    factor = str(row.get("factor", "")).strip()
+                    wt = row.get("weight")
+                    if factor and wt is not None:
+                        try:
+                            weights[factor] = float(wt)
+                        except Exception:
+                            continue
+            return weights
+
+        growth_weight_map = _weight_map(growth_weights_df)
+        stddev_weight_map = _weight_map(stddev_weights_df)
+
+        def _get_weight(weight_map: dict, *names: str):
+            for nm in names:
+                if nm in weight_map:
+                    return weight_map[nm]
+            return None
+
+        def _fmt_weight(val) -> str:
+            if val is None:
+                return "n/a"
+            try:
+                rounded = round(float(val))
+                if abs(float(val) - rounded) < 1e-6:
+                    return str(int(rounded))
+                return f"{float(val):.2f}".rstrip("0").rstrip(".")
+            except Exception:
+                return "n/a"
+
+        def _metric_label(label: str, growth_names: tuple, stddev_names: tuple) -> str:
+            g_val = _get_weight(growth_weight_map, *growth_names)
+            s_val = _get_weight(stddev_weight_map, *stddev_names)
+            return f"{label} (G={_fmt_weight(g_val)}, SD={_fmt_weight(s_val)})"
+
+        rev_label = _metric_label(
+            "Median Revenue Growth %",
+            ("Revenue Growth",),
+            ("Revenue Growth",),
+        )
+        pretax_label = _metric_label(
+            "Median Pretax Income Growth %",
+            ("Pretax Income Growth", "Profit Before Tax Growth"),
+            ("Pretax Income Growth", "Profit Before Tax Growth"),
+        )
+        net_income_label = _metric_label(
+            "Median Net Income Growth %",
+            ("Net Income Growth",),
+            ("Net Income Growth", "Net Income  Growth"),
+        )
+        nopat_label = _metric_label(
+            "Median NOPAT Growth %",
+            ("NOPAT Growth",),
+            ("NOPAT Growth",),
+        )
+        op_margin_label = _metric_label(
+            "Median Operating Margin % (level)",
+            ("Operating Margin",),
+            ("Operating Margin",),
+        )
+        yoy_op_margin_label = _metric_label(
+            "Median YoY Operating Margin Growth %",
+            ("YoY Operating Margin Growth",),
+            ("YoY Operating Margin Growth",),
+        )
+
+        acc_equity_label = _metric_label(
+            "Median Accumulated Equity Growth %",
+            ("Accumulated Equity Growth", "Accumulated Profit Growth"),
+            ("Accumulated Equity Growth", "Accumulated Profit Growth"),
+        )
+        roe_label = _metric_label(
+            "Median ROE Growth %",
+            ("ROE",),
+            ("ROE",),
+        )
+        roce_label = _metric_label(
+            "Median ROCE % (level)",
+            ("ROCE",),
+            ("ROCE",),
+        )
+
+        fcff_label = _metric_label(
+            "Median YoY FCFF Change % (FCFF Growth weight)",
+            ("FCFF Growth", "FCFE Growth"),
+            ("FCFF Growth", "FCFE Growth"),
+        )
+        spread_label = _metric_label(
+            "Median Spread % (ROIC % - WACC %)",
+            ("Spread",),
+            ("Spread",),
+        )
+
+        st.markdown(
+            f"""
+<div style="margin-bottom: 0.5rem;">
+  <div style="font-weight: 600; font-size: 1.05rem;">Score Tree (matches live calculations)</div>
+  <div style="margin-top: 0.35rem; display: flex; flex-wrap: wrap; gap: 0.4rem 0.6rem;">
+    <span style="background:#DBEAFE;color:#1E3A8A;padding:0.15rem 0.45rem;border-radius:0.4rem;font-weight:600;">P&amp;L</span>
+    <span style="background:#DCFCE7;color:#166534;padding:0.15rem 0.45rem;border-radius:0.4rem;font-weight:600;">Balance Sheet</span>
+    <span style="background:#FFEDD5;color:#9A3412;padding:0.15rem 0.45rem;border-radius:0.4rem;font-weight:600;">FCFF + Spread</span>
+    <span style="background:#F3E8FF;color:#6B21A8;padding:0.15rem 0.45rem;border-radius:0.4rem;font-weight:600;">Totals</span>
+  </div>
+  <div style="margin-top: 0.35rem; font-size: 0.85rem; color: #4B5563;">
+    Leaf metrics show live weights as (G=Growth weight, SD=Std Dev weight).
+  </div>
+</div>
+
+<div style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace; font-size: 0.9rem; line-height: 1.35; white-space: pre;">
+<span style="background:#F3E8FF;color:#6B21A8;padding:0.05rem 0.35rem;border-radius:0.35rem;font-weight:600;">Totals</span> Total Additive Volatility-Adjusted Score
+|-- <span style="background:#DBEAFE;color:#1E3A8A;padding:0.05rem 0.35rem;border-radius:0.35rem;font-weight:600;">P&amp;L</span> Additive Volatility-Adjusted P&amp;L Growth Score
+|  |-- Weighted P&amp;L Growth Score
+|  |  |-- {rev_label}
+|  |  |-- {pretax_label}
+|  |  |-- {net_income_label}
+|  |  |-- {nopat_label}
+|  |  |-- {op_margin_label}
+|  |  `-- {yoy_op_margin_label}
+|  `-- Weighted P&amp;L Standard Deviation Score (same 6 metrics)
+|-- <span style="background:#DCFCE7;color:#166534;padding:0.05rem 0.35rem;border-radius:0.35rem;font-weight:600;">Balance Sheet</span> Additive Volatility-Adjusted Balance Sheet Strength Score
+|  |-- Weighted Balance Sheet Strength Score
+|  |  |-- {acc_equity_label}
+|  |  |-- {roe_label}
+|  |  `-- {roce_label}
+|  `-- Weighted Balance Sheet Standard Deviation Score (same 3 metrics)
+`-- <span style="background:#FFEDD5;color:#9A3412;padding:0.05rem 0.35rem;border-radius:0.35rem;font-weight:600;">FCFF + Spread</span> Additive FCFF and Spread Score
+   |-- Weighted FCFF and Spread Score
+   |  |-- {fcff_label}
+   |  `-- {spread_label}
+   `-- Weighted FCFF and Spread Standard Deviation Score (same 2 metrics)
+
+<span style="background:#F3E8FF;color:#6B21A8;padding:0.05rem 0.35rem;border-radius:0.35rem;font-weight:600;">Totals</span> Total Scaled Volatility-Adjusted Score
+|-- P&amp;L Scaled Volatility-Adjusted Score
+|-- Balance Sheet Scaled Volatility-Adjusted Score
+`-- FCFF and Spread Scaled Score
+
+<span style="background:#F3E8FF;color:#6B21A8;padding:0.05rem 0.35rem;border-radius:0.35rem;font-weight:600;">Totals</span> Total Debt-Adjusted Scaled Volatility-Adjusted Score
+|-- Balance Sheet Debt-Adjusted Score
+|-- P&amp;L Scaled Volatility-Adjusted Score
+`-- FCFF and Spread Scaled Score
+</div>
+
+### Core formulas (live)
+
+**Weighted score**
+
+WeightedScore = sum(value_i * weight_i) / sum(weight_i)
+
+- Uses only rows where value_i is present and weight_i > 0.
+
+**P&L branch**
+
+- Weighted P&L Growth Score = WeightedScore of:
+  - Median Revenue Growth %
+  - Median Pretax Income Growth %
+  - Median Net Income Growth %
+  - Median NOPAT Growth %
+  - Median Operating Margin % (level)
+  - Median YoY Operating Margin Growth %
+- Weighted P&L Standard Deviation Score = WeightedScore of the same 6 metrics (stdev)
+- Additive P&L Score = Weighted P&L Growth Score - Weighted P&L Standard Deviation Score
+- Scaled P&L Score = Weighted P&L Growth Score / (1 + Weighted P&L Standard Deviation Score)
+
+**Balance Sheet branch**
+
+- Weighted Balance Sheet Strength Score = WeightedScore of:
+  - Median Accumulated Equity Growth %
+  - Median ROE Growth %
+  - Median ROCE % (level)
+- Weighted Balance Sheet Standard Deviation Score = WeightedScore of the same 3 metrics (stdev)
+- Additive Balance Sheet Score = Weighted Balance Sheet Strength Score - Weighted Balance Sheet Standard Deviation Score
+- Scaled Balance Sheet Score = Weighted Balance Sheet Strength Score / (1 + Weighted Balance Sheet Standard Deviation Score)
+- Debt-Adjusted Balance Sheet Score = Scaled Balance Sheet Score / (1 + Median Interest Load % / 100)
+
+**FCFF + Spread branch**
+
+- Weighted FCFF and Spread Score = WeightedScore of:
+  - Median YoY FCFF Change % (uses the "FCFF Growth" weight in the app)
+  - Median Spread % (ROIC % - WACC %)
+- Weighted FCFF and Spread Standard Deviation Score = WeightedScore of:
+  - YoY FCFF Change % stdev
+  - Spread % stdev
+- Additive FCFF and Spread Score = Weighted FCFF and Spread Score - Weighted FCFF and Spread Standard Deviation Score
+- Scaled FCFF and Spread Score = Weighted FCFF and Spread Score / (1 + Weighted FCFF and Spread Standard Deviation Score)
+
+**Totals (overall scores)**
+
+- Total Additive Volatility-Adjusted Score
+  = Balance Sheet Additive + P&L Additive + FCFF and Spread Additive
+- Total Scaled Volatility-Adjusted Score
+  = Balance Sheet Scaled + P&L Scaled + FCFF and Spread Scaled
+- Total Debt-Adjusted Scaled Volatility-Adjusted Score
+  = Balance Sheet Debt-Adjusted + P&L Scaled + FCFF and Spread Scaled
+
+### Supporting definitions
+
+- YoY Growth % = (current - previous) / abs(previous)
+- Spread % = ROIC % - WACC % (percentage points)
+- Interest Load % = (1 / Interest Coverage) * 100
+- FCFF = NOPAT + D&A - CapEx - Delta NCWC
+- FCFE = Net Income + D&A - CapEx - Delta NCWC + Net Debt Issued/Paid
+""",
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("### Live weight factors")
+        st.caption(
+            "These tables are read live from the same weight-factor tables used in scoring. "
+            "Factor names must match exactly to be used in calculations."
+        )
+
+        col_growth, col_stddev = st.columns(2)
+        with col_growth:
+            st.markdown("**Growth weights**")
+            if growth_weights_df.empty:
+                st.info("No growth weights found.")
+            else:
+                st.dataframe(
+                    growth_weights_df.rename(
+                        columns={"factor": "Metric", "weight": "Growth Weight"}
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+        with col_stddev:
+            st.markdown("**Standard deviation weights**")
+            if stddev_weights_df.empty:
+                st.info("No standard deviation weights found.")
+            else:
+                st.dataframe(
+                    stddev_weights_df.rename(
+                        columns={"factor": "Metric", "weight": "Std Dev Weight"}
+                    ),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+
+
+
+

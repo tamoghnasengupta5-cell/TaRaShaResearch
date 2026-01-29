@@ -1,4 +1,4 @@
-import io
+﻿import io
 import os
 import shutil
 import threading
@@ -16,6 +16,7 @@ from db_orm import (
     Companies,
     CompanyGroups,
     CompanyGroupMembers,
+    CountryRiskPremium,
     GrowthWeightFactors,
     StddevWeightFactors,
     RiskFreeRates,
@@ -584,6 +585,40 @@ def replace_industry_betas(
     conn.commit()
 
 
+def replace_country_risk_premium(
+    conn,
+    rows: List[Tuple[int, float, float, float, float, float, float, str]],
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        session.query(CountryRiskPremium).delete(synchronize_session=False)
+        session.add_all(
+            [
+                CountryRiskPremium(
+                    year=int(year),
+                    india=float(india),
+                    china=float(china),
+                    japan=float(japan),
+                    us=float(us),
+                    uk=float(uk),
+                    uae=float(uae),
+                    updated_at=updated_at,
+                )
+                for year, india, china, japan, us, uk, uae, updated_at in rows
+            ]
+        )
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    cur.execute("DELETE FROM Country_Risk_Premium")
+    cur.executemany(
+        "INSERT INTO Country_Risk_Premium(year, india, china, japan, us, uk, uae, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+
+
 def _canonicalize_country(country: Optional[str]) -> str:
     """Normalize country values used by the app to the dropdown canonical set."""
     if country is None:
@@ -646,7 +681,7 @@ def init_db(conn) -> None:
             ("Operating Margin", 20.0),
             ("YoY Operating Margin Growth", 20.0),
             ("NOPAT Growth", 15.0),
-            ("FCFE Growth", 15.0),
+            ("FCFF Growth", 15.0),
             ("Earnings Power Change %", 20.0),
             ("Change in EP Delta", 20.0),
             ("Spread", 20.0),
@@ -673,12 +708,46 @@ def init_db(conn) -> None:
             ("Earnings Power Change %", 10.0),
             ("Change in EP Delta", 10.0),
             ("Spread", 10.0),
-            ("FCFE Growth", 10.0),
+            ("FCFF Growth", 10.0),
         ]
         cur.executemany(
             "INSERT INTO stddev_weight_factors(factor, weight) VALUES(?, ?)",
             stddev_defaults,
         )
+
+    # Backfill rename: FCFE Growth -> FCFF Growth (keep weight, avoid duplicates).
+    def _rename_weight_factor(table: str, old: str, new: str) -> None:
+        try:
+            cur.execute(f"SELECT id, weight FROM {table} WHERE factor = ?", (new,))
+            new_row = cur.fetchone()
+            cur.execute(f"SELECT id, weight FROM {table} WHERE factor = ?", (old,))
+            old_row = cur.fetchone()
+            if old_row and not new_row:
+                cur.execute(
+                    f"UPDATE {table} SET factor = ? WHERE factor = ?",
+                    (new, old),
+                )
+                conn.commit()
+            elif old_row and new_row:
+                old_weight = old_row[1] if len(old_row) > 1 else None
+                if old_weight is not None:
+                    cur.execute(
+                        f"UPDATE {table} SET weight = ? WHERE factor = ?",
+                        (old_weight, new),
+                    )
+                cur.execute(
+                    f"DELETE FROM {table} WHERE factor = ?",
+                    (old,),
+                )
+                conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+    _rename_weight_factor("growth_weight_factors", "FCFE Growth", "FCFF Growth")
+    _rename_weight_factor("stddev_weight_factors", "FCFE Growth", "FCFF Growth")
 
 
     
@@ -796,7 +865,7 @@ def init_db(conn) -> None:
             (
                 "USA",
                 25.70,
-                "Federal (21%) + State Tax (~4–5%). While the Federal rate is a flat 21%, state taxes vary by state; Texas 0%, California 8.84%. For a diversified US company, 25.7% is the standard OECD composite rate used by analysts.",
+                "Federal (21%) + State Tax (~4â€“5%). While the Federal rate is a flat 21%, state taxes vary by state; Texas 0%, California 8.84%. For a diversified US company, 25.7% is the standard OECD composite rate used by analysts.",
             ),
             (
                 "India",
@@ -806,7 +875,7 @@ def init_db(conn) -> None:
             (
                 "China",
                 25.00,
-                "Standard national rate. China has a 25% standard rate. Use 15% only if the specific company is a qualified “High-Tech Enterprise”.",
+                "Standard national rate. China has a 25% standard rate. Use 15% only if the specific company is a qualified â€œHigh-Tech Enterpriseâ€.",
             ),
             (
                 "Japan",
@@ -1118,7 +1187,7 @@ def extract_annual_roic_direct_upload_series(file_bytes: bytes) -> Dict[int, flo
     """Extract Return on Invested Capital (ROIC) from the 'Ratios-Annual' sheet.
 
     Note: Many providers store ROIC as a fraction (e.g., 0.26 for 26%). This function
-    DOES NOT normalize—normalization is done at ingestion so you can control storage.
+    DOES NOT normalizeâ€”normalization is done at ingestion so you can control storage.
     """
     fallbacks = [
         "Return on Invested Capital (ROIC)%",
@@ -3900,7 +3969,7 @@ def compute_and_store_total_equity_and_roe(conn: sqlite3.Connection, company_id:
 
     Total Equity (annual) = Shareholders Equity
 
-    Average Equity (year Y) = 0.5 × (Shareholders Equity(Y−1) + Shareholders Equity(Y))
+    Average Equity (year Y) = 0.5 Ã— (Shareholders Equity(Yâˆ’1) + Shareholders Equity(Y))
 
     ROE (year Y) = Net Income (Y) / Average Equity (Y)
 
@@ -3931,7 +4000,7 @@ def compute_and_store_total_equity_and_roe(conn: sqlite3.Connection, company_id:
     # Total Equity = Shareholders Equity
     year_to_total = {int(y): float(v) for y, v in se_map.items()}
 
-    # Average Equity(y) = 0.5 × (SE(y-1) + SE(y))
+    # Average Equity(y) = 0.5 Ã— (SE(y-1) + SE(y))
     year_to_avg: Dict[int, float] = {}
     for y in sorted(se_map.keys()):
         prev = y - 1
@@ -4537,9 +4606,9 @@ def compute_and_store_rd_spend_rate(conn: sqlite3.Connection, company_id: int) -
 def compute_and_store_fcff_and_reinvestment_rate(conn: sqlite3.Connection, company_id: int) -> None:
     """Compute and store annual FCFF and Reinvestment Rate using data already in the DB.
 
-    FCFF (Damodaran-style): FCFF = NOPAT + D&A - CapEx - ΔNCWC
+    FCFF (Damodaran-style): FCFF = NOPAT + D&A - CapEx - Î”NCWC
     Net CapEx = CapEx - D&A
-    Reinvestment Rate = (Net CapEx + ΔNCWC) / NOPAT
+    Reinvestment Rate = (Net CapEx + Î”NCWC) / NOPAT
     """
     try:
         nopat_df = get_annual_nopat_series(conn, company_id)
@@ -4571,7 +4640,7 @@ def compute_and_store_fcff_and_reinvestment_rate(conn: sqlite3.Connection, compa
     if not years:
         return
 
-    # For ΔNCWC, use the prior available NCWC year (not necessarily year-1).
+    # For Î”NCWC, use the prior available NCWC year (not necessarily year-1).
     ncwc_years_sorted = sorted(ncwc_map.keys())
 
     def prev_ncwc_year(y: int) -> Optional[int]:
@@ -4598,11 +4667,11 @@ def compute_and_store_fcff_and_reinvestment_rate(conn: sqlite3.Connection, compa
         # Net CapEx = CapEx - D&A  (CapEx is stored as positive outflow)
         net_capex = float(capex) - float(da)
 
-        # FCFF = NOPAT - Net CapEx - ΔNCWC
+        # FCFF = NOPAT - Net CapEx - Î”NCWC
         fcff = float(nopat) - float(net_capex) - float(delta_ncwc)
         year_to_fcff[int(y)] = float(fcff)
 
-        # Reinvestment Rate = (Net CapEx + ΔNCWC) / NOPAT
+        # Reinvestment Rate = (Net CapEx + Î”NCWC) / NOPAT
         denom = float(nopat)
         if denom != 0.0:
             reinvestment = float(net_capex) + float(delta_ncwc)
@@ -4616,11 +4685,11 @@ def compute_and_store_fcfe(conn: sqlite3.Connection, company_id: int) -> None:
     """Compute and store annual Free Cash Flow to Equity (FCFE) using data already in the DB.
 
     FCFE (Damodaran-style):
-        FCFE = Net Income + Depreciation & Amortization - CapEx - ΔNCWC + Net Debt Issued/Paid
+        FCFE = Net Income + Depreciation & Amortization - CapEx - Î”NCWC + Net Debt Issued/Paid
 
     Notes:
     - CapEx is stored as a positive outflow in this app's DB.
-    - ΔNCWC uses the prior available NCWC year (not necessarily year-1).
+    - Î”NCWC uses the prior available NCWC year (not necessarily year-1).
     - If Net Debt Issued/Paid is missing for a year, it is treated as 0 for that year.
     """
     try:
@@ -4646,7 +4715,7 @@ def compute_and_store_fcfe(conn: sqlite3.Connection, company_id: int) -> None:
     # Preferred input for Net Debt Issued/Paid is the Cash Flow line item "Debt Issued / Paid".
     # Some templates (e.g., certain India company exports) don't include this row; in that case we fall
     # back to a balance-sheet approximation:
-    #   Net Debt Issued/Paid ≈ Total Debt(current year) - Total Debt(previous year)
+    #   Net Debt Issued/Paid â‰ˆ Total Debt(current year) - Total Debt(previous year)
     try:
         net_debt_map = get_annual_net_debt_issued_paid_series(conn, company_id)
     except Exception:
@@ -4713,8 +4782,9 @@ def compute_and_store_fcfe(conn: sqlite3.Connection, company_id: int) -> None:
             else:
                 net_debt = float(total_debt_map[int(y)]) - float(total_debt_map[int(py_td)])
 
-        # FCFE = Net Income + D&A - CapEx - ΔNCWC + Net Debt Issued/Paid
+        # FCFE = Net Income + D&A - CapEx - Î”NCWC + Net Debt Issued/Paid
         fcfe = float(ni) + float(da) - float(capex) - float(delta_ncwc) + float(net_debt)
         year_to_fcfe[int(y)] = float(fcfe)
 
     upsert_annual_fcfe(conn, company_id, year_to_fcfe)
+
