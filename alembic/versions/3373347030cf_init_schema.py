@@ -1,4 +1,4 @@
-"""init schema
+﻿"""init schema
 
 Revision ID: 3373347030cf
 Revises: 
@@ -603,7 +603,7 @@ def upgrade() -> None:
             {"factor": "Operating Margin", "weight": 20.0},
             {"factor": "YoY Operating Margin Growth", "weight": 20.0},
             {"factor": "NOPAT Growth", "weight": 15.0},
-            {"factor": "FCFE Growth", "weight": 15.0},
+            {"factor": "FCFF Growth", "weight": 15.0},
             {"factor": "Earnings Power Change %", "weight": 20.0},
             {"factor": "Change in EP Delta", "weight": 20.0},
             {"factor": "Spread", "weight": 20.0},
@@ -629,7 +629,7 @@ def upgrade() -> None:
             {"factor": "Earnings Power Change %", "weight": 10.0},
             {"factor": "Change in EP Delta", "weight": 10.0},
             {"factor": "Spread", "weight": 10.0},
-            {"factor": "FCFE Growth", "weight": 10.0},
+            {"factor": "FCFF Growth", "weight": 10.0},
         ],
     )
 
@@ -884,3 +884,4 @@ def downgrade() -> None:
     op.drop_table('company_groups')
     op.drop_table('companies')
     # ### end Alembic commands ###
+

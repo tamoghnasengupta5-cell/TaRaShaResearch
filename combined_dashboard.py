@@ -1,4 +1,4 @@
-
+﻿
 import re
 from typing import Dict, List, Optional, Tuple
 
@@ -73,8 +73,8 @@ def render_combined_dashboard_tab() -> None:
             if not available_years:
                 raise ValueError("No annual years available.")
             most_recent = max(available_years)
-            m_recent = re.match(r"^recent\s*[-–]\s*(\d{4})$", s, flags=re.IGNORECASE)
-            m_two = re.match(r"^(\d{4})\s*[-–]\s*(\d{4})$", s)
+            m_recent = re.match(r"^recent\s*[-â€“]\s*(\d{4})$", s, flags=re.IGNORECASE)
+            m_two = re.match(r"^(\d{4})\s*[-â€“]\s*(\d{4})$", s)
             if m_recent:
                 end = int(m_recent.group(1))
                 return most_recent, end
@@ -237,6 +237,16 @@ def render_combined_dashboard_tab() -> None:
         if not compute_overall_scores:
             return
 
+        progress_total = len(score_company_ids) + 1
+        progress_step = 0
+        progress_bar = st.progress(0, text="Starting overall score computation...")
+
+        def bump_progress(message: str) -> None:
+            nonlocal progress_step
+            progress_step += 1
+            pct = int((progress_step / progress_total) * 100)
+            progress_bar.progress(pct, text=message)
+
         # -----------------------------
         # Score computation
         # -----------------------------
@@ -244,14 +254,28 @@ def render_combined_dashboard_tab() -> None:
 
         rows_breakup: List[Dict[str, Optional[float]]] = []
 
-        for cid in score_company_ids:
+        bump_progress("Refreshing WACC/Spread inputs...")
+        try:
+            # One-time backfill for derived metrics used by this tab.
+            for cid in score_company_ids:
+                compute_and_store_levered_beta(conn, cid)
+            refresh_cost_of_equity_all_companies(conn)
+            refresh_pre_tax_cost_of_debt_all_companies(conn)
+            refresh_wacc_all_companies(conn)
+            refresh_roic_wacc_spread_all_companies(conn)
+        except Exception as e:
+            st.warning(f"Skipping WACC/Spread backfill: {e}")
+
+        for idx, cid in enumerate(score_company_ids, start=1):
             row_info = companies_df[companies_df["id"] == cid]
             if row_info.empty:
+                bump_progress(f"Computing scores for company {idx}/{len(score_company_ids)}")
                 continue
             row_info = row_info.iloc[0]
             name = row_info["name"]
             ticker = row_info["ticker"]
 
+            bump_progress(f"Computing scores for {name} ({idx}/{len(score_company_ids)})")
 
             # Breakup dashboard metrics (year-range aligned; percent fields are % points)
             breakup_total_scaled: Optional[float] = None
@@ -550,13 +574,17 @@ def render_combined_dashboard_tab() -> None:
 
 
             # -------------------------
-            # FCFE + Spread score part
+            # FCFF + Spread score part
             # -------------------------
             fs_add: Optional[float] = None
             fs_scaled: Optional[float] = None
             try:
                 # Ensure underlying metrics exist / are fresh
                 compute_and_store_fcff_and_reinvestment_rate(conn, cid)
+                compute_and_store_levered_beta(conn, cid)
+                compute_and_store_cost_of_equity(conn, cid)
+                compute_and_store_pre_tax_cost_of_debt(conn, cid)
+                compute_and_store_wacc(conn, cid)
                 compute_and_store_roic_wacc_spread(conn, cid)
 
                 fcff_df = get_annual_fcff_series(conn, cid)
@@ -606,18 +634,18 @@ def render_combined_dashboard_tab() -> None:
                     breakup_median_yoy_fcff_change = median_yoy_fcff_change_pct
                     breakup_median_spread_pct = med_spread
                     breakup_std_spread_pct = std_spread
-                    gw_fcfe = get_factor_weight(growth_weight_map, "FCFE Growth")
+                    gw_fcff = get_factor_weight(growth_weight_map, "FCFF Growth", "FCFE Growth")
                     gw_spread = get_factor_weight(growth_weight_map, "Spread")
 
-                    sw_fcfe = get_factor_weight(stddev_weight_map, "FCFE Growth")
+                    sw_fcff = get_factor_weight(stddev_weight_map, "FCFF Growth", "FCFE Growth")
                     sw_spread = get_factor_weight(stddev_weight_map, "Spread")
 
                     growth_pairs = [
-                        (median_yoy_fcff_change_pct, gw_fcfe),
+                        (median_yoy_fcff_change_pct, gw_fcff),
                         (med_spread, gw_spread),
                     ]
                     stddev_pairs = [
-                        (std_yoy_fcff_change_pct, sw_fcfe),
+                        (std_yoy_fcff_change_pct, sw_fcff),
                         (std_spread, sw_spread),
                     ]
 
@@ -629,7 +657,7 @@ def render_combined_dashboard_tab() -> None:
                         fs_scaled = weighted_growth / (1.0 + weighted_stddev)
 
             except Exception as e:
-                st.warning(f"Skipping FCFE and Spread score computation for company_id={cid}: {e}")
+                st.warning(f"Skipping FCFF and Spread score computation for company_id={cid}: {e}")
 
 
             # If everything is None, skip this company
@@ -715,8 +743,8 @@ def render_combined_dashboard_tab() -> None:
                     "Debt-Adjusted Balance Sheet Strength Score": bs_debt,
                     "Additive Volatility-Adjusted P&L Growth Score": pl_add,
                     "Scaled Volatility-Adjusted P&L Growth Score": pl_scaled,
-                    "Additive FCFE and Spread Score": fs_add,
-                    "Scaled FCFE and Spread Score": fs_scaled,
+                    "Additive FCFF and Spread Score": fs_add,
+                    "Scaled FCFF and Spread Score": fs_scaled,
                     "Total Additive Volatility-Adjusted Score": total_additive,
                     "Total Scaled Volatility-Adjusted Score": total_scaled,
                     "Total Debt-Adjusted Scaled Volatility-Adjusted Score": total_debt_adjusted_scaled,
@@ -728,6 +756,7 @@ def render_combined_dashboard_tab() -> None:
             )
 
         if not rows:
+            progress_bar.progress(100, text="No overall scores to display for the selected filters.")
             st.info("No overall scores to display for the selected year range and buckets.")
             return
 
@@ -760,8 +789,8 @@ def render_combined_dashboard_tab() -> None:
             "Debt-Adjusted Balance Sheet Strength Score",
             "Additive Volatility-Adjusted P&L Growth Score",
             "Scaled Volatility-Adjusted P&L Growth Score",
-            "Additive FCFE and Spread Score",
-            "Scaled FCFE and Spread Score",
+            "Additive FCFF and Spread Score",
+            "Scaled FCFF and Spread Score",
             "Total Additive Volatility-Adjusted Score",
             "Total Scaled Volatility-Adjusted Score",
             "Total Debt-Adjusted Scaled Volatility-Adjusted Score",
@@ -774,11 +803,11 @@ def render_combined_dashboard_tab() -> None:
 
         def fmt_score_val(x: Optional[float]) -> str:
             if x is None or (isinstance(x, float) and pd.isna(x)):
-                return "—"
+                return "-"
             try:
                 return f"{float(x):.2f}"
             except Exception:
-                return "—"
+                return "-"
 
         styler = df_sorted.style
         if existing_score_cols:
@@ -828,8 +857,9 @@ def render_combined_dashboard_tab() -> None:
         if pct_year_cols:
             styler = styler.applymap(style_above_15_year, subset=pd.IndexSlice[:, pct_year_cols])
 
-        st.subheader("Overall Score Dashboard — Combined P&L and Balance Sheet Scores")
+        st.subheader("Overall Score Dashboard - Combined P&L and Balance Sheet Scores")
         st.dataframe(styler, use_container_width=True)
+        progress_bar.progress(100, text="Overall score computation complete.")
 
 
 
@@ -875,11 +905,11 @@ def render_combined_dashboard_tab() -> None:
 
             def fmt_break_val(x: Optional[float]) -> str:
                 if x is None or (isinstance(x, float) and pd.isna(x)):
-                    return "—"
+                    return "-"
                 try:
                     return f"{float(x):.2f}"
                 except Exception:
-                    return "—"
+                    return "-"
 
             styler_break = df_breakup.style
             if numeric_cols:
@@ -887,3 +917,6 @@ def render_combined_dashboard_tab() -> None:
 
             st.subheader("Overall Score Dashboard Breakup")
             st.dataframe(styler_break, use_container_width=True)
+
+
+

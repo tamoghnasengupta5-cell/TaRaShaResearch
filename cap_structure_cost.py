@@ -1,4 +1,4 @@
-import re
+﻿import re
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -154,8 +154,8 @@ def render_capital_structure_cost_of_capital_tab() -> None:
             if not available_years:
                 raise ValueError("No annual years available.")
             most_recent = max(available_years)
-            m_recent = re.match(r"^recent\s*[-–]\s*(\d{4})$", s, flags=re.IGNORECASE)
-            m_two = re.match(r"^(\d{4})\s*[-–]\s*(\d{4})$", s)
+            m_recent = re.match(r"^recent\s*[-â€“]\s*(\d{4})$", s, flags=re.IGNORECASE)
+            m_two = re.match(r"^(\d{4})\s*[-â€“]\s*(\d{4})$", s)
             if m_recent:
                 end = int(m_recent.group(1))
                 return most_recent, end
@@ -317,11 +317,11 @@ def render_capital_structure_cost_of_capital_tab() -> None:
         out_df = pd.DataFrame(rows_out)
         
         def fmt_ratio(x: Optional[float]) -> str:
-            return "—" if x is None or pd.isna(x) else f"{float(x):.2f}"
+            return "-" if x is None or pd.isna(x) else f"{float(x):.2f}"
         
         def fmt_pct(x: Optional[float]) -> str:
             # Stored as percentage points (e.g., 6.62 means 6.62%)
-            return "—" if x is None or pd.isna(x) else f"{float(x):.2f}"
+            return "-" if x is None or pd.isna(x) else f"{float(x):.2f}"
         
         show_df = out_df.copy()
         show_df["Median Debt/Market Capitalization"] = show_df["Median Debt/Market Capitalization"].map(fmt_ratio)
@@ -378,19 +378,19 @@ def render_capital_structure_cost_of_capital_tab() -> None:
         )
     st.markdown("---")
 
-    with st.expander("FCFE and Spread Score Dashboard", expanded=True):
+    with st.expander("FCFF and Spread Score Dashboard", expanded=True):
         conn = get_db()
         # -----------------------------
         # User inputs
         # -----------------------------
         yr_input = st.text_input(
-            "Year range for FCFE and Spread Score (e.g., 'Recent - 2020' or '2023-2018')",
+            "Year range for FCFF and Spread Score (e.g., 'Recent - 2020' or '2023-2018')",
             value="Recent - 2020",
             key="cs_fcfe_spread_year_range",
         )
 
         stdev_mode = st.radio(
-            "Standard deviation mode for FCFE and Spread Score",
+            "Standard deviation mode for FCFF and Spread Score",
             ['Sample (ddof=1)', 'Population (ddof=0)'],
             horizontal=True,
             key="cs_fcfe_spread_stdev_mode",
@@ -402,8 +402,8 @@ def render_capital_structure_cost_of_capital_tab() -> None:
             if not available_years:
                 raise ValueError("No annual years available.")
             most_recent = max(available_years)
-            m_recent = re.match(r"^recent\s*[-–]\s*(\d{4})$", s, flags=re.IGNORECASE)
-            m_two = re.match(r"^(\d{4})\s*[-–]\s*(\d{4})$", s)
+            m_recent = re.match(r"^recent\s*[-â€“]\s*(\d{4})$", s, flags=re.IGNORECASE)
+            m_two = re.match(r"^(\d{4})\s*[-â€“]\s*(\d{4})$", s)
             if m_recent:
                 end = int(m_recent.group(1))
                 return most_recent, end
@@ -473,13 +473,13 @@ def render_capital_structure_cost_of_capital_tab() -> None:
 
         group_name_to_id = {str(row["name"]): int(row["id"]) for _, row in groups_df.iterrows()}
         bucket_names_selected = st.multiselect(
-            "Select one or more buckets for FCFE and Spread Score computation",
+            "Select one or more buckets for FCFF and Spread Score computation",
             options=list(group_name_to_id.keys()),
             key="cs_fcfe_spread_bucket_select",
         )
 
         if not bucket_names_selected:
-            st.info("Select at least one bucket to compute the FCFE and Spread Score Dashboard.")
+            st.info("Select at least one bucket to compute the FCFF and Spread Score Dashboard.")
             return
 
         group_ids = [group_name_to_id[name] for name in bucket_names_selected if name in group_name_to_id]
@@ -501,10 +501,10 @@ def render_capital_structure_cost_of_capital_tab() -> None:
         # -----------------------------
         # Compute scores
         # -----------------------------
-        gw_fcfe = get_factor_weight(growth_weight_map, "FCFE Growth")
+        gw_fcff = get_factor_weight(growth_weight_map, "FCFF Growth", "FCFE Growth")
         gw_spread = get_factor_weight(growth_weight_map, "Spread")
 
-        sw_fcfe = get_factor_weight(stddev_weight_map, "FCFE Growth")
+        sw_fcff = get_factor_weight(stddev_weight_map, "FCFF Growth", "FCFE Growth")
         sw_spread = get_factor_weight(stddev_weight_map, "Spread")
 
         rows: List[Dict[str, Optional[float]]] = []
@@ -559,11 +559,11 @@ def render_capital_structure_cost_of_capital_tab() -> None:
                     )
 
                 growth_pairs = [
-                    (median_yoy_fcff_change_pct, gw_fcfe),
+                    (median_yoy_fcff_change_pct, gw_fcff),
                     (med_spread, gw_spread),
                 ]
                 stddev_pairs = [
-                    (std_yoy_fcff_change_pct, sw_fcfe),
+                    (std_yoy_fcff_change_pct, sw_fcff),
                     (std_spread, sw_spread),
                 ]
 
@@ -581,57 +581,60 @@ def render_capital_structure_cost_of_capital_tab() -> None:
                     {
                         "Ticker": ticker,
                         "Company Name": name,
-                        "Weighted FCFE and Spread Score": weighted_growth,
-                        "Weighted FCFE and Spread Standard Deviation Score": weighted_stddev,
-                        "Additive FCFE and Spread Score": additive,
-                        "Scaled FCFE and Spread Score": scaled,
+                        "Weighted FCFF and Spread Score": weighted_growth,
+                        "Weighted FCFF and Spread Standard Deviation Score": weighted_stddev,
+                        "Additive FCFF and Spread Score": additive,
+                        "Scaled FCFF and Spread Score": scaled,
                     }
                 )
 
             except Exception as e:
-                st.warning(f"Skipping company {name} ({ticker}) in FCFE and Spread Score computation: {e}")
+                st.warning(f"Skipping company {name} ({ticker}) in FCFF and Spread Score computation: {e}")
 
         if not rows:
-            st.info("No score rows to display. Ensure FCFE and Spread data exist for the selected companies.")
+            st.info("No score rows to display. Ensure FCFF and Spread data exist for the selected companies.")
             return
 
         df = pd.DataFrame(rows)
         df = df.sort_values(
-            by="Scaled FCFE and Spread Score",
+            by="Scaled FCFF and Spread Score",
             ascending=False,
             na_position="last",
         )
 
         def fmt_score(x: Optional[float]) -> str:
             if x is None or pd.isna(x):
-                return "—"
+                return "-"
             return f"{float(x):.2f}"
 
         display_df = df.copy()
         for col in [
-            "Weighted FCFE and Spread Score",
-            "Weighted FCFE and Spread Standard Deviation Score",
-            "Additive FCFE and Spread Score",
-            "Scaled FCFE and Spread Score",
+            "Weighted FCFF and Spread Score",
+            "Weighted FCFF and Spread Standard Deviation Score",
+            "Additive FCFF and Spread Score",
+            "Scaled FCFF and Spread Score",
         ]:
             display_df[col] = display_df[col].map(fmt_score)
 
-        st.subheader("FCFE and Spread Score — Ranked by Scaled FCFE and Spread Score")
+        st.subheader("FCFF and Spread Score - Ranked by Scaled FCFF and Spread Score")
         st.dataframe(
             display_df,
             use_container_width=True,
             column_config={
-                "Weighted FCFE and Spread Score": st.column_config.TextColumn(
-                    help="Formula: ((Median YoY FCFF Change % * FCFE Growth weight) + (Median Spread % * Spread weight)) / (FCFE Growth weight + Spread weight).",
+                "Weighted FCFF and Spread Score": st.column_config.TextColumn(
+                    help="Formula: ((Median YoY FCFF Change % * FCFF Growth weight) + (Median Spread % * Spread weight)) / (FCFF Growth weight + Spread weight).",
                 ),
-                "Weighted FCFE and Spread Standard Deviation Score": st.column_config.TextColumn(
-                    help="Formula: ((YoY FCFF % stdev * FCFE Growth stdev weight) + (Spread % stdev * Spread stdev weight)) / (FCFE Growth stdev weight + Spread stdev weight).",
+                "Weighted FCFF and Spread Standard Deviation Score": st.column_config.TextColumn(
+                    help="Formula: ((YoY FCFF % stdev * FCFF Growth stdev weight) + (Spread % stdev * Spread stdev weight)) / (FCFF Growth stdev weight + Spread stdev weight).",
                 ),
-                "Additive FCFE and Spread Score": st.column_config.TextColumn(
-                    help="Formula: Weighted FCFE and Spread Score − Weighted FCFE and Spread Standard Deviation Score.",
+                "Additive FCFF and Spread Score": st.column_config.TextColumn(
+                    help="Formula: Weighted FCFF and Spread Score âˆ’ Weighted FCFF and Spread Standard Deviation Score.",
                 ),
-                "Scaled FCFE and Spread Score": st.column_config.TextColumn(
-                    help="Formula: Weighted FCFE and Spread Score / (1 + Weighted FCFE and Spread Standard Deviation Score).",
+                "Scaled FCFF and Spread Score": st.column_config.TextColumn(
+                    help="Formula: Weighted FCFF and Spread Score / (1 + Weighted FCFF and Spread Standard Deviation Score).",
                 ),
             },
         )
+
+
+
