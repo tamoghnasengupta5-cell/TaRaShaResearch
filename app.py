@@ -17,6 +17,11 @@ from combined_dashboard import render_combined_dashboard_tab
 from data_upload import render_data_upload_tab
 from pl_metrics import render_pl_metrics_tab
 from key_data import render_key_data_tab
+from ttc_efficiency import (
+    render_through_the_cycle_assumptions_tab,
+    render_through_the_cycle_income_statement_score_tab,
+    render_through_the_cycle_balance_sheet_score_tab,
+)
 
 # --- Branding assets (kept local to the repo) ---
 _ASSETS_DIR = Path(__file__).parent / "assets"
@@ -873,38 +878,57 @@ def _render_home_body() -> None:
     _render_featured_articles_carousel(_get_featured_articles())
 
 def _render_equity_research_body() -> None:
-    tab_upload, tab_pl, tab_bs, tab_cs, tab_cf, tab_combined, tab_admin = st.tabs(
+    tab_upload, tab_value_creation, tab_ttc = st.tabs(
         [
             "Data Upload",
-            "P&L Metrics and Dashboard",
-            "Balance Sheet Metrics and Dashboard",
-            "Capital Structure & Spread",
-            "Cash Flow and Reinvestment",
-            "Combined Dashboard",
-            "Admin",
+            "Value Creation Stability Score",
+            "Through-the-Cycle Efficiency Score",
         ]
     )
 
     with tab_upload:
         render_data_upload_tab()
 
-    with tab_pl:
-        render_pl_metrics_tab()
+    with tab_value_creation:
+        tab_pl, tab_bs, tab_cs, tab_cf, tab_combined, tab_admin = st.tabs(
+            [
+                "P&L Metrics Dashboard",
+                "Balance Sheet Metrics and Dashboard",
+                "Capital structure & Spread",
+                "Cash Flow and Reinvestment",
+                "Combined Dashboard",
+                "Admin",
+            ]
+        )
 
-    with tab_bs:
-        render_balance_sheet_metrics_tab()
+        with tab_pl:
+            render_pl_metrics_tab()
 
-    with tab_cs:
-        render_capital_structure_cost_of_capital_tab()
+        with tab_bs:
+            render_balance_sheet_metrics_tab()
 
-    with tab_cf:
-        render_cash_flow_and_spread_tab()
+        with tab_cs:
+            render_capital_structure_cost_of_capital_tab()
 
-    with tab_combined:
-        render_combined_dashboard_tab()
+        with tab_cf:
+            render_cash_flow_and_spread_tab()
 
-    with tab_admin:
-        render_admin_tab()
+        with tab_combined:
+            render_combined_dashboard_tab()
+
+        with tab_admin:
+            render_admin_tab()
+
+    with tab_ttc:
+        tab_assumptions, tab_income_stmt, tab_balance_sheet = st.tabs(
+            ["Assumptions", "Income Statement Efficiency Score", "Balance Sheet Strength Score"]
+        )
+        with tab_assumptions:
+            render_through_the_cycle_assumptions_tab()
+        with tab_income_stmt:
+            render_through_the_cycle_income_statement_score_tab()
+        with tab_balance_sheet:
+            render_through_the_cycle_balance_sheet_score_tab()
 
 def _render_key_data_body() -> None:
     render_key_data_tab()

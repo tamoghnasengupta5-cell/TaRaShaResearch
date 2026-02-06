@@ -31,6 +31,38 @@ revenues_ttm = Table(
     Column("revenue", Float, nullable=False),
 )
 
+cost_of_revenue_annual = Table(
+    "cost_of_revenue_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("cost_of_revenue", Float, nullable=False),
+)
+
+cost_of_revenue_ttm = Table(
+    "cost_of_revenue_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("cost_of_revenue", Float, nullable=False),
+)
+
+sga_annual = Table(
+    "sga_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("sga", Float, nullable=False),
+)
+
+sga_ttm = Table(
+    "sga_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("sga", Float, nullable=False),
+)
+
 op_margin_annual = Table(
     "op_margin_annual",
     metadata,
@@ -111,6 +143,22 @@ ebit_ttm = Table(
     Column("ebit", Float, nullable=False),
 )
 
+ebitda_annual = Table(
+    "ebitda_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("ebitda", Float, nullable=False),
+)
+
+ebitda_ttm = Table(
+    "ebitda_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("ebitda", Float, nullable=False),
+)
+
 interest_expense_annual = Table(
     "interest_expense_annual",
     metadata,
@@ -165,6 +213,38 @@ total_assets_ttm = Table(
     Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
     Column("as_of", Text, nullable=False),
     Column("total_assets", Float, nullable=False),
+)
+
+short_term_investments_annual = Table(
+    "short_term_investments_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("short_term_investments", Float, nullable=False),
+)
+
+short_term_investments_ttm = Table(
+    "short_term_investments_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("short_term_investments", Float, nullable=False),
+)
+
+accounts_receivable_annual = Table(
+    "accounts_receivable_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("accounts_receivable", Float, nullable=False),
+)
+
+accounts_receivable_ttm = Table(
+    "accounts_receivable_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("accounts_receivable", Float, nullable=False),
 )
 
 total_current_liabilities_annual = Table(
@@ -652,3 +732,15 @@ stddev_weight_factors = Table(
     Column("weight", Float, nullable=False),
 )
 
+ttc_assumptions = Table(
+    "ttc_assumptions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("section", Text, nullable=False),
+    Column("metric", Text, nullable=False),
+    Column("weight", Float, nullable=False),
+    Column("threshold", Float, nullable=False),
+    Column("units", Text, nullable=False, server_default=""),
+    Column("sort_order", Integer, nullable=False),
+    UniqueConstraint("section", "sort_order", name="uq_ttc_assumptions_section_order"),
+)

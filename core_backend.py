@@ -5,6 +5,7 @@ import threading
 import re
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -19,6 +20,7 @@ from db_orm import (
     CountryRiskPremium,
     GrowthWeightFactors,
     StddevWeightFactors,
+    TtcAssumptions,
     RiskFreeRates,
     IndexAnnualPriceMovement,
     ImpliedEquityRiskPremiumUsa,
@@ -27,10 +29,12 @@ from db_orm import (
 )
 from db_orm import (
     RevenuesAnnual, RevenuesTtm,
+    CostOfRevenueAnnual, CostOfRevenueTtm,
     OpMarginAnnual, OpMarginTtm,
     PretaxIncomeAnnual, PretaxIncomeTtm,
     NetIncomeAnnual, NetIncomeTtm,
     EffTaxRateAnnual, EffTaxRateTtm,
+    EbitdaAnnual, EbitdaTtm,
     EbitAnnual, EbitTtm,
     InterestExpenseAnnual, InterestExpenseTtm,
     OperatingIncomeAnnual, OperatingIncomeTtm,
@@ -45,8 +49,10 @@ from db_orm import (
     DebtEquityAnnual,
     LeveredBetaAnnual,
     TotalCurrentAssetsAnnual, TotalCurrentAssetsTtm,
+    AccountsReceivableAnnual, AccountsReceivableTtm,
     CurrentDebtAnnual, CurrentDebtTtm,
     CashAndCashEquivalentsAnnual, CashAndCashEquivalentsTtm,
+    ShortTermInvestmentsAnnual, ShortTermInvestmentsTtm,
     LongTermInvestmentsAnnual, LongTermInvestmentsTtm,
     CapitalEmployedAnnual,
     InvestedCapitalAnnual,
@@ -64,6 +70,7 @@ from db_orm import (
     NonCashWorkingCapitalAnnual,
     RevenueYieldNonCashWorkingCapitalAnnual,
     ResearchAndDevelopmentExpenseAnnual,
+    SgaAnnual, SgaTtm,
     CapitalExpendituresAnnual,
     DepreciationAmortizationAnnual,
     NetDebtIssuedPaidAnnual,
@@ -79,6 +86,12 @@ from db_session import DbCompat, execute, read_sql_df
 # ---------------------------
 # Database helpers (SQLite + Postgres)
 # ---------------------------
+TTC_SECTIONS = [
+    "Income Statement Efficiency Score",
+    "Balance Sheet Strength Score",
+    "Cash Flow Efficiency Score",
+    "Working Capital Efficiency Score",
+]
 
 def _is_azure_app_service() -> bool:
     """Detect Azure App Service environment."""
@@ -389,6 +402,194 @@ def update_stddev_weight_factors(conn, weights: Dict[int, float]) -> None:
         cur.execute(
             "UPDATE stddev_weight_factors SET weight = ? WHERE id = ?",
             (float(weight), int(row_id)),
+        )
+    conn.commit()
+
+
+def _parse_ttc_assumptions_df(df: pd.DataFrame) -> List[Tuple[str, str, float, float, str, int]]:
+    rows: List[Tuple[str, str, float, float, str, int]] = []
+    current_section: str | None = None
+    completed = set()
+    order_map = {section: 0 for section in TTC_SECTIONS}
+
+    for _, row in df.iterrows():
+        cell0 = row.iloc[0] if len(row) else None
+        cell0_str = str(cell0).strip() if pd.notna(cell0) else ""
+
+        if cell0_str in TTC_SECTIONS:
+            current_section = cell0_str
+            continue
+
+        if current_section is None:
+            continue
+
+        if "Weights sum" in cell0_str:
+            completed.add(current_section)
+            current_section = None
+            if completed == set(TTC_SECTIONS):
+                break
+            continue
+
+        if cell0_str == "" or cell0_str == "Metric / Component":
+            continue
+
+        weight = row.iloc[1] if len(row) > 1 else None
+        threshold = row.iloc[2] if len(row) > 2 else None
+        units = row.iloc[3] if len(row) > 3 else None
+
+        order_map[current_section] += 1
+        rows.append(
+            (
+                current_section,
+                cell0_str,
+                float(weight) if pd.notna(weight) else 0.0,
+                float(threshold) if pd.notna(threshold) else 0.0,
+                str(units).strip() if pd.notna(units) else "",
+                order_map[current_section],
+            )
+        )
+
+    return rows
+
+
+def _load_ttc_assumptions_seed_rows() -> List[Tuple[str, str, float, float, str, int]]:
+    base_dir = Path(__file__).resolve().parent
+    candidates = [
+        base_dir / "Bulk_Upload_Financials" / "Industrials_Shiller.xlsx",
+        base_dir / "Bulk_Upload_Financials" / "Upload_logs" / "Industrials_Shiller.xlsx",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            df = pd.read_excel(path, sheet_name="Assumptions", header=None)
+        except Exception:
+            continue
+        rows = _parse_ttc_assumptions_df(df)
+        if rows:
+            return rows
+    return []
+
+
+def _seed_ttc_assumptions_if_empty(conn) -> None:
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COUNT(*) FROM ttc_assumptions")
+        row = cur.fetchone()
+        cnt = int(row[0]) if row and row[0] is not None else 0
+    except Exception:
+        return
+    if cnt > 0:
+        return
+
+    rows = _load_ttc_assumptions_seed_rows()
+    if not rows:
+        return
+
+    cur.executemany(
+        """
+        INSERT INTO ttc_assumptions(section, metric, weight, threshold, units, sort_order)
+        VALUES(?, ?, ?, ?, ?, ?)
+        """,
+        rows,
+    )
+    conn.commit()
+
+
+def get_ttc_assumptions(
+    conn,
+    sections: Optional[List[str]] = None,
+) -> Dict[str, List[Dict[str, object]]]:
+    sections = sections or TTC_SECTIONS
+    out: Dict[str, List[Dict[str, object]]] = {s: [] for s in sections}
+
+    try:
+        df = read_df(
+            """
+            SELECT section, metric, weight, threshold, units, sort_order
+            FROM ttc_assumptions
+            ORDER BY section, sort_order, id
+            """,
+            conn,
+        )
+    except Exception:
+        return out
+    if df is None or df.empty:
+        return out
+
+    for _, row in df.iterrows():
+        section = str(row.get("section", "")).strip()
+        if not section:
+            continue
+        out.setdefault(section, [])
+        weight_val = row.get("weight", 0.0)
+        threshold_val = row.get("threshold", 0.0)
+        out[section].append(
+            {
+                "Metric/Component": str(row.get("metric", "")).strip()
+                if pd.notna(row.get("metric"))
+                else "",
+                "Weight": float(weight_val) if pd.notna(weight_val) else 0.0,
+                "Threshold": float(threshold_val) if pd.notna(threshold_val) else 0.0,
+                "Units": str(row.get("units", "")).strip()
+                if pd.notna(row.get("units"))
+                else "",
+            }
+        )
+    return out
+
+
+def replace_ttc_assumptions_section(
+    conn,
+    section: str,
+    rows: List[Dict[str, object]],
+) -> None:
+    if not section:
+        return
+
+    clean_rows: List[Tuple[str, str, float, float, str, int]] = []
+    for idx, row in enumerate(rows, start=1):
+        weight_val = row.get("Weight", 0.0)
+        threshold_val = row.get("Threshold", 0.0)
+        clean_rows.append(
+            (
+                section,
+                str(row.get("Metric/Component", "")).strip(),
+                float(weight_val) if pd.notna(weight_val) else 0.0,
+                float(threshold_val) if pd.notna(threshold_val) else 0.0,
+                str(row.get("Units", "")).strip(),
+                idx,
+            )
+        )
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        session.query(TtcAssumptions).filter(TtcAssumptions.section == section).delete(
+            synchronize_session=False
+        )
+        for row in clean_rows:
+            session.add(
+                TtcAssumptions(
+                    section=row[0],
+                    metric=row[1],
+                    weight=row[2],
+                    threshold=row[3],
+                    units=row[4],
+                    sort_order=row[5],
+                )
+            )
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    cur.execute("DELETE FROM ttc_assumptions WHERE section = ?", (section,))
+    if clean_rows:
+        cur.executemany(
+            """
+            INSERT INTO ttc_assumptions(section, metric, weight, threshold, units, sort_order)
+            VALUES(?, ?, ?, ?, ?, ?)
+            """,
+            clean_rows,
         )
     conn.commit()
 
@@ -749,8 +950,8 @@ def init_db(conn) -> None:
     _rename_weight_factor("growth_weight_factors", "FCFE Growth", "FCFF Growth")
     _rename_weight_factor("stddev_weight_factors", "FCFE Growth", "FCFF Growth")
 
+    _seed_ttc_assumptions_if_empty(conn)
 
-    
     # Seed default risk-free rates if table is empty
     cur.execute("SELECT COUNT(*) FROM risk_free_rates")
     row = cur.fetchone()
@@ -1262,6 +1463,46 @@ def extract_annual_revenue_series(file_bytes: bytes) -> Dict[int, float]:
 def extract_latest_ttm_revenue(file_bytes: bytes) -> Tuple[str, float]:
     return extract_latest_ttm_by_rowlabel(file_bytes, "Revenue", fallbacks=["Total Revenue", "Sales"])
 
+def extract_annual_cost_of_revenue_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = [
+        "Cost of Revenue",
+        "Cost of Goods Sold",
+        "Cost of Sales",
+        "COGS",
+    ]
+    return extract_annual_series_by_rowlabel(file_bytes, "Cost of Revenue", fallbacks=fallbacks)
+
+def extract_latest_ttm_cost_of_revenue(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = [
+        "Cost of Revenue",
+        "Cost of Goods Sold",
+        "Cost of Sales",
+        "COGS",
+    ]
+    return extract_latest_ttm_by_rowlabel(file_bytes, "Cost of Revenue", fallbacks=fallbacks)
+
+def extract_annual_sga_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = [
+        "Selling, General & Admin",
+        "Selling, General & Administrative",
+        "Selling, General and Admin",
+        "Selling, General and Administrative",
+        "SG&A",
+        "SGA",
+    ]
+    return extract_annual_series_by_rowlabel(file_bytes, "Selling, General & Admin", fallbacks=fallbacks)
+
+def extract_latest_ttm_sga(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = [
+        "Selling, General & Admin",
+        "Selling, General & Administrative",
+        "Selling, General and Admin",
+        "Selling, General and Administrative",
+        "SG&A",
+        "SGA",
+    ]
+    return extract_latest_ttm_by_rowlabel(file_bytes, "Selling, General & Admin", fallbacks=fallbacks)
+
 def extract_annual_operating_margin_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Operating Margin %", "Operating Income Margin", "Op Margin", "Operating margin"]
     return extract_annual_series_by_rowlabel(file_bytes, "Operating Margin", fallbacks=fallbacks)
@@ -1303,6 +1544,14 @@ def extract_annual_ebit_series(file_bytes: bytes) -> Dict[int, float]:
 def extract_latest_ttm_ebit(file_bytes: bytes) -> Tuple[str, float]:
     fallbacks = ["EBIT", "Operating Income", "Earnings Before Interest and Taxes"]
     return extract_latest_ttm_by_rowlabel(file_bytes, "EBIT", fallbacks=fallbacks)
+
+def extract_annual_ebitda_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["EBITDA", "Earnings Before Interest, Taxes, Depreciation & Amortization"]
+    return extract_annual_series_by_rowlabel(file_bytes, "EBITDA", fallbacks=fallbacks)
+
+def extract_latest_ttm_ebitda(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["EBITDA", "Earnings Before Interest, Taxes, Depreciation & Amortization"]
+    return extract_latest_ttm_by_rowlabel(file_bytes, "EBITDA", fallbacks=fallbacks)
 
 
 
@@ -1579,6 +1828,22 @@ def extract_latest_ttm_long_term_investments(file_bytes: bytes) -> Tuple[str, fl
     fallbacks = ["Long-Term Investments", "Long Term Investments", "Long-term investments"]
     return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Long-Term Investments", fallbacks=fallbacks)
 
+def extract_annual_short_term_investments_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Short-Term Investments", "Short Term Investments", "Short-TermInvestments"]
+    return extract_bs_annual_series_by_rowlabel(file_bytes, "Short-TermInvestments", fallbacks=fallbacks)
+
+def extract_latest_ttm_short_term_investments(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Short-Term Investments", "Short Term Investments", "Short-TermInvestments"]
+    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Short-TermInvestments", fallbacks=fallbacks)
+
+def extract_annual_accounts_receivable_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Receivables", "Accounts Receivable", "Accounts Receivable, Net"]
+    return extract_bs_annual_series_by_rowlabel(file_bytes, "Receivables", fallbacks=fallbacks)
+
+def extract_latest_ttm_accounts_receivable(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Receivables", "Accounts Receivable", "Accounts Receivable, Net"]
+    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Receivables", fallbacks=fallbacks)
+
 
 def extract_annual_shareholders_equity_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Total Equity", "Total Shareholders' Equity", "Total Stockholders' Equity"]
@@ -1692,6 +1957,283 @@ def upsert_ttm(conn: sqlite3.Connection, company_id: int, as_of: str, revenue: f
         VALUES(?, ?, ?)
         ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, revenue=excluded.revenue
         """, (company_id, as_of, revenue)
+    )
+    conn.commit()
+
+
+def upsert_annual_cost_of_revenue(conn: sqlite3.Connection, company_id: int, year_to_cogs: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_cogs.items():
+            existing = session.query(CostOfRevenueAnnual).filter(
+                CostOfRevenueAnnual.company_id == company_id,
+                CostOfRevenueAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(CostOfRevenueAnnual(company_id=company_id, fiscal_year=year, cost_of_revenue=val))
+            else:
+                existing.cost_of_revenue = val
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_cogs.items():
+        cur.execute(
+            """
+            INSERT INTO cost_of_revenue_annual(company_id, fiscal_year, cost_of_revenue)
+            VALUES(?, ?, ?)
+            ON CONFLICT(company_id, fiscal_year) DO UPDATE SET cost_of_revenue=excluded.cost_of_revenue
+            """,
+            (company_id, year, val),
+        )
+    conn.commit()
+
+
+def upsert_ttm_cost_of_revenue(conn: sqlite3.Connection, company_id: int, as_of: str, cost_of_revenue: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(CostOfRevenueTtm).filter(CostOfRevenueTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(CostOfRevenueTtm(company_id=company_id, as_of=as_of, cost_of_revenue=cost_of_revenue))
+        else:
+            existing.as_of = as_of
+            existing.cost_of_revenue = cost_of_revenue
+        session.commit()
+        return
+
+    conn.execute(
+        """
+        INSERT INTO cost_of_revenue_ttm(company_id, as_of, cost_of_revenue)
+        VALUES(?, ?, ?)
+        ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, cost_of_revenue=excluded.cost_of_revenue
+        """,
+        (company_id, as_of, cost_of_revenue),
+    )
+    conn.commit()
+
+
+def upsert_annual_sga(conn: sqlite3.Connection, company_id: int, year_to_sga: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_sga.items():
+            existing = session.query(SgaAnnual).filter(
+                SgaAnnual.company_id == company_id,
+                SgaAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(SgaAnnual(company_id=company_id, fiscal_year=year, sga=val))
+            else:
+                existing.sga = val
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_sga.items():
+        cur.execute(
+            """
+            INSERT INTO sga_annual(company_id, fiscal_year, sga)
+            VALUES(?, ?, ?)
+            ON CONFLICT(company_id, fiscal_year) DO UPDATE SET sga=excluded.sga
+            """,
+            (company_id, year, val),
+        )
+    conn.commit()
+
+
+def upsert_ttm_sga(conn: sqlite3.Connection, company_id: int, as_of: str, sga: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(SgaTtm).filter(SgaTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(SgaTtm(company_id=company_id, as_of=as_of, sga=sga))
+        else:
+            existing.as_of = as_of
+            existing.sga = sga
+        session.commit()
+        return
+
+    conn.execute(
+        """
+        INSERT INTO sga_ttm(company_id, as_of, sga)
+        VALUES(?, ?, ?)
+        ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, sga=excluded.sga
+        """,
+        (company_id, as_of, sga),
+    )
+    conn.commit()
+
+
+def upsert_annual_ebitda(conn: sqlite3.Connection, company_id: int, year_to_ebitda: Dict[int, float]) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_ebitda.items():
+            existing = session.query(EbitdaAnnual).filter(
+                EbitdaAnnual.company_id == company_id,
+                EbitdaAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(EbitdaAnnual(company_id=company_id, fiscal_year=year, ebitda=val))
+            else:
+                existing.ebitda = val
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_ebitda.items():
+        cur.execute(
+            """
+            INSERT INTO ebitda_annual(company_id, fiscal_year, ebitda)
+            VALUES(?, ?, ?)
+            ON CONFLICT(company_id, fiscal_year) DO UPDATE SET ebitda=excluded.ebitda
+            """,
+            (company_id, year, val),
+        )
+    conn.commit()
+
+
+def upsert_ttm_ebitda(conn: sqlite3.Connection, company_id: int, as_of: str, ebitda: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(EbitdaTtm).filter(EbitdaTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(EbitdaTtm(company_id=company_id, as_of=as_of, ebitda=ebitda))
+        else:
+            existing.as_of = as_of
+            existing.ebitda = ebitda
+        session.commit()
+        return
+
+    conn.execute(
+        """
+        INSERT INTO ebitda_ttm(company_id, as_of, ebitda)
+        VALUES(?, ?, ?)
+        ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, ebitda=excluded.ebitda
+        """,
+        (company_id, as_of, ebitda),
+    )
+    conn.commit()
+
+
+def upsert_annual_short_term_investments(
+    conn: sqlite3.Connection, company_id: int, year_to_sti: Dict[int, float]
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_sti.items():
+            existing = session.query(ShortTermInvestmentsAnnual).filter(
+                ShortTermInvestmentsAnnual.company_id == company_id,
+                ShortTermInvestmentsAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(
+                    ShortTermInvestmentsAnnual(
+                        company_id=company_id, fiscal_year=year, short_term_investments=val
+                    )
+                )
+            else:
+                existing.short_term_investments = val
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_sti.items():
+        cur.execute(
+            """
+            INSERT INTO short_term_investments_annual(company_id, fiscal_year, short_term_investments)
+            VALUES(?, ?, ?)
+            ON CONFLICT(company_id, fiscal_year) DO UPDATE SET short_term_investments=excluded.short_term_investments
+            """,
+            (company_id, year, val),
+        )
+    conn.commit()
+
+
+def upsert_ttm_short_term_investments(conn: sqlite3.Connection, company_id: int, as_of: str, val: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(ShortTermInvestmentsTtm).filter(
+            ShortTermInvestmentsTtm.company_id == company_id
+        ).one_or_none()
+        if existing is None:
+            session.add(
+                ShortTermInvestmentsTtm(
+                    company_id=company_id, as_of=as_of, short_term_investments=val
+                )
+            )
+        else:
+            existing.as_of = as_of
+            existing.short_term_investments = val
+        session.commit()
+        return
+
+    conn.execute(
+        """
+        INSERT INTO short_term_investments_ttm(company_id, as_of, short_term_investments)
+        VALUES(?, ?, ?)
+        ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, short_term_investments=excluded.short_term_investments
+        """,
+        (company_id, as_of, val),
+    )
+    conn.commit()
+
+
+def upsert_annual_accounts_receivable(
+    conn: sqlite3.Connection, company_id: int, year_to_ar: Dict[int, float]
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_ar.items():
+            existing = session.query(AccountsReceivableAnnual).filter(
+                AccountsReceivableAnnual.company_id == company_id,
+                AccountsReceivableAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(
+                    AccountsReceivableAnnual(
+                        company_id=company_id, fiscal_year=year, accounts_receivable=val
+                    )
+                )
+            else:
+                existing.accounts_receivable = val
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_ar.items():
+        cur.execute(
+            """
+            INSERT INTO accounts_receivable_annual(company_id, fiscal_year, accounts_receivable)
+            VALUES(?, ?, ?)
+            ON CONFLICT(company_id, fiscal_year) DO UPDATE SET accounts_receivable=excluded.accounts_receivable
+            """,
+            (company_id, year, val),
+        )
+    conn.commit()
+
+
+def upsert_ttm_accounts_receivable(conn: sqlite3.Connection, company_id: int, as_of: str, val: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(AccountsReceivableTtm).filter(
+            AccountsReceivableTtm.company_id == company_id
+        ).one_or_none()
+        if existing is None:
+            session.add(
+                AccountsReceivableTtm(company_id=company_id, as_of=as_of, accounts_receivable=val)
+            )
+        else:
+            existing.as_of = as_of
+            existing.accounts_receivable = val
+        session.commit()
+        return
+
+    conn.execute(
+        """
+        INSERT INTO accounts_receivable_ttm(company_id, as_of, accounts_receivable)
+        VALUES(?, ?, ?)
+        ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, accounts_receivable=excluded.accounts_receivable
+        """,
+        (company_id, as_of, val),
     )
     conn.commit()
 

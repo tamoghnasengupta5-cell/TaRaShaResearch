@@ -34,6 +34,10 @@ class RiskFreeRates(Base):
 class StddevWeightFactors(Base):
     __table__ = db_models.stddev_weight_factors
 
+class TtcAssumptions(Base):
+    __table__ = db_models.ttc_assumptions
+
+
 class AccumulatedProfitAnnual(Base):
     __table__ = db_models.accumulated_profit_annual
 
@@ -64,6 +68,12 @@ class ComprehensiveIncomeTtm(Base):
 class CostOfEquityAnnual(Base):
     __table__ = db_models.cost_of_equity_annual
 
+class CostOfRevenueAnnual(Base):
+    __table__ = db_models.cost_of_revenue_annual
+
+class CostOfRevenueTtm(Base):
+    __table__ = db_models.cost_of_revenue_ttm
+
 class CurrentDebtAnnual(Base):
     __table__ = db_models.current_debt_annual
 
@@ -78,6 +88,12 @@ class DefaultSpreadAnnual(Base):
 
 class DepreciationAmortizationAnnual(Base):
     __table__ = db_models.depreciation_amortization_annual
+
+class EbitdaAnnual(Base):
+    __table__ = db_models.ebitda_annual
+
+class EbitdaTtm(Base):
+    __table__ = db_models.ebitda_ttm
 
 class EbitAnnual(Base):
     __table__ = db_models.ebit_annual
@@ -187,6 +203,12 @@ class RevenuesAnnual(Base):
 class RevenuesTtm(Base):
     __table__ = db_models.revenues_ttm
 
+class SgaAnnual(Base):
+    __table__ = db_models.sga_annual
+
+class SgaTtm(Base):
+    __table__ = db_models.sga_ttm
+
 class RoceAnnual(Base):
     __table__ = db_models.roce_annual
 
@@ -204,6 +226,18 @@ class ShareholdersEquityAnnual(Base):
 
 class ShareholdersEquityTtm(Base):
     __table__ = db_models.shareholders_equity_ttm
+
+class ShortTermInvestmentsAnnual(Base):
+    __table__ = db_models.short_term_investments_annual
+
+class ShortTermInvestmentsTtm(Base):
+    __table__ = db_models.short_term_investments_ttm
+
+class AccountsReceivableAnnual(Base):
+    __table__ = db_models.accounts_receivable_annual
+
+class AccountsReceivableTtm(Base):
+    __table__ = db_models.accounts_receivable_ttm
 
 class TotalAssetsAnnual(Base):
     __table__ = db_models.total_assets_annual
