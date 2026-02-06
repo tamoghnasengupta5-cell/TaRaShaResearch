@@ -122,6 +122,28 @@ def ingest_financials_bytes(
     except Exception:
         pass
 
+    # Extract Cost of Revenue / COGS (annual + TTM)
+    annual_cogs = extract_annual_cost_of_revenue_series(bytes_data)
+    as_of_cogs, ttm_cogs = extract_latest_ttm_cost_of_revenue(bytes_data)
+
+    # Merge current-year TTM into the annual COGS series
+    try:
+        ttm_cogs_year = int(str(as_of_cogs)[:4])
+        annual_cogs[ttm_cogs_year] = float(ttm_cogs)
+    except Exception:
+        pass
+
+    # Extract SG&A (annual + TTM)
+    annual_sga = extract_annual_sga_series(bytes_data)
+    as_of_sga, ttm_sga = extract_latest_ttm_sga(bytes_data)
+
+    # Merge current-year TTM into the annual SG&A series
+    try:
+        ttm_sga_year = int(str(as_of_sga)[:4])
+        annual_sga[ttm_sga_year] = float(ttm_sga)
+    except Exception:
+        pass
+
     # Extract Operating Margin (annual + TTM)
     annual_om = extract_annual_operating_margin_series(bytes_data)
     as_of_om, ttm_om = extract_latest_ttm_operating_margin(bytes_data)
@@ -174,6 +196,17 @@ def ingest_financials_bytes(
     try:
         ttm_ebit_year = int(str(as_of_ebit)[:4])
         annual_ebit[ttm_ebit_year] = float(ttm_ebit)
+    except Exception:
+        pass
+
+    # Extract EBITDA (annual + TTM)
+    annual_ebitda = extract_annual_ebitda_series(bytes_data)
+    as_of_ebitda, ttm_ebitda = extract_latest_ttm_ebitda(bytes_data)
+
+    # Merge current-year TTM into the annual EBITDA series
+    try:
+        ttm_ebitda_year = int(str(as_of_ebitda)[:4])
+        annual_ebitda[ttm_ebitda_year] = float(ttm_ebitda)
     except Exception:
         pass
 
@@ -257,6 +290,28 @@ def ingest_financials_bytes(
     try:
         ttm_se_year = int(str(as_of_se)[:4])
         annual_se[ttm_se_year] = float(ttm_se)
+    except Exception:
+        pass
+
+    # Extract Short-Term Investments (annual + TTM) from Balance Sheet
+    annual_short_term_investments = extract_annual_short_term_investments_series(bytes_data)
+    as_of_short_term_investments, ttm_short_term_investments = extract_latest_ttm_short_term_investments(bytes_data)
+
+    # Merge current-year TTM into the annual Short-Term Investments series
+    try:
+        ttm_sti_year = int(str(as_of_short_term_investments)[:4])
+        annual_short_term_investments[ttm_sti_year] = float(ttm_short_term_investments)
+    except Exception:
+        pass
+
+    # Extract Accounts Receivable (annual + TTM) from Balance Sheet
+    annual_accounts_receivable = extract_annual_accounts_receivable_series(bytes_data)
+    as_of_accounts_receivable, ttm_accounts_receivable = extract_latest_ttm_accounts_receivable(bytes_data)
+
+    # Merge current-year TTM into the annual Accounts Receivable series
+    try:
+        ttm_ar_year = int(str(as_of_accounts_receivable)[:4])
+        annual_accounts_receivable[ttm_ar_year] = float(ttm_accounts_receivable)
     except Exception:
         pass
 
@@ -561,6 +616,12 @@ def ingest_financials_bytes(
     cid = upsert_company(conn, company, ticker, country=country)
 
     upsert_annual_revenues(conn, cid, annual_rev)
+    upsert_annual_cost_of_revenue(conn, cid, annual_cogs)
+    upsert_ttm_cost_of_revenue(conn, cid, as_of_cogs, ttm_cogs)
+    upsert_annual_sga(conn, cid, annual_sga)
+    upsert_ttm_sga(conn, cid, as_of_sga, ttm_sga)
+    upsert_annual_ebitda(conn, cid, annual_ebitda)
+    upsert_ttm_ebitda(conn, cid, as_of_ebitda, ttm_ebitda)
     upsert_ttm(conn, cid, as_of_rev, ttm_rev)
 
     upsert_annual_op_margin(conn, cid, annual_om)
@@ -601,6 +662,10 @@ def ingest_financials_bytes(
 
     upsert_annual_shareholders_equity(conn, cid, annual_se)
     upsert_ttm_shareholders_equity(conn, cid, as_of_se, ttm_se)
+    upsert_annual_short_term_investments(conn, cid, annual_short_term_investments)
+    upsert_ttm_short_term_investments(conn, cid, as_of_short_term_investments, ttm_short_term_investments)
+    upsert_annual_accounts_receivable(conn, cid, annual_accounts_receivable)
+    upsert_ttm_accounts_receivable(conn, cid, as_of_accounts_receivable, ttm_accounts_receivable)
 
     upsert_annual_retained_earnings(conn, cid, annual_re)
     upsert_ttm_retained_earnings(conn, cid, as_of_re, ttm_re)
@@ -742,6 +807,28 @@ def render_data_upload_tab():
                     except Exception:
                         pass
 
+                    # Extract Cost of Revenue / COGS (annual + TTM)
+                    annual_cogs = extract_annual_cost_of_revenue_series(bytes_data)
+                    as_of_cogs, ttm_cogs = extract_latest_ttm_cost_of_revenue(bytes_data)
+
+                    # Merge current-year TTM into the annual COGS series
+                    try:
+                        ttm_cogs_year = int(str(as_of_cogs)[:4])
+                        annual_cogs[ttm_cogs_year] = float(ttm_cogs)
+                    except Exception:
+                        pass
+
+                    # Extract SG&A (annual + TTM)
+                    annual_sga = extract_annual_sga_series(bytes_data)
+                    as_of_sga, ttm_sga = extract_latest_ttm_sga(bytes_data)
+
+                    # Merge current-year TTM into the annual SG&A series
+                    try:
+                        ttm_sga_year = int(str(as_of_sga)[:4])
+                        annual_sga[ttm_sga_year] = float(ttm_sga)
+                    except Exception:
+                        pass
+
                     # Extract Operating Margin (annual + TTM)
                     annual_om = extract_annual_operating_margin_series(bytes_data)
                     as_of_om, ttm_om = extract_latest_ttm_operating_margin(bytes_data)
@@ -794,6 +881,17 @@ def render_data_upload_tab():
                     try:
                         ttm_ebit_year = int(str(as_of_ebit)[:4])
                         annual_ebit[ttm_ebit_year] = float(ttm_ebit)
+                    except Exception:
+                        pass
+
+                    # Extract EBITDA (annual + TTM)
+                    annual_ebitda = extract_annual_ebitda_series(bytes_data)
+                    as_of_ebitda, ttm_ebitda = extract_latest_ttm_ebitda(bytes_data)
+
+                    # Merge current-year TTM into the annual EBITDA series
+                    try:
+                        ttm_ebitda_year = int(str(as_of_ebitda)[:4])
+                        annual_ebitda[ttm_ebitda_year] = float(ttm_ebitda)
                     except Exception:
                         pass
 
@@ -883,6 +981,28 @@ def render_data_upload_tab():
                     try:
                         ttm_se_year = int(str(as_of_se)[:4])
                         annual_se[ttm_se_year] = float(ttm_se)
+                    except Exception:
+                        pass
+
+                    # Extract Short-Term Investments (annual + TTM) from Balance Sheet
+                    annual_short_term_investments = extract_annual_short_term_investments_series(bytes_data)
+                    as_of_short_term_investments, ttm_short_term_investments = extract_latest_ttm_short_term_investments(bytes_data)
+
+                    # Merge current-year TTM into the annual Short-Term Investments series
+                    try:
+                        ttm_sti_year = int(str(as_of_short_term_investments)[:4])
+                        annual_short_term_investments[ttm_sti_year] = float(ttm_short_term_investments)
+                    except Exception:
+                        pass
+
+                    # Extract Accounts Receivable (annual + TTM) from Balance Sheet
+                    annual_accounts_receivable = extract_annual_accounts_receivable_series(bytes_data)
+                    as_of_accounts_receivable, ttm_accounts_receivable = extract_latest_ttm_accounts_receivable(bytes_data)
+
+                    # Merge current-year TTM into the annual Accounts Receivable series
+                    try:
+                        ttm_ar_year = int(str(as_of_accounts_receivable)[:4])
+                        annual_accounts_receivable[ttm_ar_year] = float(ttm_accounts_receivable)
                     except Exception:
                         pass
 
@@ -1209,6 +1329,12 @@ def render_data_upload_tab():
                     st.session_state["last_ingested_company_id"] = cid
 
                     upsert_annual_revenues(conn, cid, annual_rev)
+                    upsert_annual_cost_of_revenue(conn, cid, annual_cogs)
+                    upsert_ttm_cost_of_revenue(conn, cid, as_of_cogs, ttm_cogs)
+                    upsert_annual_sga(conn, cid, annual_sga)
+                    upsert_ttm_sga(conn, cid, as_of_sga, ttm_sga)
+                    upsert_annual_ebitda(conn, cid, annual_ebitda)
+                    upsert_ttm_ebitda(conn, cid, as_of_ebitda, ttm_ebitda)
                     upsert_ttm(conn, cid, as_of_rev, ttm_rev)
 
                     upsert_annual_op_margin(conn, cid, annual_om)
@@ -1251,6 +1377,10 @@ def render_data_upload_tab():
 
                     upsert_annual_shareholders_equity(conn, cid, annual_se)
                     upsert_ttm_shareholders_equity(conn, cid, as_of_se, ttm_se)
+                    upsert_annual_short_term_investments(conn, cid, annual_short_term_investments)
+                    upsert_ttm_short_term_investments(conn, cid, as_of_short_term_investments, ttm_short_term_investments)
+                    upsert_annual_accounts_receivable(conn, cid, annual_accounts_receivable)
+                    upsert_ttm_accounts_receivable(conn, cid, as_of_accounts_receivable, ttm_accounts_receivable)
 
                     upsert_annual_retained_earnings(conn, cid, annual_re)
                     upsert_ttm_retained_earnings(conn, cid, as_of_re, ttm_re)
