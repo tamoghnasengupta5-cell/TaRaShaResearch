@@ -1409,7 +1409,13 @@ def extract_latest_ttm_roic_direct_upload(file_bytes: bytes) -> Tuple[str, float
         "Return on Invested Capital",
         "ROIC",
     ]
-    return extract_latest_ttm_ratios_by_rowlabel(file_bytes, "Return on Invested Capital (ROIC)", fallbacks=fallbacks)
+    try:
+        return extract_latest_ttm_ratios_by_rowlabel(file_bytes, "Return on Invested Capital (ROIC)", fallbacks=fallbacks)
+    except ValueError:
+        # Business rule: if ROIC TTM is unavailable, upload a miniscule fallback (0.000001%).
+        # This extractor returns the raw ratio form; ingestion later converts ratio -> percentage points.
+        as_of = _extract_latest_ttm_column_label(file_bytes, "Ratios-TTM")
+        return as_of, 0.00000001
 
 
 
@@ -1457,6 +1463,29 @@ def extract_latest_ttm_ratios_by_rowlabel(
         return latest[0], latest[1]
 
     return non_empty[-1][0], non_empty[-1][1]
+
+
+def _extract_latest_ttm_column_label(file_bytes: bytes, sheet_name: str) -> str:
+    """Return the latest date-like column label from a TTM sheet, or the last non-Date label."""
+    df = _read_sheet(file_bytes, sheet_name)
+
+    candidates: List[Tuple[str, Optional[pd.Timestamp]]] = []
+    fallback_labels: List[str] = []
+    for col in df.columns:
+        if str(col) == "Date":
+            continue
+        label = str(col)
+        candidates.append((label, _parse_date_label(label)))
+        fallback_labels.append(label)
+
+    dated = [x for x in candidates if x[1] is not None]
+    if dated:
+        latest = max(dated, key=lambda t: t[1])
+        return latest[0]
+
+    if fallback_labels:
+        return fallback_labels[-1]
+    return "TTM"
 def extract_annual_revenue_series(file_bytes: bytes) -> Dict[int, float]:
     return extract_annual_series_by_rowlabel(file_bytes, "Revenue", fallbacks=["Total Revenue", "Sales"])
 
@@ -1531,11 +1560,114 @@ def extract_latest_ttm_net_income(file_bytes: bytes) -> Tuple[str, float]:
 
 def extract_annual_effective_tax_rate_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Effective Tax Rate %", "Tax Rate", "Effective tax rate"]
-    return extract_annual_series_by_rowlabel(file_bytes, "Effective Tax Rate", fallbacks=fallbacks)
+    tiny_rate = 0.00000001  # 0.000001%
+    try:
+        direct = extract_annual_series_by_rowlabel(file_bytes, "Effective Tax Rate", fallbacks=fallbacks)
+    except Exception:
+        direct = {}
+
+    income_tax_expense_annual = _extract_annual_income_tax_expense_series(file_bytes)
+    pretax_income_annual = extract_annual_pretax_income_series(file_bytes)
+
+    out: Dict[int, float] = dict(direct)
+    all_years = set(out.keys()) | set(pretax_income_annual.keys()) | set(income_tax_expense_annual.keys())
+    for year in sorted(all_years):
+        if year in out:
+            continue
+        derived = _safe_derive_effective_tax_rate(
+            income_tax_expense_annual.get(year),
+            pretax_income_annual.get(year),
+        )
+        out[year] = derived if derived is not None else tiny_rate
+    return dict(sorted(out.items(), key=lambda kv: kv[0]))
 
 def extract_latest_ttm_effective_tax_rate(file_bytes: bytes) -> Tuple[str, float]:
     fallbacks = ["Effective Tax Rate %", "Tax Rate", "Effective tax rate"]
-    return extract_latest_ttm_by_rowlabel(file_bytes, "Effective Tax Rate", fallbacks=fallbacks)
+    try:
+        return extract_latest_ttm_by_rowlabel(file_bytes, "Effective Tax Rate", fallbacks=fallbacks)
+    except ValueError:
+        # Business rule fallback:
+        # 1) derive from Income Tax Expense / Pretax Income when possible
+        # 2) otherwise use miniscule 0.000001%
+        as_of = _extract_latest_ttm_column_label(file_bytes, "Income-TTM")
+        income_tax_expense_ttm = _extract_ttm_value_for_as_of(file_bytes, "Income-TTM", _income_tax_expense_row_targets(), as_of)
+        pretax_income_ttm = _extract_ttm_value_for_as_of(
+            file_bytes,
+            "Income-TTM",
+            ["Pretax Income", "Pre-tax Income", "Pre Tax Income", "Earnings Before Tax", "Income Before Tax"],
+            as_of,
+        )
+        derived = _safe_derive_effective_tax_rate(income_tax_expense_ttm, pretax_income_ttm)
+        if derived is not None:
+            return as_of, derived
+        return as_of, 0.00000001
+
+
+def _safe_derive_effective_tax_rate(
+    income_tax_expense: Optional[float],
+    pretax_income: Optional[float],
+) -> Optional[float]:
+    try:
+        if income_tax_expense is None or pretax_income is None:
+            return None
+        income_tax_expense_f = float(income_tax_expense)
+        pretax_income_f = float(pretax_income)
+        if not np.isfinite(income_tax_expense_f) or not np.isfinite(pretax_income_f):
+            return None
+        if pretax_income_f == 0.0:
+            return None
+        return income_tax_expense_f / pretax_income_f
+    except Exception:
+        return None
+
+
+def _income_tax_expense_row_targets() -> List[str]:
+    return [
+        "Income Tax Expense",
+        "Income Tax",
+        "Tax Expense",
+        "Income Tax Expense (Benefit)",
+        "Provision for Income Taxes",
+        "Provision for Income Tax",
+        "Taxes",
+    ]
+
+
+def _extract_annual_income_tax_expense_series(file_bytes: bytes) -> Dict[int, float]:
+    try:
+        return extract_annual_series_by_rowlabel(
+            file_bytes,
+            "Income Tax Expense",
+            fallbacks=_income_tax_expense_row_targets()[1:],
+        )
+    except Exception:
+        return {}
+
+
+def _extract_ttm_value_for_as_of(
+    file_bytes: bytes,
+    sheet_name: str,
+    row_targets: List[str],
+    as_of: str,
+) -> Optional[float]:
+    try:
+        df = _read_sheet(file_bytes, sheet_name)
+        row = _find_row(df, row_targets)
+    except Exception:
+        return None
+
+    for col in df.columns:
+        if str(col) != str(as_of):
+            continue
+        val = row[col]
+        if pd.notna(val):
+            try:
+                fv = float(val)
+                return fv if np.isfinite(fv) else None
+            except Exception:
+                return None
+        return None
+    return None
 
 def extract_annual_ebit_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["EBIT", "Operating Income", "Earnings Before Interest and Taxes"]

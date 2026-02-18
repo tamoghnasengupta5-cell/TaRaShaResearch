@@ -887,6 +887,52 @@ def _render_bs_key_data() -> None:
         stdev = float(np.std(arr, ddof=ddof)) if arr.size > 1 or ddof == 0 else None
         return median, stdev
 
+    def get_annual_cash_series(conn_in: sqlite3.Connection, company_id: int) -> pd.DataFrame:
+        return read_df(
+            """
+            SELECT fiscal_year AS year, cash_and_cash_equivalents
+            FROM cash_and_cash_equivalents_annual
+            WHERE company_id = ?
+            ORDER BY fiscal_year
+            """,
+            conn_in,
+            params=(company_id,),
+        )
+
+    def get_annual_short_term_investments_series(conn_in: sqlite3.Connection, company_id: int) -> pd.DataFrame:
+        return read_df(
+            """
+            SELECT fiscal_year AS year, short_term_investments
+            FROM short_term_investments_annual
+            WHERE company_id = ?
+            ORDER BY fiscal_year
+            """,
+            conn_in,
+            params=(company_id,),
+        )
+
+    def build_cash_and_equivalents_series(
+        ann_cash_df: pd.DataFrame,
+        ann_sti_df: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Derive Cash and Equivalents = Cash and Cash Equivalents - Short-Term Investments."""
+        if ann_cash_df is None or ann_cash_df.empty:
+            return pd.DataFrame(columns=["year", "cash_and_equivalents"])
+        cash_df = ann_cash_df[["year", "cash_and_cash_equivalents"]].copy()
+        if ann_sti_df is None or ann_sti_df.empty:
+            cash_df["cash_and_equivalents"] = cash_df["cash_and_cash_equivalents"].astype(float)
+            return cash_df[["year", "cash_and_equivalents"]]
+        merged = cash_df.merge(
+            ann_sti_df[["year", "short_term_investments"]],
+            on="year",
+            how="left",
+        )
+        merged["short_term_investments"] = merged["short_term_investments"].fillna(0.0)
+        merged["cash_and_equivalents"] = (
+            merged["cash_and_cash_equivalents"].astype(float) - merged["short_term_investments"].astype(float)
+        )
+        return merged[["year", "cash_and_equivalents"]]
+
     def any_available_years(conn_in: sqlite3.Connection, company_id: int) -> List[int]:
         years: List[int] = []
         for df in [
@@ -897,6 +943,8 @@ def _render_bs_key_data() -> None:
             get_annual_revenue_yield_non_cash_working_capital_series(conn_in, company_id),
             get_annual_interest_coverage_series(conn_in, company_id),
             get_annual_interest_load_series(conn_in, company_id),
+            get_annual_total_debt_series(conn_in, company_id),
+            get_annual_cash_series(conn_in, company_id),
         ]:
             if df is not None and not df.empty and "year" in df.columns:
                 years.extend([int(y) for y in df["year"].tolist() if pd.notna(y)])
@@ -938,6 +986,10 @@ def _render_bs_key_data() -> None:
         ann_ry = get_annual_revenue_yield_non_cash_working_capital_series(conn, cid)
         ann_ic = get_annual_interest_coverage_series(conn, cid)
         ann_il = get_annual_interest_load_series(conn, cid)
+        ann_total_debt = get_annual_total_debt_series(conn, cid)
+        ann_cash = get_annual_cash_series(conn, cid)
+        ann_sti = get_annual_short_term_investments_series(conn, cid)
+        ann_cash_equivalents = build_cash_and_equivalents_series(ann_cash, ann_sti)
 
         # Metrics
         acc_by_year, acc_growth_by_year, acc_med_g, acc_std_g = build_metric(
@@ -965,9 +1017,25 @@ def _render_bs_key_data() -> None:
         il_by_year, il_growth_by_year, il_med_g, il_std_g = build_metric(
             ann_il, "interest_load_pct", yr_start, yr_end, stdev_sample=sample
         )
+        td_by_year, td_growth_by_year, td_med_g, td_std_g = build_metric(
+            ann_total_debt, "total_debt", yr_start, yr_end, stdev_sample=sample
+        )
+        cash_by_year, cash_growth_by_year, cash_med_g, cash_std_g = build_metric(
+            ann_cash_equivalents, "cash_and_equivalents", yr_start, yr_end, stdev_sample=sample
+        )
 
         # Track years across any metric present
-        for d in [acc_by_year, roe_by_year, roce_by_year, ncwc_by_year, ry_by_year, ic_by_year, il_by_year]:
+        for d in [
+            acc_by_year,
+            roe_by_year,
+            roce_by_year,
+            ncwc_by_year,
+            ry_by_year,
+            ic_by_year,
+            il_by_year,
+            td_by_year,
+            cash_by_year,
+        ]:
             year_set.update(d.keys())
 
         per_company.append(
@@ -1005,6 +1073,14 @@ def _render_bs_key_data() -> None:
                 "il_growth_by_year": il_growth_by_year,
                 "il_median_growth": il_med_g,
                 "il_stdev_growth": il_std_g,
+                "total_debt_by_year": td_by_year,
+                "total_debt_growth_by_year": td_growth_by_year,
+                "total_debt_median_growth": td_med_g,
+                "total_debt_stdev_growth": td_std_g,
+                "cash_by_year": cash_by_year,
+                "cash_growth_by_year": cash_growth_by_year,
+                "cash_median_growth": cash_med_g,
+                "cash_stdev_growth": cash_std_g,
             }
         )
 
@@ -1242,6 +1318,62 @@ def _render_bs_key_data() -> None:
             gv = item["il_growth_by_year"].get(y)
             ilg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
         rows.append(ilg)
+
+        # Total Debt
+        td = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Total Debt",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            td[y] = fmt_money(item["total_debt_by_year"].get(y), item["country"])
+        rows.append(td)
+
+        tdg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item["total_debt_median_growth"]),
+            "Standard Deviation": fmt_pct_from_decimal(item["total_debt_stdev_growth"]),
+        }
+        for y in year_cols:
+            gv = item["total_debt_growth_by_year"].get(y)
+            tdg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(tdg)
+
+        # Cash
+        csh = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Cash",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            csh[y] = fmt_money(item["cash_by_year"].get(y), item["country"])
+        rows.append(csh)
+
+        cshg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item["cash_median_growth"]),
+            "Standard Deviation": fmt_pct_from_decimal(item["cash_stdev_growth"]),
+        }
+        for y in year_cols:
+            gv = item["cash_growth_by_year"].get(y)
+            cshg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(cshg)
 
     ordered_cols = ["Company", "Ticker", "Country", "Units", "Key"] + year_cols + ["Median", "Standard Deviation"]
     disp = pd.DataFrame(rows)
