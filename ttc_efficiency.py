@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 import re
 
 import numpy as np
@@ -9,7 +9,28 @@ import streamlit as st
 
 from core import (
     TTC_SECTIONS,
+    compute_and_store_cost_of_equity,
+    compute_and_store_fcff_and_reinvestment_rate,
+    compute_and_store_levered_beta,
+    compute_and_store_pre_tax_cost_of_debt,
+    compute_and_store_roic_wacc_spread,
+    compute_and_store_total_equity_and_roe,
+    compute_and_store_wacc,
+    compute_growth_stats,
+    compute_margin_growth_stats,
+    compute_margin_stats,
     get_db,
+    get_annual_accumulated_profit_series,
+    get_annual_fcff_series,
+    get_annual_interest_load_series,
+    get_annual_net_income_series,
+    get_annual_nopat_series,
+    get_annual_op_margin_series,
+    get_annual_pretax_income_series,
+    get_annual_roe_series,
+    get_annual_roce_series,
+    get_annual_roic_wacc_spread_series,
+    get_annual_series,
     get_ttc_assumptions,
     list_companies,
     read_df,
@@ -17,6 +38,17 @@ from core import (
 )
 
 _SECTIONS = TTC_SECTIONS
+_FILTER_COLUMNS = [
+    "Total Scaled Volatility-Adjusted Score",
+    "Total Debt-Adjusted Scaled Volatility-Adjusted Score",
+    "Operating Margin%",
+    "Operating Margin Expansion%",
+    "Spread%",
+    "Revenue Growth%",
+    "ROE%",
+    "ROCE%",
+    "FCFF Growth%",
+]
 
 
 def _slug(text: str) -> str:
@@ -319,6 +351,537 @@ def _get_company_buckets(conn, company_ids: List[int]) -> Dict[int, str]:
     return {cid: ", ".join(names) for cid, names in buckets.items()}
 
 
+def _load_weight_maps(conn) -> Tuple[Dict[str, float], Dict[str, float]]:
+    growth_weights_df = read_df("SELECT factor, weight FROM growth_weight_factors", conn)
+    stddev_weights_df = read_df("SELECT factor, weight FROM stddev_weight_factors", conn)
+
+    growth_weight_map: Dict[str, float] = {}
+    if growth_weights_df is not None and not growth_weights_df.empty:
+        for _, row in growth_weights_df.iterrows():
+            nm = str(row["factor"])
+            wt_val = row.get("weight")
+            if pd.notna(wt_val):
+                try:
+                    growth_weight_map[nm] = float(wt_val)
+                except Exception:
+                    continue
+
+    stddev_weight_map: Dict[str, float] = {}
+    if stddev_weights_df is not None and not stddev_weights_df.empty:
+        for _, row in stddev_weights_df.iterrows():
+            nm = str(row["factor"])
+            wt_val = row.get("weight")
+            if pd.notna(wt_val):
+                try:
+                    stddev_weight_map[nm] = float(wt_val)
+                except Exception:
+                    continue
+
+    return growth_weight_map, stddev_weight_map
+
+
+def _get_factor_weight(weight_map: Dict[str, float], *names: str) -> Optional[float]:
+    for nm in names:
+        if nm in weight_map:
+            return weight_map[nm]
+    return None
+
+
+def _weighted_score(pairs: List[Tuple[Optional[float], Optional[float]]]) -> Optional[float]:
+    num = 0.0
+    den = 0.0
+    for val, wt in pairs:
+        if val is not None and wt is not None and wt > 0:
+            num += float(val) * float(wt)
+            den += float(wt)
+    if den == 0.0:
+        return None
+    return num / den
+
+
+def _compute_level_stats(
+    df: pd.DataFrame,
+    yr_start: int,
+    yr_end: int,
+    *,
+    value_col: str,
+    stdev_sample: bool = True,
+) -> Tuple[Optional[float], Optional[float]]:
+    if df is None or df.empty:
+        return None, None
+
+    if yr_start < yr_end:
+        yr_start, yr_end = yr_end, yr_start
+
+    dff = df[(df["year"] <= yr_start) & (df["year"] >= yr_end)].copy()
+    if dff.empty:
+        return None, None
+
+    vals = pd.to_numeric(dff[value_col], errors="coerce").dropna().astype(float).values
+    if len(vals) == 0:
+        return None, None
+
+    med = float(np.median(vals))
+    if len(vals) < 2:
+        std = 0.0
+    else:
+        std = float(np.std(vals, ddof=1 if stdev_sample else 0))
+    return med, std
+
+
+def _to_pct_or_none(x: Optional[float]) -> Optional[float]:
+    if x is None:
+        return None
+    return float(x) * 100.0
+
+
+def _to_margin_pct_or_none(x: Optional[float], values_are_fraction: bool) -> Optional[float]:
+    if x is None:
+        return None
+    return float(x) * 100.0 if values_are_fraction else float(x)
+
+
+def _compute_value_creation_filter_metrics(
+    conn,
+    company_id: int,
+    yr_start: int,
+    yr_end: int,
+    growth_weight_map: Dict[str, float],
+    stddev_weight_map: Dict[str, float],
+) -> Dict[str, Optional[float]]:
+    out: Dict[str, Optional[float]] = {
+        "Total Scaled Volatility-Adjusted Score": None,
+        "Total Debt-Adjusted Scaled Volatility-Adjusted Score": None,
+        "Operating Margin%": None,
+        "Operating Margin Expansion%": None,
+        "Spread%": None,
+        "Revenue Growth%": None,
+        "ROE%": None,
+        "ROCE%": None,
+        "FCFF Growth%": None,
+    }
+
+    bs_scaled: Optional[float] = None
+    bs_debt: Optional[float] = None
+    pl_scaled: Optional[float] = None
+    fs_scaled: Optional[float] = None
+
+    # Balance sheet component for total score + ROE/ROCE filters
+    try:
+        compute_and_store_total_equity_and_roe(conn, company_id)
+
+        ann_acc = get_annual_accumulated_profit_series(conn, company_id)
+        ann_roe = get_annual_roe_series(conn, company_id)
+        ann_roce = get_annual_roce_series(conn, company_id)
+        ann_interest_load = get_annual_interest_load_series(conn, company_id)
+
+        med_acc_g: Optional[float] = None
+        std_acc_g: Optional[float] = None
+        if ann_acc is not None and not ann_acc.empty:
+            med_acc_g, std_acc_g = compute_growth_stats(
+                ann_acc,
+                yr_start,
+                yr_end,
+                stdev_sample=True,
+                value_col="accumulated_profit",
+                abs_denom=True,
+            )
+
+        med_roe: Optional[float] = None
+        std_roe: Optional[float] = None
+        if ann_roe is not None and not ann_roe.empty:
+            df_roe = ann_roe[(ann_roe["year"] >= yr_end) & (ann_roe["year"] <= yr_start)].sort_values("year")
+            vals_roe = df_roe["roe"].dropna().astype(float).values
+            if vals_roe.size > 0:
+                arr_roe = np.array(vals_roe, dtype=float)
+                med_roe = float(np.median(arr_roe))
+                ddof_roe = 1 if arr_roe.size > 1 else 0
+                std_roe = float(np.std(arr_roe, ddof=ddof_roe))
+
+        med_roce: Optional[float] = None
+        std_roce: Optional[float] = None
+        if ann_roce is not None and not ann_roce.empty:
+            df_roce = ann_roce[(ann_roce["year"] >= yr_end) & (ann_roce["year"] <= yr_start)].sort_values("year")
+            vals_roce = df_roce["roce"].dropna().astype(float).values
+            if vals_roce.size > 0:
+                arr_roce = np.array(vals_roce, dtype=float)
+                med_roce = float(np.median(arr_roce))
+                ddof_roce = 1 if arr_roce.size > 1 else 0
+                std_roce = float(np.std(arr_roce, ddof=ddof_roce))
+
+        median_interest_load_pct: Optional[float] = None
+        if ann_interest_load is not None and not ann_interest_load.empty:
+            df_il = ann_interest_load[
+                (ann_interest_load["year"] >= yr_end) & (ann_interest_load["year"] <= yr_start)
+            ].sort_values("year")
+            vals_il = df_il["interest_load_pct"].dropna().astype(float).values
+            if vals_il.size > 0:
+                median_interest_load_pct = float(np.median(np.array(vals_il, dtype=float)))
+
+        median_acc_pct = _to_pct_or_none(med_acc_g)
+        std_acc_pct = _to_pct_or_none(std_acc_g)
+        median_roe_pct = _to_pct_or_none(med_roe)
+        std_roe_pct = _to_pct_or_none(std_roe)
+        median_roce_pct = _to_pct_or_none(med_roce)
+        std_roce_pct = _to_pct_or_none(std_roce)
+
+        out["ROE%"] = median_roe_pct
+        out["ROCE%"] = median_roce_pct
+
+        gw_acc = _get_factor_weight(growth_weight_map, "Accumulated Equity Growth", "Accumulated Profit Growth")
+        gw_roe = _get_factor_weight(growth_weight_map, "ROE")
+        gw_roce = _get_factor_weight(growth_weight_map, "ROCE")
+
+        sw_acc = _get_factor_weight(stddev_weight_map, "Accumulated Equity Growth", "Accumulated Profit Growth")
+        sw_roe = _get_factor_weight(stddev_weight_map, "ROE")
+        sw_roce = _get_factor_weight(stddev_weight_map, "ROCE")
+
+        weighted_strength = _weighted_score(
+            [(median_acc_pct, gw_acc), (median_roe_pct, gw_roe), (median_roce_pct, gw_roce)]
+        )
+        weighted_stddev_bs = _weighted_score(
+            [(std_acc_pct, sw_acc), (std_roe_pct, sw_roe), (std_roce_pct, sw_roce)]
+        )
+
+        if weighted_strength is not None and weighted_stddev_bs is not None:
+            bs_scaled = weighted_strength / (1.0 + weighted_stddev_bs)
+        if bs_scaled is not None and median_interest_load_pct is not None:
+            bs_debt = bs_scaled / (1.0 + (median_interest_load_pct / 100.0))
+    except Exception:
+        pass
+
+    # P&L component for total score + margin/revenue filters
+    try:
+        ann_rev = get_annual_series(conn, company_id)
+        med_rev_g: Optional[float] = None
+        std_rev_g: Optional[float] = None
+        if ann_rev is not None and not ann_rev.empty:
+            med_rev_g, std_rev_g = compute_growth_stats(
+                ann_rev,
+                yr_start,
+                yr_end,
+                stdev_sample=True,
+                value_col="revenue",
+                abs_denom=True,
+            )
+
+        ann_pt = get_annual_pretax_income_series(conn, company_id)
+        med_pt_g: Optional[float] = None
+        std_pt_g: Optional[float] = None
+        if ann_pt is not None and not ann_pt.empty:
+            med_pt_g, std_pt_g = compute_growth_stats(
+                ann_pt,
+                yr_start,
+                yr_end,
+                stdev_sample=True,
+                value_col="pretax_income",
+                abs_denom=True,
+            )
+
+        ann_ni = get_annual_net_income_series(conn, company_id)
+        med_ni_g: Optional[float] = None
+        std_ni_g: Optional[float] = None
+        if ann_ni is not None and not ann_ni.empty:
+            med_ni_g, std_ni_g = compute_growth_stats(
+                ann_ni,
+                yr_start,
+                yr_end,
+                stdev_sample=True,
+                value_col="net_income",
+                abs_denom=True,
+            )
+
+        ann_nopat = get_annual_nopat_series(conn, company_id)
+        med_nopat_g: Optional[float] = None
+        std_nopat_g: Optional[float] = None
+        if ann_nopat is not None and not ann_nopat.empty:
+            med_nopat_g, std_nopat_g = compute_growth_stats(
+                ann_nopat,
+                yr_start,
+                yr_end,
+                stdev_sample=True,
+                value_col="nopat",
+                abs_denom=True,
+            )
+
+        ann_om = get_annual_op_margin_series(conn, company_id)
+        med_om: Optional[float] = None
+        std_om: Optional[float] = None
+        om_is_fraction = True
+        med_om_g: Optional[float] = None
+        std_om_g: Optional[float] = None
+        if ann_om is not None and not ann_om.empty:
+            med_om, std_om, om_is_fraction = compute_margin_stats(
+                ann_om,
+                yr_start,
+                yr_end,
+                stdev_sample=True,
+            )
+            med_om_g, std_om_g = compute_margin_growth_stats(
+                ann_om,
+                yr_start,
+                yr_end,
+                stdev_sample=True,
+            )
+
+        median_rev_pct = _to_pct_or_none(med_rev_g)
+        std_rev_pct = _to_pct_or_none(std_rev_g)
+        median_pt_pct = _to_pct_or_none(med_pt_g)
+        std_pt_pct = _to_pct_or_none(std_pt_g)
+        median_ni_pct = _to_pct_or_none(med_ni_g)
+        std_ni_pct = _to_pct_or_none(std_ni_g)
+        median_nopat_pct = _to_pct_or_none(med_nopat_g)
+        std_nopat_pct = _to_pct_or_none(std_nopat_g)
+        median_om_pct = _to_margin_pct_or_none(med_om, om_is_fraction)
+        std_om_pct = _to_margin_pct_or_none(std_om, om_is_fraction)
+        median_yoy_om_pct = _to_pct_or_none(med_om_g)
+        std_yoy_om_pct = _to_pct_or_none(std_om_g)
+
+        out["Operating Margin%"] = median_om_pct
+        out["Operating Margin Expansion%"] = median_yoy_om_pct
+        out["Revenue Growth%"] = median_rev_pct
+
+        gw_rev = _get_factor_weight(growth_weight_map, "Revenue Growth")
+        gw_pt = _get_factor_weight(growth_weight_map, "Pretax Income Growth", "Profit Before Tax Growth")
+        gw_ni = _get_factor_weight(growth_weight_map, "Net Income Growth", "Net Income  Growth")
+        gw_nopat = _get_factor_weight(growth_weight_map, "NOPAT Growth")
+        gw_om = _get_factor_weight(growth_weight_map, "Operating Margin")
+        gw_yoy_om = _get_factor_weight(growth_weight_map, "YoY Operating Margin Growth")
+
+        sw_rev = _get_factor_weight(stddev_weight_map, "Revenue Growth")
+        sw_pt = _get_factor_weight(stddev_weight_map, "Pretax Income Growth", "Profit Before Tax Growth")
+        sw_ni = _get_factor_weight(stddev_weight_map, "Net Income Growth", "Net Income  Growth")
+        sw_nopat = _get_factor_weight(stddev_weight_map, "NOPAT Growth")
+        sw_om = _get_factor_weight(stddev_weight_map, "Operating Margin")
+        sw_yoy_om = _get_factor_weight(stddev_weight_map, "YoY Operating Margin Growth")
+
+        weighted_growth = _weighted_score(
+            [
+                (median_rev_pct, gw_rev),
+                (median_pt_pct, gw_pt),
+                (median_ni_pct, gw_ni),
+                (median_nopat_pct, gw_nopat),
+                (median_om_pct, gw_om),
+                (median_yoy_om_pct, gw_yoy_om),
+            ]
+        )
+        weighted_stddev_pl = _weighted_score(
+            [
+                (std_rev_pct, sw_rev),
+                (std_pt_pct, sw_pt),
+                (std_ni_pct, sw_ni),
+                (std_nopat_pct, sw_nopat),
+                (std_om_pct, sw_om),
+                (std_yoy_om_pct, sw_yoy_om),
+            ]
+        )
+        if weighted_growth is not None and weighted_stddev_pl is not None:
+            pl_scaled = weighted_growth / (1.0 + weighted_stddev_pl)
+    except Exception:
+        pass
+
+    # FCFF + spread component for total score + spread/fcff filters
+    try:
+        compute_and_store_fcff_and_reinvestment_rate(conn, company_id)
+        compute_and_store_levered_beta(conn, company_id)
+        compute_and_store_cost_of_equity(conn, company_id)
+        compute_and_store_pre_tax_cost_of_debt(conn, company_id)
+        compute_and_store_wacc(conn, company_id)
+        compute_and_store_roic_wacc_spread(conn, company_id)
+
+        fcff_df = get_annual_fcff_series(conn, company_id)
+        spread_df = get_annual_roic_wacc_spread_series(conn, company_id)
+
+        med_fcff_g: Optional[float] = None
+        std_fcff_g: Optional[float] = None
+        if fcff_df is not None and not fcff_df.empty:
+            med_fcff_g, std_fcff_g = compute_growth_stats(
+                fcff_df,
+                yr_start,
+                yr_end,
+                stdev_sample=True,
+                value_col="fcff",
+                abs_denom=True,
+            )
+
+        median_yoy_fcff_change_pct = _to_pct_or_none(med_fcff_g)
+        std_yoy_fcff_change_pct = _to_pct_or_none(std_fcff_g)
+
+        med_spread: Optional[float] = None
+        std_spread: Optional[float] = None
+        if spread_df is not None and not spread_df.empty:
+            med_spread, std_spread = _compute_level_stats(
+                spread_df,
+                yr_start,
+                yr_end,
+                value_col="spread_pct",
+                stdev_sample=True,
+            )
+
+        out["Spread%"] = med_spread
+        out["FCFF Growth%"] = median_yoy_fcff_change_pct
+
+        gw_fcff = _get_factor_weight(growth_weight_map, "FCFF Growth", "FCFE Growth")
+        gw_spread = _get_factor_weight(growth_weight_map, "Spread")
+        sw_fcff = _get_factor_weight(stddev_weight_map, "FCFF Growth", "FCFE Growth")
+        sw_spread = _get_factor_weight(stddev_weight_map, "Spread")
+
+        weighted_growth = _weighted_score(
+            [
+                (median_yoy_fcff_change_pct, gw_fcff),
+                (med_spread, gw_spread),
+            ]
+        )
+        weighted_stddev = _weighted_score(
+            [
+                (std_yoy_fcff_change_pct, sw_fcff),
+                (std_spread, sw_spread),
+            ]
+        )
+        if weighted_growth is not None and weighted_stddev is not None:
+            fs_scaled = weighted_growth / (1.0 + weighted_stddev)
+    except Exception:
+        pass
+
+    if bs_scaled is not None and pl_scaled is not None and fs_scaled is not None:
+        out["Total Scaled Volatility-Adjusted Score"] = bs_scaled + pl_scaled + fs_scaled
+    if bs_debt is not None and pl_scaled is not None and fs_scaled is not None:
+        out["Total Debt-Adjusted Scaled Volatility-Adjusted Score"] = bs_debt + pl_scaled + fs_scaled
+
+    return out
+
+
+def _apply_ttc_filters(df: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    with st.expander("Filters (selected year-range values)", expanded=False):
+        # Shared across TTC dashboards so one saved group can be reused in each tab/view.
+        presets_key = "ttc_filter_presets"
+        if presets_key not in st.session_state:
+            st.session_state[presets_key] = {}
+        presets: Dict[str, Dict[str, Dict[str, float]]] = st.session_state[presets_key]
+
+        bounds: Dict[str, Tuple[float, float]] = {}
+        for col in _FILTER_COLUMNS:
+            if col not in df.columns:
+                continue
+            series = pd.to_numeric(df[col], errors="coerce").dropna()
+            if series.empty:
+                continue
+            lo_b = float(series.min())
+            hi_b = float(series.max())
+            if lo_b == hi_b:
+                continue
+            bounds[col] = (lo_b, hi_b)
+
+        ctrl_cols = st.columns([2.4, 1.8, 1.0])
+        preset_names = sorted(presets.keys())
+        selected_preset = ctrl_cols[0].selectbox(
+            "Saved filter group",
+            options=["(none)"] + preset_names,
+            key=f"{key_prefix}_preset_select",
+        )
+        preset_name_to_save = ctrl_cols[1].text_input(
+            "Save current as",
+            key=f"{key_prefix}_preset_name",
+            placeholder="e.g. Quality Gate",
+        ).strip()
+        save_clicked = ctrl_cols[2].button("Save", key=f"{key_prefix}_preset_save")
+
+        applied_marker_key = f"{key_prefix}_preset_applied"
+        last_applied = st.session_state.get(applied_marker_key)
+        if selected_preset != "(none)" and selected_preset in presets and selected_preset != last_applied:
+            selected_values = presets[selected_preset]
+            for col, (lo_b, hi_b) in bounds.items():
+                pair = selected_values.get(col, {})
+                lo = float(pair.get("min", lo_b))
+                hi = float(pair.get("max", hi_b))
+                if lo > hi:
+                    lo, hi = hi, lo
+                lo = max(lo_b, min(lo, hi_b))
+                hi = max(lo_b, min(hi, hi_b))
+                st.session_state[f"{key_prefix}_{_slug(col)}_min"] = lo
+                st.session_state[f"{key_prefix}_{_slug(col)}_max"] = hi
+            st.session_state[applied_marker_key] = selected_preset
+            st.caption(f"Applied saved filter group: `{selected_preset}`")
+        elif selected_preset == "(none)":
+            st.session_state[applied_marker_key] = None
+
+        if save_clicked:
+            if not preset_name_to_save:
+                st.warning("Enter a filter group name before saving.")
+            else:
+                values: Dict[str, Dict[str, float]] = {}
+                for col, (lo_b, hi_b) in bounds.items():
+                    lo_key = f"{key_prefix}_{_slug(col)}_min"
+                    hi_key = f"{key_prefix}_{_slug(col)}_max"
+                    lo = float(st.session_state.get(lo_key, lo_b))
+                    hi = float(st.session_state.get(hi_key, hi_b))
+                    if lo > hi:
+                        lo, hi = hi, lo
+                    lo = max(lo_b, min(lo, hi_b))
+                    hi = max(lo_b, min(hi, hi_b))
+                    values[col] = {"min": lo, "max": hi}
+                presets[preset_name_to_save] = values
+                st.session_state[presets_key] = presets
+                st.session_state[f"{key_prefix}_preset_select"] = preset_name_to_save
+                st.session_state[applied_marker_key] = preset_name_to_save
+                st.success(f"Saved filter group: {preset_name_to_save}")
+
+        mask = pd.Series(True, index=df.index)
+        active = 0
+
+        for col in _FILTER_COLUMNS:
+            if col not in df.columns:
+                continue
+
+            series = pd.to_numeric(df[col], errors="coerce")
+            valid = series.dropna()
+            if valid.empty:
+                continue
+
+            min_default = float(valid.min())
+            max_default = float(valid.max())
+            if min_default == max_default:
+                st.caption(f"{col}: fixed at {min_default:.4f}")
+                continue
+
+            c1, c2, c3 = st.columns([3.0, 1.2, 1.2])
+            c1.markdown(f"`{col}`")
+            lo = c2.number_input(
+                "Min",
+                key=f"{key_prefix}_{_slug(col)}_min",
+                value=min_default,
+                format="%.4f",
+                label_visibility="collapsed",
+            )
+            hi = c3.number_input(
+                "Max",
+                key=f"{key_prefix}_{_slug(col)}_max",
+                value=max_default,
+                format="%.4f",
+                label_visibility="collapsed",
+            )
+
+            if lo > hi:
+                lo, hi = hi, lo
+
+            if lo > min_default or hi < max_default:
+                active += 1
+                mask &= series.between(lo, hi, inclusive="both")
+
+        if active == 0:
+            st.caption("No filter constraints applied.")
+            return df
+
+        filtered = df[mask].copy()
+        st.caption(f"{len(filtered)} of {len(df)} companies match active filters.")
+        return filtered
+
+    return df
+
+
 def render_through_the_cycle_income_statement_score_tab() -> None:
     conn = get_db()
     companies_df = list_companies(conn)
@@ -393,7 +956,9 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
     )
 
     compute = st.button("Compute Score", type="primary", key="ttc_income_statement_compute")
-    if not compute:
+    if compute:
+        st.session_state["ttc_income_statement_has_run"] = True
+    if not st.session_state.get("ttc_income_statement_has_run", False):
         return
 
     sections = _parse_assumptions_sections(conn)
@@ -401,16 +966,24 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
         st.error("No TTC assumptions found in the database. Add them in the Assumptions tab first.")
         return
     params = _get_income_statement_params(sections)
+    growth_weight_map, stddev_weight_map = _load_weight_maps(conn)
 
     buckets_map = _get_company_buckets(conn, company_ids)
     company_lookup = {int(row["id"]): row for _, row in companies_df.iterrows()}
 
     rows: List[Dict[str, object]] = []
+    progress_bar = st.progress(0, text="Starting income statement score computation...")
+    progress_total = max(len(company_ids), 1)
 
-    for cid in company_ids:
+    for idx, cid in enumerate(company_ids, start=1):
         row = company_lookup.get(cid)
         if row is None:
+            progress_bar.progress(int((idx / progress_total) * 100), text=f"Computing company {idx}/{progress_total}...")
             continue
+        progress_bar.progress(
+            int((idx / progress_total) * 100),
+            text=f"Computing {row['name']} ({idx}/{progress_total})...",
+        )
 
         revenue = _load_series(conn, "revenues_annual", "revenue", cid)
         if not revenue:
@@ -476,12 +1049,21 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
             incremental_med,
             params,
         )
+        filter_metrics = _compute_value_creation_filter_metrics(
+            conn,
+            cid,
+            yr_start,
+            yr_end,
+            growth_weight_map,
+            stddev_weight_map,
+        )
 
         rows.append(
             {
                 "Ticker": row["ticker"],
                 "Company Name": row["name"],
                 "Industry Bucket": buckets_map.get(cid, "(no bucket)"),
+                **filter_metrics,
                 "Operating Margin %": op_margin_med,
                 "Operating Margin Standard Deviation": op_margin_std,
                 "Gross Margin %": gross_margin_med,
@@ -492,6 +1074,7 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
         )
 
     if not rows:
+        progress_bar.progress(100, text="No scores to display for selected input.")
         st.info("No scores could be computed for the selected input.")
         return
 
@@ -501,6 +1084,11 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
         ascending=False,
         na_position="last",
     )
+    progress_bar.progress(100, text="Income statement score computation complete.")
+    df = _apply_ttc_filters(df, "ttc_income_statement")
+    if df.empty:
+        st.info("No companies match the selected filters.")
+        return
 
     if view_mode == "Dashboard View":
         show_cols = [
@@ -524,13 +1112,28 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
 
     if view_mode == "Company Detailed View":
         display_df = df.copy()
-        for col in [
+        pct_point_cols = [
+            "Operating Margin%",
+            "Operating Margin Expansion%",
+            "Spread%",
+            "Revenue Growth%",
+            "ROE%",
+            "ROCE%",
+            "FCFF Growth%",
+        ]
+        ratio_cols = [
             "Operating Margin %",
             "Operating Margin Standard Deviation",
             "Gross Margin %",
             "SG&A Ratio",
             "Incremental Margin % [Pricing Power + Operating Leverage]",
-        ]:
+        ]
+        for col in pct_point_cols:
+            if col in display_df.columns:
+                display_df[col] = display_df[col].apply(
+                    lambda v: f"{float(v):.2f}%" if pd.notna(v) else ""
+                )
+        for col in ratio_cols:
             if col in display_df.columns:
                 display_df[col] = display_df[col].apply(
                     lambda v: f"{v * 100:.2f}%" if pd.notna(v) else ""
@@ -623,7 +1226,9 @@ def render_through_the_cycle_balance_sheet_score_tab() -> None:
     )
 
     compute = st.button("Compute Score", type="primary", key="ttc_balance_sheet_compute")
-    if not compute:
+    if compute:
+        st.session_state["ttc_balance_sheet_has_run"] = True
+    if not st.session_state.get("ttc_balance_sheet_has_run", False):
         return
 
     sections = _parse_assumptions_sections(conn)
@@ -631,16 +1236,24 @@ def render_through_the_cycle_balance_sheet_score_tab() -> None:
         st.error("No TTC assumptions found in the database. Add them in the Assumptions tab first.")
         return
     params = _get_balance_sheet_params(sections)
+    growth_weight_map, stddev_weight_map = _load_weight_maps(conn)
 
     buckets_map = _get_company_buckets(conn, company_ids)
     company_lookup = {int(row["id"]): row for _, row in companies_df.iterrows()}
 
     rows: List[Dict[str, object]] = []
+    progress_bar = st.progress(0, text="Starting balance sheet score computation...")
+    progress_total = max(len(company_ids), 1)
 
-    for cid in company_ids:
+    for idx, cid in enumerate(company_ids, start=1):
         row = company_lookup.get(cid)
         if row is None:
+            progress_bar.progress(int((idx / progress_total) * 100), text=f"Computing company {idx}/{progress_total}...")
             continue
+        progress_bar.progress(
+            int((idx / progress_total) * 100),
+            text=f"Computing {row['name']} ({idx}/{progress_total})...",
+        )
 
         total_debt = _load_series(conn, "total_debt_annual", "total_debt", cid)
         if not total_debt:
@@ -753,12 +1366,21 @@ def render_through_the_cycle_balance_sheet_score_tab() -> None:
         if ic_penalty:
             penalty_notes.append("Penalty applied: Operating income (EBIT) < 0")
         penalty_note = "; ".join(penalty_notes)
+        filter_metrics = _compute_value_creation_filter_metrics(
+            conn,
+            cid,
+            yr_start,
+            yr_end,
+            growth_weight_map,
+            stddev_weight_map,
+        )
 
         rows.append(
             {
                 "Ticker": row["ticker"],
                 "Company Name": row["name"],
                 "Industry Bucket": buckets_map.get(cid, "(no bucket)"),
+                **filter_metrics,
                 "Net Debt/EBITDA": net_debt_ebitda_med,
                 "Interest Coverage": interest_coverage_med,
                 "Quick Ratio": quick_ratio_med,
@@ -772,6 +1394,7 @@ def render_through_the_cycle_balance_sheet_score_tab() -> None:
         )
 
     if not rows:
+        progress_bar.progress(100, text="No scores to display for selected input.")
         st.info("No scores could be computed for the selected input.")
         return
 
@@ -781,6 +1404,11 @@ def render_through_the_cycle_balance_sheet_score_tab() -> None:
         ascending=False,
         na_position="last",
     )
+    progress_bar.progress(100, text="Balance sheet score computation complete.")
+    df = _apply_ttc_filters(df, "ttc_balance_sheet")
+    if df.empty:
+        st.info("No companies match the selected filters.")
+        return
 
     if view_mode == "Dashboard View":
         show_cols = [
