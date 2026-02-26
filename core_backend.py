@@ -38,6 +38,7 @@ from db_orm import (
     EbitAnnual, EbitTtm,
     InterestExpenseAnnual, InterestExpenseTtm,
     OperatingIncomeAnnual, OperatingIncomeTtm,
+    OperatingCashFlowAnnual, OperatingCashFlowTtm,
     NopatAnnual,
     PriceChangeAnnual,
     TotalAssetsAnnual, TotalAssetsTtm,
@@ -50,10 +51,18 @@ from db_orm import (
     LeveredBetaAnnual,
     TotalCurrentAssetsAnnual, TotalCurrentAssetsTtm,
     AccountsReceivableAnnual, AccountsReceivableTtm,
+    InventoryAnnual, InventoryTtm,
+    AccountsPayableAnnual, AccountsPayableTtm,
     CurrentDebtAnnual, CurrentDebtTtm,
     CashAndCashEquivalentsAnnual, CashAndCashEquivalentsTtm,
     ShortTermInvestmentsAnnual, ShortTermInvestmentsTtm,
     LongTermInvestmentsAnnual, LongTermInvestmentsTtm,
+    NetPpeAnnual, NetPpeTtm,
+    GoodwillAndIntangiblesAnnual, GoodwillAndIntangiblesTtm,
+    OtherLongTermAssetsAnnual, OtherLongTermAssetsTtm,
+    DeferredRevenueAnnual, DeferredRevenueTtm,
+    DeferredTaxLiabilitiesAnnual, DeferredTaxLiabilitiesTtm,
+    OtherLongTermLiabilitiesAnnual, OtherLongTermLiabilitiesTtm,
     CapitalEmployedAnnual,
     InvestedCapitalAnnual,
     ShareholdersEquityAnnual, ShareholdersEquityTtm,
@@ -91,6 +100,7 @@ TTC_SECTIONS = [
     "Balance Sheet Strength Score",
     "Cash Flow Efficiency Score",
     "Working Capital Efficiency Score",
+    "Overall Score",
 ]
 
 def _is_azure_app_service() -> bool:
@@ -1894,6 +1904,118 @@ def extract_latest_ttm_net_debt_issued_paid(file_bytes: bytes) -> Tuple[str, flo
         return ("", 0.0)
 
 
+def extract_annual_operating_cash_flow_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Operating Cash Flow", "Cash Flow from Operations", "Net Cash Provided by Operating Activities"]
+    try:
+        return extract_cf_annual_series_by_rowlabel(file_bytes, "Cash Flow from Operations", fallbacks=fallbacks)
+    except Exception:
+        return {}
+
+
+def extract_latest_ttm_operating_cash_flow(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Operating Cash Flow", "Cash Flow from Operations", "Net Cash Provided by Operating Activities"]
+    try:
+        return extract_cf_latest_ttm_by_rowlabel(file_bytes, "Operating Cash Flow", fallbacks=fallbacks)
+    except Exception:
+        return ("", 0.0)
+
+
+def extract_annual_net_ppe_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Property, Plant & Equipment", "Property Plant & Equipment", "Net PP&E", "Net PPE"]
+    try:
+        return extract_bs_annual_series_by_rowlabel(file_bytes, "Property, Plant & Equipment", fallbacks=fallbacks)
+    except Exception:
+        return {}
+
+
+def extract_latest_ttm_net_ppe(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Property, Plant & Equipment", "Property Plant & Equipment", "Net PP&E", "Net PPE"]
+    try:
+        return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Property, Plant & Equipment", fallbacks=fallbacks)
+    except Exception:
+        return ("", 0.0)
+
+
+def extract_annual_goodwill_and_intangibles_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Goodwill and Intangibles", "Goodwill & Intangibles", "Goodwill and Intangible Assets"]
+    try:
+        return extract_bs_annual_series_by_rowlabel(file_bytes, "Goodwill and Intangibles", fallbacks=fallbacks)
+    except Exception:
+        return {}
+
+
+def extract_latest_ttm_goodwill_and_intangibles(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Goodwill and Intangibles", "Goodwill & Intangibles", "Goodwill and Intangible Assets"]
+    try:
+        return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Goodwill and Intangibles", fallbacks=fallbacks)
+    except Exception:
+        return ("", 0.0)
+
+
+def extract_annual_other_long_term_assets_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Other Long-Term Assets", "Other Long Term Assets", "Other long-term assets"]
+    try:
+        return extract_bs_annual_series_by_rowlabel(file_bytes, "Other Long-Term Assets", fallbacks=fallbacks)
+    except Exception:
+        return {}
+
+
+def extract_latest_ttm_other_long_term_assets(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Other Long-Term Assets", "Other Long Term Assets", "Other long-term assets"]
+    try:
+        return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Other Long-Term Assets", fallbacks=fallbacks)
+    except Exception:
+        return ("", 0.0)
+
+
+def extract_annual_deferred_revenue_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Deferred Revenue", "Deferred revenue"]
+    try:
+        return extract_bs_annual_series_by_rowlabel(file_bytes, "Deferred Revenue", fallbacks=fallbacks)
+    except Exception:
+        return {}
+
+
+def extract_latest_ttm_deferred_revenue(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Deferred Revenue", "Deferred revenue"]
+    try:
+        return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Deferred Revenue", fallbacks=fallbacks)
+    except Exception:
+        return ("", 0.0)
+
+
+def extract_annual_deferred_tax_liabilities_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Deferred Tax Liabilities", "Deferred Tax Liability", "Deferred tax liabilities"]
+    try:
+        return extract_bs_annual_series_by_rowlabel(file_bytes, "Deferred Tax Liabilities", fallbacks=fallbacks)
+    except Exception:
+        return {}
+
+
+def extract_latest_ttm_deferred_tax_liabilities(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Deferred Tax Liabilities", "Deferred Tax Liability", "Deferred tax liabilities"]
+    try:
+        return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Deferred Tax Liabilities", fallbacks=fallbacks)
+    except Exception:
+        return ("", 0.0)
+
+
+def extract_annual_other_long_term_liabilities_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Other Long-Term Liabilities", "Other Long Term Liabilities", "Other long-term liabilities"]
+    try:
+        return extract_bs_annual_series_by_rowlabel(file_bytes, "Other Long-Term Liabilities", fallbacks=fallbacks)
+    except Exception:
+        return {}
+
+
+def extract_latest_ttm_other_long_term_liabilities(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Other Long-Term Liabilities", "Other Long Term Liabilities", "Other long-term liabilities"]
+    try:
+        return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Other Long-Term Liabilities", fallbacks=fallbacks)
+    except Exception:
+        return ("", 0.0)
+
+
 def extract_annual_total_assets_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Total Assets", "Total assets"]
     return extract_bs_annual_series_by_rowlabel(file_bytes, "Total Assets", fallbacks=fallbacks)
@@ -1975,6 +2097,22 @@ def extract_annual_accounts_receivable_series(file_bytes: bytes) -> Dict[int, fl
 def extract_latest_ttm_accounts_receivable(file_bytes: bytes) -> Tuple[str, float]:
     fallbacks = ["Receivables", "Accounts Receivable", "Accounts Receivable, Net"]
     return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Receivables", fallbacks=fallbacks)
+
+def extract_annual_inventory_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Inventory", "Inventories"]
+    return extract_bs_annual_series_by_rowlabel(file_bytes, "Inventory", fallbacks=fallbacks)
+
+def extract_latest_ttm_inventory(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Inventory", "Inventories"]
+    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Inventory", fallbacks=fallbacks)
+
+def extract_annual_accounts_payable_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Accounts Payable", "Account Payables", "Accounts payable"]
+    return extract_bs_annual_series_by_rowlabel(file_bytes, "Accounts Payable", fallbacks=fallbacks)
+
+def extract_latest_ttm_accounts_payable(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Accounts Payable", "Account Payables", "Accounts payable"]
+    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Accounts Payable", fallbacks=fallbacks)
 
 
 def extract_annual_shareholders_equity_series(file_bytes: bytes) -> Dict[int, float]:
@@ -2366,6 +2504,124 @@ def upsert_ttm_accounts_receivable(conn: sqlite3.Connection, company_id: int, as
         ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, accounts_receivable=excluded.accounts_receivable
         """,
         (company_id, as_of, val),
+    )
+    conn.commit()
+
+def upsert_annual_inventory(
+    conn: sqlite3.Connection, company_id: int, year_to_inventory: Dict[int, float]
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_inventory.items():
+            existing = session.query(InventoryAnnual).filter(
+                InventoryAnnual.company_id == company_id,
+                InventoryAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(InventoryAnnual(company_id=company_id, fiscal_year=year, inventory=val))
+            else:
+                existing.inventory = val
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_inventory.items():
+        cur.execute(
+            """
+            INSERT INTO inventory_annual(company_id, fiscal_year, inventory)
+            VALUES(?, ?, ?)
+            ON CONFLICT(company_id, fiscal_year) DO UPDATE SET inventory=excluded.inventory
+            """,
+            (company_id, year, val),
+        )
+    conn.commit()
+
+def upsert_ttm_inventory(conn: sqlite3.Connection, company_id: int, as_of: str, inventory: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(InventoryTtm).filter(InventoryTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(InventoryTtm(company_id=company_id, as_of=as_of, inventory=inventory))
+        else:
+            existing.as_of = as_of
+            existing.inventory = inventory
+        session.commit()
+        return
+
+    conn.execute(
+        """
+        INSERT INTO inventory_ttm(company_id, as_of, inventory)
+        VALUES(?, ?, ?)
+        ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, inventory=excluded.inventory
+        """,
+        (company_id, as_of, inventory),
+    )
+    conn.commit()
+
+def upsert_annual_accounts_payable(
+    conn: sqlite3.Connection, company_id: int, year_to_accounts_payable: Dict[int, float]
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_accounts_payable.items():
+            existing = session.query(AccountsPayableAnnual).filter(
+                AccountsPayableAnnual.company_id == company_id,
+                AccountsPayableAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(
+                    AccountsPayableAnnual(
+                        company_id=company_id,
+                        fiscal_year=year,
+                        accounts_payable=val,
+                    )
+                )
+            else:
+                existing.accounts_payable = val
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_accounts_payable.items():
+        cur.execute(
+            """
+            INSERT INTO accounts_payable_annual(company_id, fiscal_year, accounts_payable)
+            VALUES(?, ?, ?)
+            ON CONFLICT(company_id, fiscal_year) DO UPDATE SET accounts_payable=excluded.accounts_payable
+            """,
+            (company_id, year, val),
+        )
+    conn.commit()
+
+def upsert_ttm_accounts_payable(
+    conn: sqlite3.Connection, company_id: int, as_of: str, accounts_payable: float
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(AccountsPayableTtm).filter(
+            AccountsPayableTtm.company_id == company_id
+        ).one_or_none()
+        if existing is None:
+            session.add(
+                AccountsPayableTtm(
+                    company_id=company_id,
+                    as_of=as_of,
+                    accounts_payable=accounts_payable,
+                )
+            )
+        else:
+            existing.as_of = as_of
+            existing.accounts_payable = accounts_payable
+        session.commit()
+        return
+
+    conn.execute(
+        """
+        INSERT INTO accounts_payable_ttm(company_id, as_of, accounts_payable)
+        VALUES(?, ?, ?)
+        ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, accounts_payable=excluded.accounts_payable
+        """,
+        (company_id, as_of, accounts_payable),
     )
     conn.commit()
 
@@ -4175,6 +4431,191 @@ def get_annual_capital_expenditures_series(conn: sqlite3.Connection, company_id:
     )
     rows = cur.fetchall()
     return {int(y): float(v) for y, v in rows}
+
+
+def _upsert_annual_metric_generic(
+    conn,
+    company_id: int,
+    year_to_val: Dict[int, float],
+    orm_cls,
+    orm_value_attr: str,
+    table: str,
+    value_col: str,
+) -> None:
+    if not year_to_val:
+        return
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_val.items():
+            existing = session.query(orm_cls).filter(
+                orm_cls.company_id == company_id,
+                orm_cls.fiscal_year == int(year),
+            ).one_or_none()
+            if existing is None:
+                session.add(orm_cls(company_id=company_id, fiscal_year=int(year), **{orm_value_attr: float(val)}))
+            else:
+                setattr(existing, orm_value_attr, float(val))
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_val.items():
+        cur.execute(
+            f"""
+            INSERT INTO {table}(company_id, fiscal_year, {value_col})
+            VALUES(?, ?, ?)
+            ON CONFLICT(company_id, fiscal_year) DO UPDATE SET {value_col}=excluded.{value_col}
+            """,
+            (company_id, int(year), float(val)),
+        )
+    conn.commit()
+
+
+def _upsert_ttm_metric_generic(
+    conn,
+    company_id: int,
+    as_of: str,
+    val: float,
+    orm_cls,
+    orm_value_attr: str,
+    table: str,
+    value_col: str,
+) -> None:
+    if not as_of:
+        return
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(orm_cls).filter(orm_cls.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(orm_cls(company_id=company_id, as_of=as_of, **{orm_value_attr: float(val)}))
+        else:
+            existing.as_of = as_of
+            setattr(existing, orm_value_attr, float(val))
+        session.commit()
+        return
+
+    conn.execute(
+        f"""
+        INSERT INTO {table}(company_id, as_of, {value_col})
+        VALUES(?, ?, ?)
+        ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, {value_col}=excluded.{value_col}
+        """,
+        (company_id, as_of, float(val)),
+    )
+    conn.commit()
+
+
+def upsert_annual_operating_cash_flow(conn: sqlite3.Connection, company_id: int, year_to_val: Dict[int, float]) -> None:
+    _upsert_annual_metric_generic(
+        conn, company_id, year_to_val,
+        OperatingCashFlowAnnual, "operating_cash_flow",
+        "operating_cash_flow_annual", "operating_cash_flow",
+    )
+
+
+def upsert_ttm_operating_cash_flow(conn: sqlite3.Connection, company_id: int, as_of: str, val: float) -> None:
+    _upsert_ttm_metric_generic(
+        conn, company_id, as_of, val,
+        OperatingCashFlowTtm, "operating_cash_flow",
+        "operating_cash_flow_ttm", "operating_cash_flow",
+    )
+
+
+def upsert_annual_net_ppe(conn: sqlite3.Connection, company_id: int, year_to_val: Dict[int, float]) -> None:
+    _upsert_annual_metric_generic(
+        conn, company_id, year_to_val,
+        NetPpeAnnual, "net_ppe",
+        "net_ppe_annual", "net_ppe",
+    )
+
+
+def upsert_ttm_net_ppe(conn: sqlite3.Connection, company_id: int, as_of: str, val: float) -> None:
+    _upsert_ttm_metric_generic(
+        conn, company_id, as_of, val,
+        NetPpeTtm, "net_ppe",
+        "net_ppe_ttm", "net_ppe",
+    )
+
+
+def upsert_annual_goodwill_and_intangibles(conn: sqlite3.Connection, company_id: int, year_to_val: Dict[int, float]) -> None:
+    _upsert_annual_metric_generic(
+        conn, company_id, year_to_val,
+        GoodwillAndIntangiblesAnnual, "goodwill_and_intangibles",
+        "goodwill_and_intangibles_annual", "goodwill_and_intangibles",
+    )
+
+
+def upsert_ttm_goodwill_and_intangibles(conn: sqlite3.Connection, company_id: int, as_of: str, val: float) -> None:
+    _upsert_ttm_metric_generic(
+        conn, company_id, as_of, val,
+        GoodwillAndIntangiblesTtm, "goodwill_and_intangibles",
+        "goodwill_and_intangibles_ttm", "goodwill_and_intangibles",
+    )
+
+
+def upsert_annual_other_long_term_assets(conn: sqlite3.Connection, company_id: int, year_to_val: Dict[int, float]) -> None:
+    _upsert_annual_metric_generic(
+        conn, company_id, year_to_val,
+        OtherLongTermAssetsAnnual, "other_long_term_assets",
+        "other_long_term_assets_annual", "other_long_term_assets",
+    )
+
+
+def upsert_ttm_other_long_term_assets(conn: sqlite3.Connection, company_id: int, as_of: str, val: float) -> None:
+    _upsert_ttm_metric_generic(
+        conn, company_id, as_of, val,
+        OtherLongTermAssetsTtm, "other_long_term_assets",
+        "other_long_term_assets_ttm", "other_long_term_assets",
+    )
+
+
+def upsert_annual_deferred_revenue(conn: sqlite3.Connection, company_id: int, year_to_val: Dict[int, float]) -> None:
+    _upsert_annual_metric_generic(
+        conn, company_id, year_to_val,
+        DeferredRevenueAnnual, "deferred_revenue",
+        "deferred_revenue_annual", "deferred_revenue",
+    )
+
+
+def upsert_ttm_deferred_revenue(conn: sqlite3.Connection, company_id: int, as_of: str, val: float) -> None:
+    _upsert_ttm_metric_generic(
+        conn, company_id, as_of, val,
+        DeferredRevenueTtm, "deferred_revenue",
+        "deferred_revenue_ttm", "deferred_revenue",
+    )
+
+
+def upsert_annual_deferred_tax_liabilities(conn: sqlite3.Connection, company_id: int, year_to_val: Dict[int, float]) -> None:
+    _upsert_annual_metric_generic(
+        conn, company_id, year_to_val,
+        DeferredTaxLiabilitiesAnnual, "deferred_tax_liabilities",
+        "deferred_tax_liabilities_annual", "deferred_tax_liabilities",
+    )
+
+
+def upsert_ttm_deferred_tax_liabilities(conn: sqlite3.Connection, company_id: int, as_of: str, val: float) -> None:
+    _upsert_ttm_metric_generic(
+        conn, company_id, as_of, val,
+        DeferredTaxLiabilitiesTtm, "deferred_tax_liabilities",
+        "deferred_tax_liabilities_ttm", "deferred_tax_liabilities",
+    )
+
+
+def upsert_annual_other_long_term_liabilities(conn: sqlite3.Connection, company_id: int, year_to_val: Dict[int, float]) -> None:
+    _upsert_annual_metric_generic(
+        conn, company_id, year_to_val,
+        OtherLongTermLiabilitiesAnnual, "other_long_term_liabilities",
+        "other_long_term_liabilities_annual", "other_long_term_liabilities",
+    )
+
+
+def upsert_ttm_other_long_term_liabilities(conn: sqlite3.Connection, company_id: int, as_of: str, val: float) -> None:
+    _upsert_ttm_metric_generic(
+        conn, company_id, as_of, val,
+        OtherLongTermLiabilitiesTtm, "other_long_term_liabilities",
+        "other_long_term_liabilities_ttm", "other_long_term_liabilities",
+    )
+
 
 def upsert_annual_depreciation_amortization(conn: sqlite3.Connection, company_id: int, year_to_da: Dict[int, float]) -> None:
     session = getattr(conn, "session", None)

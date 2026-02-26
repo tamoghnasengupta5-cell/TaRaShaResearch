@@ -167,6 +167,48 @@ class OperatingIncomeAnnual(Base):
 class OperatingIncomeTtm(Base):
     __table__ = db_models.operating_income_ttm
 
+class OperatingCashFlowAnnual(Base):
+    __table__ = db_models.operating_cash_flow_annual
+
+class OperatingCashFlowTtm(Base):
+    __table__ = db_models.operating_cash_flow_ttm
+
+class NetPpeAnnual(Base):
+    __table__ = db_models.net_ppe_annual
+
+class NetPpeTtm(Base):
+    __table__ = db_models.net_ppe_ttm
+
+class GoodwillAndIntangiblesAnnual(Base):
+    __table__ = db_models.goodwill_and_intangibles_annual
+
+class GoodwillAndIntangiblesTtm(Base):
+    __table__ = db_models.goodwill_and_intangibles_ttm
+
+class OtherLongTermAssetsAnnual(Base):
+    __table__ = db_models.other_long_term_assets_annual
+
+class OtherLongTermAssetsTtm(Base):
+    __table__ = db_models.other_long_term_assets_ttm
+
+class DeferredRevenueAnnual(Base):
+    __table__ = db_models.deferred_revenue_annual
+
+class DeferredRevenueTtm(Base):
+    __table__ = db_models.deferred_revenue_ttm
+
+class DeferredTaxLiabilitiesAnnual(Base):
+    __table__ = db_models.deferred_tax_liabilities_annual
+
+class DeferredTaxLiabilitiesTtm(Base):
+    __table__ = db_models.deferred_tax_liabilities_ttm
+
+class OtherLongTermLiabilitiesAnnual(Base):
+    __table__ = db_models.other_long_term_liabilities_annual
+
+class OtherLongTermLiabilitiesTtm(Base):
+    __table__ = db_models.other_long_term_liabilities_ttm
+
 class PreTaxCostOfDebtAnnual(Base):
     __table__ = db_models.pre_tax_cost_of_debt_annual
 
@@ -238,6 +280,18 @@ class AccountsReceivableAnnual(Base):
 
 class AccountsReceivableTtm(Base):
     __table__ = db_models.accounts_receivable_ttm
+
+class InventoryAnnual(Base):
+    __table__ = db_models.inventory_annual
+
+class InventoryTtm(Base):
+    __table__ = db_models.inventory_ttm
+
+class AccountsPayableAnnual(Base):
+    __table__ = db_models.accounts_payable_annual
+
+class AccountsPayableTtm(Base):
+    __table__ = db_models.accounts_payable_ttm
 
 class TotalAssetsAnnual(Base):
     __table__ = db_models.total_assets_annual

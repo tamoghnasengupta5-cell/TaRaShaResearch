@@ -282,6 +282,97 @@ def ingest_financials_bytes(
     except Exception:
         pass
 
+    # Extract Operating Cash Flow (annual + latest TTM from Cash-Flow-TTM)
+    annual_operating_cash_flow = extract_annual_operating_cash_flow_series(bytes_data)
+    as_of_operating_cash_flow, ttm_operating_cash_flow = extract_latest_ttm_operating_cash_flow(bytes_data)
+    try:
+        ttm_ocf_year = int(str(as_of_operating_cash_flow)[:4])
+        prev_year = ttm_ocf_year - 1
+        annual_operating_cash_flow = {
+            int(y): float(v)
+            for y, v in annual_operating_cash_flow.items()
+            if int(y) <= int(prev_year)
+        }
+        annual_operating_cash_flow[int(ttm_ocf_year)] = float(ttm_operating_cash_flow)
+    except Exception:
+        pass
+
+    # Extract Net PP&E (annual + latest TTM from Balance-Sheet-TTM)
+    annual_net_ppe = extract_annual_net_ppe_series(bytes_data)
+    as_of_net_ppe, ttm_net_ppe = extract_latest_ttm_net_ppe(bytes_data)
+    try:
+        ttm_nppe_year = int(str(as_of_net_ppe)[:4])
+        prev_year = ttm_nppe_year - 1
+        annual_net_ppe = {int(y): float(v) for y, v in annual_net_ppe.items() if int(y) <= int(prev_year)}
+        annual_net_ppe[int(ttm_nppe_year)] = float(ttm_net_ppe)
+    except Exception:
+        pass
+
+    # Extract Goodwill and Intangibles (annual + latest TTM from Balance-Sheet-TTM)
+    annual_goodwill_and_intangibles = extract_annual_goodwill_and_intangibles_series(bytes_data)
+    as_of_goodwill_and_intangibles, ttm_goodwill_and_intangibles = extract_latest_ttm_goodwill_and_intangibles(bytes_data)
+    try:
+        ttm_gi_year = int(str(as_of_goodwill_and_intangibles)[:4])
+        prev_year = ttm_gi_year - 1
+        annual_goodwill_and_intangibles = {
+            int(y): float(v) for y, v in annual_goodwill_and_intangibles.items() if int(y) <= int(prev_year)
+        }
+        annual_goodwill_and_intangibles[int(ttm_gi_year)] = float(ttm_goodwill_and_intangibles)
+    except Exception:
+        pass
+
+    # Extract Other Long-Term Assets (annual + latest TTM from Balance-Sheet-TTM)
+    annual_other_long_term_assets = extract_annual_other_long_term_assets_series(bytes_data)
+    as_of_other_long_term_assets, ttm_other_long_term_assets = extract_latest_ttm_other_long_term_assets(bytes_data)
+    try:
+        ttm_olta_year = int(str(as_of_other_long_term_assets)[:4])
+        prev_year = ttm_olta_year - 1
+        annual_other_long_term_assets = {
+            int(y): float(v) for y, v in annual_other_long_term_assets.items() if int(y) <= int(prev_year)
+        }
+        annual_other_long_term_assets[int(ttm_olta_year)] = float(ttm_other_long_term_assets)
+    except Exception:
+        pass
+
+    # Extract Deferred Revenue (annual + latest TTM from Balance-Sheet-TTM)
+    annual_deferred_revenue = extract_annual_deferred_revenue_series(bytes_data)
+    as_of_deferred_revenue, ttm_deferred_revenue = extract_latest_ttm_deferred_revenue(bytes_data)
+    try:
+        ttm_dr_year = int(str(as_of_deferred_revenue)[:4])
+        prev_year = ttm_dr_year - 1
+        annual_deferred_revenue = {
+            int(y): float(v) for y, v in annual_deferred_revenue.items() if int(y) <= int(prev_year)
+        }
+        annual_deferred_revenue[int(ttm_dr_year)] = float(ttm_deferred_revenue)
+    except Exception:
+        pass
+
+    # Extract Deferred Tax Liabilities (annual + latest TTM from Balance-Sheet-TTM)
+    annual_deferred_tax_liabilities = extract_annual_deferred_tax_liabilities_series(bytes_data)
+    as_of_deferred_tax_liabilities, ttm_deferred_tax_liabilities = extract_latest_ttm_deferred_tax_liabilities(bytes_data)
+    try:
+        ttm_dtl_year = int(str(as_of_deferred_tax_liabilities)[:4])
+        prev_year = ttm_dtl_year - 1
+        annual_deferred_tax_liabilities = {
+            int(y): float(v) for y, v in annual_deferred_tax_liabilities.items() if int(y) <= int(prev_year)
+        }
+        annual_deferred_tax_liabilities[int(ttm_dtl_year)] = float(ttm_deferred_tax_liabilities)
+    except Exception:
+        pass
+
+    # Extract Other Long-Term Liabilities (annual + latest TTM from Balance-Sheet-TTM)
+    annual_other_long_term_liabilities = extract_annual_other_long_term_liabilities_series(bytes_data)
+    as_of_other_long_term_liabilities, ttm_other_long_term_liabilities = extract_latest_ttm_other_long_term_liabilities(bytes_data)
+    try:
+        ttm_oltl_year = int(str(as_of_other_long_term_liabilities)[:4])
+        prev_year = ttm_oltl_year - 1
+        annual_other_long_term_liabilities = {
+            int(y): float(v) for y, v in annual_other_long_term_liabilities.items() if int(y) <= int(prev_year)
+        }
+        annual_other_long_term_liabilities[int(ttm_oltl_year)] = float(ttm_other_long_term_liabilities)
+    except Exception:
+        pass
+
     # Extract Shareholders Equity (annual + TTM) from Balance Sheet
     annual_se = extract_annual_shareholders_equity_series(bytes_data)
     as_of_se, ttm_se = extract_latest_ttm_shareholders_equity(bytes_data)
@@ -312,6 +403,24 @@ def ingest_financials_bytes(
     try:
         ttm_ar_year = int(str(as_of_accounts_receivable)[:4])
         annual_accounts_receivable[ttm_ar_year] = float(ttm_accounts_receivable)
+    except Exception:
+        pass
+
+    # Extract Inventory (annual + TTM) from Balance Sheet
+    annual_inventory = extract_annual_inventory_series(bytes_data)
+    as_of_inventory, ttm_inventory = extract_latest_ttm_inventory(bytes_data)
+    try:
+        ttm_inventory_year = int(str(as_of_inventory)[:4])
+        annual_inventory[ttm_inventory_year] = float(ttm_inventory)
+    except Exception:
+        pass
+
+    # Extract Accounts Payable (annual + TTM) from Balance Sheet
+    annual_accounts_payable = extract_annual_accounts_payable_series(bytes_data)
+    as_of_accounts_payable, ttm_accounts_payable = extract_latest_ttm_accounts_payable(bytes_data)
+    try:
+        ttm_ap_year = int(str(as_of_accounts_payable)[:4])
+        annual_accounts_payable[ttm_ap_year] = float(ttm_accounts_payable)
     except Exception:
         pass
 
@@ -666,6 +775,10 @@ def ingest_financials_bytes(
     upsert_ttm_short_term_investments(conn, cid, as_of_short_term_investments, ttm_short_term_investments)
     upsert_annual_accounts_receivable(conn, cid, annual_accounts_receivable)
     upsert_ttm_accounts_receivable(conn, cid, as_of_accounts_receivable, ttm_accounts_receivable)
+    upsert_annual_inventory(conn, cid, annual_inventory)
+    upsert_ttm_inventory(conn, cid, as_of_inventory, ttm_inventory)
+    upsert_annual_accounts_payable(conn, cid, annual_accounts_payable)
+    upsert_ttm_accounts_payable(conn, cid, as_of_accounts_payable, ttm_accounts_payable)
 
     upsert_annual_retained_earnings(conn, cid, annual_re)
     upsert_ttm_retained_earnings(conn, cid, as_of_re, ttm_re)
@@ -759,6 +872,20 @@ def ingest_financials_bytes(
     upsert_annual_net_debt_issued_paid(conn, cid, annual_net_debt_issued_paid)
     upsert_annual_capital_expenditures(conn, cid, annual_capex)
     upsert_annual_depreciation_amortization(conn, cid, annual_da)
+    upsert_annual_operating_cash_flow(conn, cid, annual_operating_cash_flow)
+    upsert_ttm_operating_cash_flow(conn, cid, as_of_operating_cash_flow, ttm_operating_cash_flow)
+    upsert_annual_net_ppe(conn, cid, annual_net_ppe)
+    upsert_ttm_net_ppe(conn, cid, as_of_net_ppe, ttm_net_ppe)
+    upsert_annual_goodwill_and_intangibles(conn, cid, annual_goodwill_and_intangibles)
+    upsert_ttm_goodwill_and_intangibles(conn, cid, as_of_goodwill_and_intangibles, ttm_goodwill_and_intangibles)
+    upsert_annual_other_long_term_assets(conn, cid, annual_other_long_term_assets)
+    upsert_ttm_other_long_term_assets(conn, cid, as_of_other_long_term_assets, ttm_other_long_term_assets)
+    upsert_annual_deferred_revenue(conn, cid, annual_deferred_revenue)
+    upsert_ttm_deferred_revenue(conn, cid, as_of_deferred_revenue, ttm_deferred_revenue)
+    upsert_annual_deferred_tax_liabilities(conn, cid, annual_deferred_tax_liabilities)
+    upsert_ttm_deferred_tax_liabilities(conn, cid, as_of_deferred_tax_liabilities, ttm_deferred_tax_liabilities)
+    upsert_annual_other_long_term_liabilities(conn, cid, annual_other_long_term_liabilities)
+    upsert_ttm_other_long_term_liabilities(conn, cid, as_of_other_long_term_liabilities, ttm_other_long_term_liabilities)
 
     return {
         "company_id": cid,
@@ -973,6 +1100,97 @@ def render_data_upload_tab():
                     except Exception:
                         pass
 
+                    # Extract Operating Cash Flow (annual + latest TTM from Cash-Flow-TTM)
+                    annual_operating_cash_flow = extract_annual_operating_cash_flow_series(bytes_data)
+                    as_of_operating_cash_flow, ttm_operating_cash_flow = extract_latest_ttm_operating_cash_flow(bytes_data)
+                    try:
+                        ttm_ocf_year = int(str(as_of_operating_cash_flow)[:4])
+                        prev_year = ttm_ocf_year - 1
+                        annual_operating_cash_flow = {
+                            int(y): float(v)
+                            for y, v in annual_operating_cash_flow.items()
+                            if int(y) <= int(prev_year)
+                        }
+                        annual_operating_cash_flow[int(ttm_ocf_year)] = float(ttm_operating_cash_flow)
+                    except Exception:
+                        pass
+
+                    # Extract Net PP&E (annual + latest TTM from Balance-Sheet-TTM)
+                    annual_net_ppe = extract_annual_net_ppe_series(bytes_data)
+                    as_of_net_ppe, ttm_net_ppe = extract_latest_ttm_net_ppe(bytes_data)
+                    try:
+                        ttm_nppe_year = int(str(as_of_net_ppe)[:4])
+                        prev_year = ttm_nppe_year - 1
+                        annual_net_ppe = {int(y): float(v) for y, v in annual_net_ppe.items() if int(y) <= int(prev_year)}
+                        annual_net_ppe[int(ttm_nppe_year)] = float(ttm_net_ppe)
+                    except Exception:
+                        pass
+
+                    # Extract Goodwill and Intangibles (annual + latest TTM from Balance-Sheet-TTM)
+                    annual_goodwill_and_intangibles = extract_annual_goodwill_and_intangibles_series(bytes_data)
+                    as_of_goodwill_and_intangibles, ttm_goodwill_and_intangibles = extract_latest_ttm_goodwill_and_intangibles(bytes_data)
+                    try:
+                        ttm_gi_year = int(str(as_of_goodwill_and_intangibles)[:4])
+                        prev_year = ttm_gi_year - 1
+                        annual_goodwill_and_intangibles = {
+                            int(y): float(v) for y, v in annual_goodwill_and_intangibles.items() if int(y) <= int(prev_year)
+                        }
+                        annual_goodwill_and_intangibles[int(ttm_gi_year)] = float(ttm_goodwill_and_intangibles)
+                    except Exception:
+                        pass
+
+                    # Extract Other Long-Term Assets (annual + latest TTM from Balance-Sheet-TTM)
+                    annual_other_long_term_assets = extract_annual_other_long_term_assets_series(bytes_data)
+                    as_of_other_long_term_assets, ttm_other_long_term_assets = extract_latest_ttm_other_long_term_assets(bytes_data)
+                    try:
+                        ttm_olta_year = int(str(as_of_other_long_term_assets)[:4])
+                        prev_year = ttm_olta_year - 1
+                        annual_other_long_term_assets = {
+                            int(y): float(v) for y, v in annual_other_long_term_assets.items() if int(y) <= int(prev_year)
+                        }
+                        annual_other_long_term_assets[int(ttm_olta_year)] = float(ttm_other_long_term_assets)
+                    except Exception:
+                        pass
+
+                    # Extract Deferred Revenue (annual + latest TTM from Balance-Sheet-TTM)
+                    annual_deferred_revenue = extract_annual_deferred_revenue_series(bytes_data)
+                    as_of_deferred_revenue, ttm_deferred_revenue = extract_latest_ttm_deferred_revenue(bytes_data)
+                    try:
+                        ttm_dr_year = int(str(as_of_deferred_revenue)[:4])
+                        prev_year = ttm_dr_year - 1
+                        annual_deferred_revenue = {
+                            int(y): float(v) for y, v in annual_deferred_revenue.items() if int(y) <= int(prev_year)
+                        }
+                        annual_deferred_revenue[int(ttm_dr_year)] = float(ttm_deferred_revenue)
+                    except Exception:
+                        pass
+
+                    # Extract Deferred Tax Liabilities (annual + latest TTM from Balance-Sheet-TTM)
+                    annual_deferred_tax_liabilities = extract_annual_deferred_tax_liabilities_series(bytes_data)
+                    as_of_deferred_tax_liabilities, ttm_deferred_tax_liabilities = extract_latest_ttm_deferred_tax_liabilities(bytes_data)
+                    try:
+                        ttm_dtl_year = int(str(as_of_deferred_tax_liabilities)[:4])
+                        prev_year = ttm_dtl_year - 1
+                        annual_deferred_tax_liabilities = {
+                            int(y): float(v) for y, v in annual_deferred_tax_liabilities.items() if int(y) <= int(prev_year)
+                        }
+                        annual_deferred_tax_liabilities[int(ttm_dtl_year)] = float(ttm_deferred_tax_liabilities)
+                    except Exception:
+                        pass
+
+                    # Extract Other Long-Term Liabilities (annual + latest TTM from Balance-Sheet-TTM)
+                    annual_other_long_term_liabilities = extract_annual_other_long_term_liabilities_series(bytes_data)
+                    as_of_other_long_term_liabilities, ttm_other_long_term_liabilities = extract_latest_ttm_other_long_term_liabilities(bytes_data)
+                    try:
+                        ttm_oltl_year = int(str(as_of_other_long_term_liabilities)[:4])
+                        prev_year = ttm_oltl_year - 1
+                        annual_other_long_term_liabilities = {
+                            int(y): float(v) for y, v in annual_other_long_term_liabilities.items() if int(y) <= int(prev_year)
+                        }
+                        annual_other_long_term_liabilities[int(ttm_oltl_year)] = float(ttm_other_long_term_liabilities)
+                    except Exception:
+                        pass
+
                     # Extract Shareholders Equity (annual + TTM) from Balance Sheet
                     annual_se = extract_annual_shareholders_equity_series(bytes_data)
                     as_of_se, ttm_se = extract_latest_ttm_shareholders_equity(bytes_data)
@@ -1003,6 +1221,24 @@ def render_data_upload_tab():
                     try:
                         ttm_ar_year = int(str(as_of_accounts_receivable)[:4])
                         annual_accounts_receivable[ttm_ar_year] = float(ttm_accounts_receivable)
+                    except Exception:
+                        pass
+
+                    # Extract Inventory (annual + TTM) from Balance Sheet
+                    annual_inventory = extract_annual_inventory_series(bytes_data)
+                    as_of_inventory, ttm_inventory = extract_latest_ttm_inventory(bytes_data)
+                    try:
+                        ttm_inventory_year = int(str(as_of_inventory)[:4])
+                        annual_inventory[ttm_inventory_year] = float(ttm_inventory)
+                    except Exception:
+                        pass
+
+                    # Extract Accounts Payable (annual + TTM) from Balance Sheet
+                    annual_accounts_payable = extract_annual_accounts_payable_series(bytes_data)
+                    as_of_accounts_payable, ttm_accounts_payable = extract_latest_ttm_accounts_payable(bytes_data)
+                    try:
+                        ttm_ap_year = int(str(as_of_accounts_payable)[:4])
+                        annual_accounts_payable[ttm_ap_year] = float(ttm_accounts_payable)
                     except Exception:
                         pass
 
@@ -1381,6 +1617,10 @@ def render_data_upload_tab():
                     upsert_ttm_short_term_investments(conn, cid, as_of_short_term_investments, ttm_short_term_investments)
                     upsert_annual_accounts_receivable(conn, cid, annual_accounts_receivable)
                     upsert_ttm_accounts_receivable(conn, cid, as_of_accounts_receivable, ttm_accounts_receivable)
+                    upsert_annual_inventory(conn, cid, annual_inventory)
+                    upsert_ttm_inventory(conn, cid, as_of_inventory, ttm_inventory)
+                    upsert_annual_accounts_payable(conn, cid, annual_accounts_payable)
+                    upsert_ttm_accounts_payable(conn, cid, as_of_accounts_payable, ttm_accounts_payable)
 
                     upsert_annual_retained_earnings(conn, cid, annual_re)
                     upsert_ttm_retained_earnings(conn, cid, as_of_re, ttm_re)
@@ -1480,6 +1720,20 @@ def render_data_upload_tab():
                     upsert_annual_net_debt_issued_paid(conn, cid, annual_net_debt_issued_paid)
                     upsert_annual_capital_expenditures(conn, cid, annual_capex)
                     upsert_annual_depreciation_amortization(conn, cid, annual_da)
+                    upsert_annual_operating_cash_flow(conn, cid, annual_operating_cash_flow)
+                    upsert_ttm_operating_cash_flow(conn, cid, as_of_operating_cash_flow, ttm_operating_cash_flow)
+                    upsert_annual_net_ppe(conn, cid, annual_net_ppe)
+                    upsert_ttm_net_ppe(conn, cid, as_of_net_ppe, ttm_net_ppe)
+                    upsert_annual_goodwill_and_intangibles(conn, cid, annual_goodwill_and_intangibles)
+                    upsert_ttm_goodwill_and_intangibles(conn, cid, as_of_goodwill_and_intangibles, ttm_goodwill_and_intangibles)
+                    upsert_annual_other_long_term_assets(conn, cid, annual_other_long_term_assets)
+                    upsert_ttm_other_long_term_assets(conn, cid, as_of_other_long_term_assets, ttm_other_long_term_assets)
+                    upsert_annual_deferred_revenue(conn, cid, annual_deferred_revenue)
+                    upsert_ttm_deferred_revenue(conn, cid, as_of_deferred_revenue, ttm_deferred_revenue)
+                    upsert_annual_deferred_tax_liabilities(conn, cid, annual_deferred_tax_liabilities)
+                    upsert_ttm_deferred_tax_liabilities(conn, cid, as_of_deferred_tax_liabilities, ttm_deferred_tax_liabilities)
+                    upsert_annual_other_long_term_liabilities(conn, cid, annual_other_long_term_liabilities)
+                    upsert_ttm_other_long_term_liabilities(conn, cid, as_of_other_long_term_liabilities, ttm_other_long_term_liabilities)
                     st.success(
                         f"Ingested {company} ({ticker}). "
                         f"Annual revenue years (with TTM year merged): {len(annual_rev)}; "
