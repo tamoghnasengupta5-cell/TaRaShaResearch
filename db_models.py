@@ -247,6 +247,38 @@ accounts_receivable_ttm = Table(
     Column("accounts_receivable", Float, nullable=False),
 )
 
+inventory_annual = Table(
+    "inventory_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("inventory", Float, nullable=False),
+)
+
+inventory_ttm = Table(
+    "inventory_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("inventory", Float, nullable=False),
+)
+
+accounts_payable_annual = Table(
+    "accounts_payable_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("accounts_payable", Float, nullable=False),
+)
+
+accounts_payable_ttm = Table(
+    "accounts_payable_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("accounts_payable", Float, nullable=False),
+)
+
 total_current_liabilities_annual = Table(
     "total_current_liabilities_annual",
     metadata,
@@ -429,6 +461,118 @@ capital_expenditures_annual = Table(
     Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
     Column("fiscal_year", Integer, primary_key=True),
     Column("capital_expenditures", Float, nullable=False),
+)
+
+operating_cash_flow_annual = Table(
+    "operating_cash_flow_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("operating_cash_flow", Float, nullable=False),
+)
+
+operating_cash_flow_ttm = Table(
+    "operating_cash_flow_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("operating_cash_flow", Float, nullable=False),
+)
+
+net_ppe_annual = Table(
+    "net_ppe_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("net_ppe", Float, nullable=False),
+)
+
+net_ppe_ttm = Table(
+    "net_ppe_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("net_ppe", Float, nullable=False),
+)
+
+goodwill_and_intangibles_annual = Table(
+    "goodwill_and_intangibles_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("goodwill_and_intangibles", Float, nullable=False),
+)
+
+goodwill_and_intangibles_ttm = Table(
+    "goodwill_and_intangibles_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("goodwill_and_intangibles", Float, nullable=False),
+)
+
+other_long_term_assets_annual = Table(
+    "other_long_term_assets_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("other_long_term_assets", Float, nullable=False),
+)
+
+other_long_term_assets_ttm = Table(
+    "other_long_term_assets_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("other_long_term_assets", Float, nullable=False),
+)
+
+deferred_revenue_annual = Table(
+    "deferred_revenue_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("deferred_revenue", Float, nullable=False),
+)
+
+deferred_revenue_ttm = Table(
+    "deferred_revenue_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("deferred_revenue", Float, nullable=False),
+)
+
+deferred_tax_liabilities_annual = Table(
+    "deferred_tax_liabilities_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("deferred_tax_liabilities", Float, nullable=False),
+)
+
+deferred_tax_liabilities_ttm = Table(
+    "deferred_tax_liabilities_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("deferred_tax_liabilities", Float, nullable=False),
+)
+
+other_long_term_liabilities_annual = Table(
+    "other_long_term_liabilities_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("other_long_term_liabilities", Float, nullable=False),
+)
+
+other_long_term_liabilities_ttm = Table(
+    "other_long_term_liabilities_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("other_long_term_liabilities", Float, nullable=False),
 )
 
 depreciation_amortization_annual = Table(

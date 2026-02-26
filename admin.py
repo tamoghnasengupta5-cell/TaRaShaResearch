@@ -22,7 +22,21 @@ METRIC_TABLES_FOR_CLEANUP: List[str] = [
     "interest_expense_ttm",
     "research_and_development_expense_annual",
     "capital_expenditures_annual",
+    "operating_cash_flow_annual",
+    "operating_cash_flow_ttm",
     "depreciation_amortization_annual",
+    "net_ppe_annual",
+    "net_ppe_ttm",
+    "goodwill_and_intangibles_annual",
+    "goodwill_and_intangibles_ttm",
+    "other_long_term_assets_annual",
+    "other_long_term_assets_ttm",
+    "deferred_revenue_annual",
+    "deferred_revenue_ttm",
+    "deferred_tax_liabilities_annual",
+    "deferred_tax_liabilities_ttm",
+    "other_long_term_liabilities_annual",
+    "other_long_term_liabilities_ttm",
     "operating_income_annual",
     "operating_income_ttm",
     "interest_coverage_annual",
@@ -58,7 +72,8 @@ METRIC_TABLES_FOR_CLEANUP: List[str] = [
     "invested_capital_annual",
     "roce_annual",
     "non_cash_working_capital_annual",
-    "revenue_yield_non_cash_working_capital_annual",    "fcff_annual",
+    "revenue_yield_non_cash_working_capital_annual",
+    "fcff_annual",
     "reinvestment_rate_annual",
     "rd_spend_rate_annual",
     "net_debt_issued_paid_annual",
@@ -708,7 +723,10 @@ def render_admin_tab():
     # -----------------------------
     with tab_erp:
         st.subheader("US Implied Equity Risk Premium")
-        st.caption("Stored as % values in the database. Only the latest year is editable.")
+        st.caption(
+            "Stored as % values in the database. Save updates only the latest year. "
+            "Freeze locks the latest year and creates the ensuing year for editing."
+        )
 
         erp_df = read_df(
             """
@@ -748,7 +766,11 @@ def render_admin_tab():
                     format="%.2f",
                     key=f"erp_{latest_year}",
                 )
-                save_btn = st.form_submit_button("Save")
+                c_save, c_freeze = st.columns(2)
+                with c_save:
+                    save_btn = st.form_submit_button("Save")
+                with c_freeze:
+                    freeze_btn = st.form_submit_button(f"Freeze {latest_year}")
 
                 if save_btn:
                     try:
@@ -763,6 +785,30 @@ def render_admin_tab():
                         _rerun()
                     except Exception as e:
                         st.error(f"Could not save. Reason: {e}")
+
+                if freeze_btn:
+                    try:
+                        ts = datetime.utcnow().isoformat()
+                        next_year = int(latest_year) + 1
+                        # Persist any current-year edit, then open the ensuing year for editing.
+                        update_implied_equity_risk_premium(
+                            conn,
+                            int(latest_year),
+                            float(new_erp),
+                            ts,
+                        )
+                        update_implied_equity_risk_premium(
+                            conn,
+                            int(next_year),
+                            float(new_erp),
+                            ts,
+                        )
+                        st.success(
+                            f"Froze {latest_year} and opened {next_year} for editing."
+                        )
+                        _rerun()
+                    except Exception as e:
+                        st.error(f"Could not freeze {latest_year}. Reason: {e}")
 
     # -----------------------------
     # Country Risk Premium sub-tab

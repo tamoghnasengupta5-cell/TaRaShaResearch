@@ -188,6 +188,116 @@ def _get_balance_sheet_params(sections: Dict[str, List[Dict[str, object]]]) -> D
     return params
 
 
+def _get_working_capital_params(sections: Dict[str, List[Dict[str, object]]]) -> Dict[str, Tuple[float, float]]:
+    defaults = sections.get("Working Capital Efficiency Score", [])
+    saved_key = f"ttc_saved_{_slug('Working Capital Efficiency Score')}"
+    df = st.session_state.get(saved_key)
+    if df is None or df.empty:
+        df = pd.DataFrame(defaults)
+
+    params = {
+        "ar_days": (0.0, 0.0),
+        "dio": (0.0, 0.0),
+        "dpo": (0.0, 0.0),
+        "ccc": (0.0, 0.0),
+        "nwc_pct_revenue": (0.0, 0.0),
+        "working_cap_turnover": (0.0, 0.0),
+        "ccc_volatility": (0.0, 0.0),
+    }
+
+    for _, row in df.iterrows():
+        name = str(row.get("Metric/Component", "")).strip()
+        w = float(row.get("Weight", 0.0) or 0.0)
+        t = float(row.get("Threshold", 0.0) or 0.0)
+        n = _normalize_label(name)
+
+        if "accountsreceivabledays" in n:
+            params["ar_days"] = (w, t)
+        elif "daysinventoryoutstanding" in n:
+            params["dio"] = (w, t)
+        elif "dayspayableoutstanding" in n:
+            params["dpo"] = (w, t)
+        elif "cashconversioncycle" in n:
+            params["ccc"] = (w, t)
+        elif "networkingcapital" in n and "revenue" in n:
+            params["nwc_pct_revenue"] = (w, t)
+        elif "workingcapitalturnover" in n:
+            params["working_cap_turnover"] = (w, t)
+        elif "cccvolatility" in n or ("volatility" in n and "ccc" in n):
+            params["ccc_volatility"] = (w, t)
+
+    return params
+
+
+def _get_cash_flow_params(sections: Dict[str, List[Dict[str, object]]]) -> Dict[str, Tuple[float, float]]:
+    defaults = sections.get("Cash Flow Efficiency Score", [])
+    saved_key = f"ttc_saved_{_slug('Cash Flow Efficiency Score')}"
+    df = st.session_state.get(saved_key)
+    if df is None or df.empty:
+        df = pd.DataFrame(defaults)
+
+    params = {
+        "ocf_margin": (0.0, 0.0),
+        "fcf_margin": (0.0, 0.0),
+        "cfo_net_income": (0.0, 0.0),
+        "croic": (0.0, 0.0),
+        "capital_intensity": (0.0, 0.0),
+        "fcf_margin_volatility": (0.0, 0.0),
+    }
+
+    for _, row in df.iterrows():
+        name = str(row.get("Metric/Component", "")).strip()
+        w = float(row.get("Weight", 0.0) or 0.0)
+        t = float(row.get("Threshold", 0.0) or 0.0)
+        n = _normalize_label(name)
+
+        if "operatingcashflowmargin" in n or ("cfo" in n and "revenue" in n and "margin" in n):
+            params["ocf_margin"] = (w, t)
+        elif "freecashflowmargin" in n and "volatility" not in n and "stddev" not in n:
+            params["fcf_margin"] = (w, t)
+        elif "cfo" in n and "netincome" in n:
+            params["cfo_net_income"] = (w, t)
+        elif "croic" in n or ("cashreturn" in n and "investedcapital" in n):
+            params["croic"] = (w, t)
+        elif "capitalintensity" in n or ("capex" in n and "revenue" in n):
+            params["capital_intensity"] = (w, t)
+        elif ("fcfmargin" in n and "volatility" in n) or ("fcfmargin" in n and "stddev" in n):
+            params["fcf_margin_volatility"] = (w, t)
+
+    return params
+
+
+def _get_overall_score_weights(sections: Dict[str, List[Dict[str, object]]]) -> Dict[str, float]:
+    defaults = sections.get("Overall Score", [])
+    saved_key = f"ttc_saved_{_slug('Overall Score')}"
+    df = st.session_state.get(saved_key)
+    if df is None or df.empty:
+        df = pd.DataFrame(defaults)
+
+    weights = {
+        "income_statement": 1.0,
+        "balance_sheet": 1.0,
+        "working_capital": 1.0,
+        "cash_flow": 1.0,
+    }
+
+    for _, row in df.iterrows():
+        name = str(row.get("Metric/Component", "")).strip()
+        w = float(row.get("Weight", 0.0) or 0.0)
+        n = _normalize_label(name)
+
+        if "incomestatementefficiencyscore" in n:
+            weights["income_statement"] = w
+        elif "balancesheetstrengthscore" in n:
+            weights["balance_sheet"] = w
+        elif "workingcapitalefficiencyscore" in n:
+            weights["working_capital"] = w
+        elif "cashflowefficiencyscore" in n:
+            weights["cash_flow"] = w
+
+    return weights
+
+
 def _parse_year_range(s: str, available_years: List[int]) -> Tuple[int, int]:
     s = (s or "").strip()
     if not available_years:
@@ -317,6 +427,113 @@ def _score_balance_sheet(
     return 100.0 * _clamp01(score_raw)
 
 
+def _score_working_capital(
+    ar_days_med: float | None,
+    dio_med: float | None,
+    dpo_med: float | None,
+    ccc_med: float | None,
+    nwc_pct_revenue_med: float | None,
+    wc_turnover_med: float | None,
+    ccc_stdev: float | None,
+    params: Dict[str, Tuple[float, float]],
+) -> float | None:
+    if (
+        ar_days_med is None
+        or dio_med is None
+        or dpo_med is None
+        or ccc_med is None
+        or nwc_pct_revenue_med is None
+        or wc_turnover_med is None
+        or ccc_stdev is None
+    ):
+        return None
+
+    def ratio_term(val: float, threshold: float) -> float:
+        if threshold <= 0:
+            return 0.0
+        return _clamp01(max(0.0, val) / threshold)
+
+    def inverse_term(val: float, threshold: float) -> float:
+        if threshold <= 0:
+            return 0.0
+        return _clamp01(1.0 - (max(0.0, val) / threshold))
+
+    w_ar, t_ar = params["ar_days"]
+    w_dio, t_dio = params["dio"]
+    w_dpo, t_dpo = params["dpo"]
+    w_ccc, t_ccc = params["ccc"]
+    w_nwc, t_nwc = params["nwc_pct_revenue"]
+    w_turn, t_turn = params["working_cap_turnover"]
+    w_vol, t_vol = params["ccc_volatility"]
+
+    turnover_term = 0.0
+    if t_turn > 0:
+        if wc_turnover_med <= 0:
+            turnover_term = 1.0
+        else:
+            turnover_term = _clamp01(wc_turnover_med / t_turn)
+
+    score_raw = (
+        w_ar * inverse_term(ar_days_med, t_ar)
+        + w_dio * inverse_term(dio_med, t_dio)
+        + w_dpo * ratio_term(dpo_med, t_dpo)
+        + w_ccc * inverse_term(ccc_med, t_ccc)
+        + w_nwc * inverse_term(nwc_pct_revenue_med, t_nwc)
+        + w_turn * turnover_term
+        + w_vol * inverse_term(ccc_stdev, t_vol)
+    )
+
+    return 100.0 * _clamp01(score_raw)
+
+
+def _score_cash_flow(
+    ocf_margin_med: float | None,
+    fcf_margin_med: float | None,
+    cfo_net_income_med: float | None,
+    croic_med: float | None,
+    capital_intensity_med: float | None,
+    fcf_margin_stdev: float | None,
+    params: Dict[str, Tuple[float, float]],
+) -> float | None:
+    if (
+        ocf_margin_med is None
+        or fcf_margin_med is None
+        or cfo_net_income_med is None
+        or croic_med is None
+        or capital_intensity_med is None
+        or fcf_margin_stdev is None
+    ):
+        return None
+
+    def ratio_term(val: float, threshold: float) -> float:
+        if threshold <= 0:
+            return 0.0
+        return _clamp01(max(0.0, val) / threshold)
+
+    def inverse_term(val: float, threshold: float) -> float:
+        if threshold <= 0:
+            return 0.0
+        return _clamp01(1.0 - (max(0.0, val) / threshold))
+
+    w_ocf, t_ocf = params["ocf_margin"]
+    w_fcf, t_fcf = params["fcf_margin"]
+    w_cfo_ni, t_cfo_ni = params["cfo_net_income"]
+    w_croic, t_croic = params["croic"]
+    w_cap_int, t_cap_int = params["capital_intensity"]
+    w_fcf_vol, t_fcf_vol = params["fcf_margin_volatility"]
+
+    score_raw = (
+        w_ocf * ratio_term(ocf_margin_med, t_ocf)
+        + w_fcf * ratio_term(fcf_margin_med, t_fcf)
+        + w_cfo_ni * ratio_term(cfo_net_income_med, t_cfo_ni)
+        + w_croic * ratio_term(croic_med, t_croic)
+        + w_cap_int * inverse_term(capital_intensity_med, t_cap_int)
+        + w_fcf_vol * inverse_term(fcf_margin_stdev, t_fcf_vol)
+    )
+
+    return 100.0 * _clamp01(score_raw)
+
+
 def _load_series(conn, table: str, value_col: str, company_id: int) -> Dict[int, float]:
     df = read_df(
         f"SELECT fiscal_year AS year, {value_col} AS value FROM {table} WHERE company_id = ?",
@@ -326,6 +543,54 @@ def _load_series(conn, table: str, value_col: str, company_id: int) -> Dict[int,
     if df is None or df.empty:
         return {}
     return {int(r["year"]): float(r["value"]) for _, r in df.iterrows() if pd.notna(r["value"])}
+
+
+def _merge_ttm_into_annual(
+    conn,
+    annual_series: Dict[int, float],
+    ttm_table: str,
+    value_col: str,
+    company_id: int,
+) -> Dict[int, float]:
+    out = dict(annual_series)
+    try:
+        ttm_df = read_df(
+            f"SELECT as_of, {value_col} AS value FROM {ttm_table} WHERE company_id = ?",
+            conn,
+            params=(company_id,),
+        )
+    except Exception:
+        # Some metrics are annual-only in certain deployments.
+        return out
+    if ttm_df is None or ttm_df.empty:
+        return out
+
+    for _, row in ttm_df.iterrows():
+        as_of = str(row.get("as_of", "")).strip()
+        val = row.get("value")
+        if not as_of or pd.isna(val):
+            continue
+        try:
+            year = int(as_of[:4])
+        except Exception:
+            continue
+        out[year] = float(val)
+    return out
+
+
+def _build_cash_and_equivalents_series(
+    cash_and_cash_equivalents: Dict[int, float],
+    short_term_investments: Dict[int, float],
+) -> Dict[int, float]:
+    out: Dict[int, float] = {}
+    all_years = set(cash_and_cash_equivalents.keys()) | set(short_term_investments.keys())
+    for year in all_years:
+        cce = cash_and_cash_equivalents.get(year)
+        if cce is None:
+            continue
+        sti = float(short_term_investments.get(year, 0.0))
+        out[year] = float(cce) - sti
+    return out
 
 
 def _get_company_buckets(conn, company_ids: List[int]) -> Dict[int, str]:
@@ -775,6 +1040,36 @@ def _apply_ttc_filters(df: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
                 continue
             bounds[col] = (lo_b, hi_b)
 
+        applied_filters_key = f"{key_prefix}_applied_filters"
+        pending_filters_key = f"{key_prefix}_pending_filters"
+        if applied_filters_key not in st.session_state:
+            st.session_state[applied_filters_key] = {}
+        if pending_filters_key not in st.session_state:
+            st.session_state[pending_filters_key] = {}
+
+        applied_filters: Dict[str, Dict[str, float]] = st.session_state[applied_filters_key]
+        pending_filters: Dict[str, Dict[str, float]] = st.session_state[pending_filters_key]
+
+        for col, (lo_b, hi_b) in bounds.items():
+            applied_pair = applied_filters.get(col, {})
+            pending_pair = pending_filters.get(col, {})
+
+            ap_lo = float(applied_pair.get("min", lo_b))
+            ap_hi = float(applied_pair.get("max", hi_b))
+            if ap_lo > ap_hi:
+                ap_lo, ap_hi = ap_hi, ap_lo
+            ap_lo = max(lo_b, min(ap_lo, hi_b))
+            ap_hi = max(lo_b, min(ap_hi, hi_b))
+            applied_filters[col] = {"min": ap_lo, "max": ap_hi}
+
+            pn_lo = float(pending_pair.get("min", ap_lo))
+            pn_hi = float(pending_pair.get("max", ap_hi))
+            if pn_lo > pn_hi:
+                pn_lo, pn_hi = pn_hi, pn_lo
+            pn_lo = max(lo_b, min(pn_lo, hi_b))
+            pn_hi = max(lo_b, min(pn_hi, hi_b))
+            pending_filters[col] = {"min": pn_lo, "max": pn_hi}
+
         ctrl_cols = st.columns([2.4, 1.8, 1.0])
         preset_names = sorted(presets.keys())
         selected_preset = ctrl_cols[0].selectbox(
@@ -789,9 +1084,9 @@ def _apply_ttc_filters(df: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
         ).strip()
         save_clicked = ctrl_cols[2].button("Save", key=f"{key_prefix}_preset_save")
 
-        applied_marker_key = f"{key_prefix}_preset_applied"
-        last_applied = st.session_state.get(applied_marker_key)
-        if selected_preset != "(none)" and selected_preset in presets and selected_preset != last_applied:
+        selected_marker_key = f"{key_prefix}_preset_selected_marker"
+        last_selected = st.session_state.get(selected_marker_key)
+        if selected_preset != "(none)" and selected_preset in presets and selected_preset != last_selected:
             selected_values = presets[selected_preset]
             for col, (lo_b, hi_b) in bounds.items():
                 pair = selected_values.get(col, {})
@@ -801,12 +1096,13 @@ def _apply_ttc_filters(df: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
                     lo, hi = hi, lo
                 lo = max(lo_b, min(lo, hi_b))
                 hi = max(lo_b, min(hi, hi_b))
-                st.session_state[f"{key_prefix}_{_slug(col)}_min"] = lo
-                st.session_state[f"{key_prefix}_{_slug(col)}_max"] = hi
-            st.session_state[applied_marker_key] = selected_preset
-            st.caption(f"Applied saved filter group: `{selected_preset}`")
+                pending_filters[col] = {"min": lo, "max": hi}
+                st.session_state[f"{key_prefix}_{_slug(col)}_min_pending"] = lo
+                st.session_state[f"{key_prefix}_{_slug(col)}_max_pending"] = hi
+            st.session_state[selected_marker_key] = selected_preset
+            st.caption(f"Loaded saved filter group: `{selected_preset}`. Click Apply Filters to run it.")
         elif selected_preset == "(none)":
-            st.session_state[applied_marker_key] = None
+            st.session_state[selected_marker_key] = None
 
         if save_clicked:
             if not preset_name_to_save:
@@ -814,10 +1110,9 @@ def _apply_ttc_filters(df: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
             else:
                 values: Dict[str, Dict[str, float]] = {}
                 for col, (lo_b, hi_b) in bounds.items():
-                    lo_key = f"{key_prefix}_{_slug(col)}_min"
-                    hi_key = f"{key_prefix}_{_slug(col)}_max"
-                    lo = float(st.session_state.get(lo_key, lo_b))
-                    hi = float(st.session_state.get(hi_key, hi_b))
+                    pair = pending_filters.get(col, {})
+                    lo = float(pair.get("min", lo_b))
+                    hi = float(pair.get("max", hi_b))
                     if lo > hi:
                         lo, hi = hi, lo
                     lo = max(lo_b, min(lo, hi_b))
@@ -826,50 +1121,99 @@ def _apply_ttc_filters(df: pd.DataFrame, key_prefix: str) -> pd.DataFrame:
                 presets[preset_name_to_save] = values
                 st.session_state[presets_key] = presets
                 st.session_state[f"{key_prefix}_preset_select"] = preset_name_to_save
-                st.session_state[applied_marker_key] = preset_name_to_save
+                st.session_state[selected_marker_key] = preset_name_to_save
                 st.success(f"Saved filter group: {preset_name_to_save}")
+
+        apply_clicked = False
+        reset_clicked = False
+        with st.form(key=f"{key_prefix}_filters_form", clear_on_submit=False):
+            for col in _FILTER_COLUMNS:
+                if col not in bounds:
+                    continue
+
+                min_default, max_default = bounds[col]
+
+                c1, c2, c3 = st.columns([3.0, 1.2, 1.2])
+                c1.markdown(f"`{col}`")
+                lo_key = f"{key_prefix}_{_slug(col)}_min_pending"
+                hi_key = f"{key_prefix}_{_slug(col)}_max_pending"
+                if lo_key not in st.session_state:
+                    st.session_state[lo_key] = float(pending_filters[col]["min"])
+                if hi_key not in st.session_state:
+                    st.session_state[hi_key] = float(pending_filters[col]["max"])
+                lo = c2.number_input(
+                    "Min",
+                    key=lo_key,
+                    format="%.4f",
+                    label_visibility="collapsed",
+                )
+                hi = c3.number_input(
+                    "Max",
+                    key=hi_key,
+                    format="%.4f",
+                    label_visibility="collapsed",
+                )
+
+                if lo > hi:
+                    lo, hi = hi, lo
+                lo = max(min_default, min(lo, max_default))
+                hi = max(min_default, min(hi, max_default))
+                pending_filters[col] = {"min": lo, "max": hi}
+
+            action_cols = st.columns([1.2, 1.2, 3.6])
+            apply_clicked = action_cols[0].form_submit_button("Apply Filters", type="primary")
+            reset_clicked = action_cols[1].form_submit_button("Reset Filters")
+
+        if reset_clicked:
+            for col, (lo_b, hi_b) in bounds.items():
+                pending_filters[col] = {"min": lo_b, "max": hi_b}
+                applied_filters[col] = {"min": lo_b, "max": hi_b}
+                st.session_state[f"{key_prefix}_{_slug(col)}_min_pending"] = lo_b
+                st.session_state[f"{key_prefix}_{_slug(col)}_max_pending"] = hi_b
+
+        if apply_clicked:
+            for col in bounds.keys():
+                pair = pending_filters.get(col, {})
+                applied_filters[col] = {
+                    "min": float(pair.get("min", bounds[col][0])),
+                    "max": float(pair.get("max", bounds[col][1])),
+                }
+
+        st.session_state[pending_filters_key] = pending_filters
+        st.session_state[applied_filters_key] = applied_filters
 
         mask = pd.Series(True, index=df.index)
         active = 0
+        pending_changes = False
 
-        for col in _FILTER_COLUMNS:
-            if col not in df.columns:
-                continue
-
+        for col, (min_default, max_default) in bounds.items():
             series = pd.to_numeric(df[col], errors="coerce")
-            valid = series.dropna()
-            if valid.empty:
-                continue
-
-            min_default = float(valid.min())
-            max_default = float(valid.max())
-            if min_default == max_default:
-                st.caption(f"{col}: fixed at {min_default:.4f}")
-                continue
-
-            c1, c2, c3 = st.columns([3.0, 1.2, 1.2])
-            c1.markdown(f"`{col}`")
-            lo = c2.number_input(
-                "Min",
-                key=f"{key_prefix}_{_slug(col)}_min",
-                value=min_default,
-                format="%.4f",
-                label_visibility="collapsed",
-            )
-            hi = c3.number_input(
-                "Max",
-                key=f"{key_prefix}_{_slug(col)}_max",
-                value=max_default,
-                format="%.4f",
-                label_visibility="collapsed",
-            )
-
+            applied_pair = applied_filters.get(col, {"min": min_default, "max": max_default})
+            lo = float(applied_pair.get("min", min_default))
+            hi = float(applied_pair.get("max", max_default))
             if lo > hi:
                 lo, hi = hi, lo
+            lo = max(min_default, min(lo, max_default))
+            hi = max(min_default, min(hi, max_default))
+            applied_filters[col] = {"min": lo, "max": hi}
+
+            pending_pair = pending_filters.get(col, {"min": lo, "max": hi})
+            p_lo = float(pending_pair.get("min", lo))
+            p_hi = float(pending_pair.get("max", hi))
+            if p_lo > p_hi:
+                p_lo, p_hi = p_hi, p_lo
+            p_lo = max(min_default, min(p_lo, max_default))
+            p_hi = max(min_default, min(p_hi, max_default))
+            if abs(p_lo - lo) > 1e-9 or abs(p_hi - hi) > 1e-9:
+                pending_changes = True
 
             if lo > min_default or hi < max_default:
                 active += 1
                 mask &= series.between(lo, hi, inclusive="both")
+
+        action_cols[2].caption(
+            "Pending edits are not applied yet." if pending_changes else "Pending values match applied filters."
+        )
 
         if active == 0:
             st.caption("No filter constraints applied.")
@@ -1458,6 +1802,1473 @@ def render_through_the_cycle_balance_sheet_score_tab() -> None:
     )
 
 
+def render_through_the_cycle_working_capital_score_tab() -> None:
+    conn = get_db()
+    companies_df = list_companies(conn)
+    if companies_df.empty:
+        st.info("No companies in the database yet. Upload a spreadsheet under Equity Research â†’ Data Upload.")
+        return
+
+    mode = st.radio(
+        "Analyze by",
+        ["Company", "Industry Bucket"],
+        horizontal=True,
+        key="ttc_working_capital_mode",
+    )
+
+    company_ids: List[int] = []
+
+    if mode == "Company":
+        options = [
+            f"{row['name']} ({row['ticker']}) [id={row['id']}]"
+            for _, row in companies_df.iterrows()
+        ]
+        selected = st.multiselect(
+            "Select one or more companies",
+            options=options,
+            key="ttc_working_capital_companies",
+        )
+        for label in selected:
+            m = re.search(r"id=(\d+)\]$", label)
+            if m:
+                company_ids.append(int(m.group(1)))
+    else:
+        groups_df = read_df(
+            "SELECT id, name FROM company_groups ORDER BY name",
+            conn,
+        )
+        if groups_df.empty:
+            st.info("No industry buckets found yet.")
+            return
+        group_name_to_id = {str(row["name"]): int(row["id"]) for _, row in groups_df.iterrows()}
+        bucket_names_selected = st.multiselect(
+            "Select one or more industry buckets",
+            options=list(group_name_to_id.keys()),
+            key="ttc_working_capital_buckets",
+        )
+        if bucket_names_selected:
+            group_ids = [group_name_to_id[name] for name in bucket_names_selected if name in group_name_to_id]
+            placeholders = ",".join(["?"] * len(group_ids))
+            bucket_members_df = read_df(
+                f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
+                conn,
+                params=group_ids,
+            )
+            if bucket_members_df is not None and not bucket_members_df.empty:
+                company_ids = [int(x) for x in bucket_members_df["company_id"].tolist()]
+
+    if not company_ids:
+        st.info("Select at least one company or industry bucket to compute scores.")
+        return
+    company_ids = sorted(set(company_ids))
+
+    year_range = st.text_input(
+        "Year range (e.g., 'Recent - 2020' or '2023-2018')",
+        value="Recent - 2020",
+        key="ttc_working_capital_year_range",
+    )
+
+    view_mode = st.radio(
+        "View",
+        ["Dashboard View", "Company Detailed View"],
+        horizontal=True,
+        key="ttc_working_capital_view_mode",
+    )
+
+    compute = st.button("Compute Score", type="primary", key="ttc_working_capital_compute")
+    if compute:
+        st.session_state["ttc_working_capital_has_run"] = True
+    if not st.session_state.get("ttc_working_capital_has_run", False):
+        return
+
+    sections = _parse_assumptions_sections(conn)
+    if not sections.get("Working Capital Efficiency Score"):
+        st.error("No TTC assumptions found in the database. Add them in the Assumptions tab first.")
+        return
+    params = _get_working_capital_params(sections)
+    growth_weight_map, stddev_weight_map = _load_weight_maps(conn)
+
+    buckets_map = _get_company_buckets(conn, company_ids)
+    company_lookup = {int(row["id"]): row for _, row in companies_df.iterrows()}
+
+    rows: List[Dict[str, object]] = []
+    progress_bar = st.progress(0, text="Starting working capital score computation...")
+    progress_total = max(len(company_ids), 1)
+
+    for idx, cid in enumerate(company_ids, start=1):
+        row = company_lookup.get(cid)
+        if row is None:
+            progress_bar.progress(int((idx / progress_total) * 100), text=f"Computing company {idx}/{progress_total}...")
+            continue
+        progress_bar.progress(
+            int((idx / progress_total) * 100),
+            text=f"Computing {row['name']} ({idx}/{progress_total})...",
+        )
+
+        revenue = _load_series(conn, "revenues_annual", "revenue", cid)
+        cogs = _load_series(conn, "cost_of_revenue_annual", "cost_of_revenue", cid)
+        accounts_receivable = _load_series(conn, "accounts_receivable_annual", "accounts_receivable", cid)
+        inventory = _load_series(conn, "inventory_annual", "inventory", cid)
+        accounts_payable = _load_series(conn, "accounts_payable_annual", "accounts_payable", cid)
+        current_assets = _load_series(conn, "total_current_assets_annual", "total_current_assets", cid)
+        cash_and_cash_equivalents = _load_series(
+            conn,
+            "cash_and_cash_equivalents_annual",
+            "cash_and_cash_equivalents",
+            cid,
+        )
+        short_term_investments = _load_series(
+            conn,
+            "short_term_investments_annual",
+            "short_term_investments",
+            cid,
+        )
+        current_liabilities = _load_series(conn, "total_current_liabilities_annual", "total_current_liabilities", cid)
+        current_debt = _load_series(conn, "current_debt_annual", "current_debt", cid)
+        revenue = _merge_ttm_into_annual(conn, revenue, "revenues_ttm", "revenue", cid)
+        cogs = _merge_ttm_into_annual(conn, cogs, "cost_of_revenue_ttm", "cost_of_revenue", cid)
+        accounts_receivable = _merge_ttm_into_annual(
+            conn,
+            accounts_receivable,
+            "accounts_receivable_ttm",
+            "accounts_receivable",
+            cid,
+        )
+        inventory = _merge_ttm_into_annual(conn, inventory, "inventory_ttm", "inventory", cid)
+        accounts_payable = _merge_ttm_into_annual(
+            conn,
+            accounts_payable,
+            "accounts_payable_ttm",
+            "accounts_payable",
+            cid,
+        )
+        current_assets = _merge_ttm_into_annual(
+            conn,
+            current_assets,
+            "total_current_assets_ttm",
+            "total_current_assets",
+            cid,
+        )
+        cash_and_cash_equivalents = _merge_ttm_into_annual(
+            conn,
+            cash_and_cash_equivalents,
+            "cash_and_cash_equivalents_ttm",
+            "cash_and_cash_equivalents",
+            cid,
+        )
+        short_term_investments = _merge_ttm_into_annual(
+            conn,
+            short_term_investments,
+            "short_term_investments_ttm",
+            "short_term_investments",
+            cid,
+        )
+        current_liabilities = _merge_ttm_into_annual(
+            conn,
+            current_liabilities,
+            "total_current_liabilities_ttm",
+            "total_current_liabilities",
+            cid,
+        )
+        current_debt = _merge_ttm_into_annual(conn, current_debt, "current_debt_ttm", "current_debt", cid)
+        cash_and_equivalents = _build_cash_and_equivalents_series(
+            cash_and_cash_equivalents,
+            short_term_investments,
+        )
+
+        available_years = sorted(
+            set(revenue.keys())
+            | set(cogs.keys())
+            | set(accounts_receivable.keys())
+            | set(inventory.keys())
+            | set(accounts_payable.keys())
+            | set(current_assets.keys())
+            | set(cash_and_equivalents.keys())
+            | set(current_liabilities.keys())
+            | set(current_debt.keys())
+        )
+        if not available_years:
+            continue
+
+        try:
+            yr_start, yr_end = _parse_year_range(year_range, available_years)
+        except ValueError as e:
+            st.error(str(e))
+            return
+
+        if yr_start < yr_end:
+            yr_start, yr_end = yr_end, yr_start
+
+        years_in_range = [y for y in available_years if yr_end <= y <= yr_start]
+        if not years_in_range:
+            continue
+
+        ar_days_vals: List[float] = []
+        dio_vals: List[float] = []
+        dpo_vals: List[float] = []
+        ccc_vals: List[float] = []
+        nwc_vals: List[float] = []
+        nwc_pct_vals: List[float] = []
+        wc_turnover_vals: List[float] = []
+
+        ar_days_by_year: Dict[int, float] = {}
+        dio_by_year: Dict[int, float] = {}
+        dpo_by_year: Dict[int, float] = {}
+        nwc_by_year: Dict[int, float] = {}
+
+        for y in years_in_range:
+            rev_y = revenue.get(y)
+            cogs_y = cogs.get(y)
+
+            if (
+                rev_y is not None
+                and rev_y != 0
+                and y in accounts_receivable
+                and (y - 1) in accounts_receivable
+            ):
+                avg_ar = (float(accounts_receivable[y]) + float(accounts_receivable[y - 1])) / 2.0
+                ar_days = 365.0 * (avg_ar / float(rev_y))
+                ar_days_by_year[y] = ar_days
+                ar_days_vals.append(ar_days)
+
+            if (
+                cogs_y is not None
+                and cogs_y != 0
+                and y in inventory
+                and (y - 1) in inventory
+            ):
+                avg_inventory = (float(inventory[y]) + float(inventory[y - 1])) / 2.0
+                dio = 365.0 * (avg_inventory / float(cogs_y))
+                dio_by_year[y] = dio
+                dio_vals.append(dio)
+
+            if (
+                cogs_y is not None
+                and cogs_y != 0
+                and y in accounts_payable
+                and (y - 1) in accounts_payable
+            ):
+                avg_ap = (float(accounts_payable[y]) + float(accounts_payable[y - 1])) / 2.0
+                dpo = 365.0 * (avg_ap / float(cogs_y))
+                dpo_by_year[y] = dpo
+                dpo_vals.append(dpo)
+
+            ca_y = current_assets.get(y)
+            cash_y = cash_and_equivalents.get(y)
+            cl_y = current_liabilities.get(y)
+            cd_y = current_debt.get(y)
+            if (
+                ca_y is not None
+                and cash_y is not None
+                and cl_y is not None
+                and cd_y is not None
+            ):
+                # Spreadsheet uses debt due within 1 year in NWC.
+                # DB equivalent is Current Debt as requested.
+                nwc_y = (float(ca_y) - float(cash_y)) - (float(cl_y) - float(cd_y))
+                nwc_by_year[y] = nwc_y
+                nwc_vals.append(nwc_y)
+
+                if rev_y is not None and float(rev_y) != 0.0:
+                    nwc_pct_vals.append(nwc_y / float(rev_y))
+
+            if (
+                rev_y is not None
+                and float(rev_y) != 0.0
+                and y in nwc_by_year
+                and (y - 1) in nwc_by_year
+            ):
+                avg_nwc = (float(nwc_by_year[y]) + float(nwc_by_year[y - 1])) / 2.0
+                if avg_nwc != 0.0:
+                    wc_turnover_vals.append(float(rev_y) / avg_nwc)
+
+        for y in years_in_range:
+            if y in ar_days_by_year and y in dio_by_year and y in dpo_by_year:
+                ccc_vals.append(ar_days_by_year[y] + dio_by_year[y] - dpo_by_year[y])
+
+        ar_days_med = _median(ar_days_vals)
+        dio_med = _median(dio_vals)
+        dpo_med = _median(dpo_vals)
+        ccc_med = _median(ccc_vals)
+        nwc_med = _median(nwc_vals)
+        nwc_pct_med = _median(nwc_pct_vals)
+        wc_turnover_med = _median(wc_turnover_vals)
+        ccc_std = _stdev_sample(ccc_vals)
+
+        score = _score_working_capital(
+            ar_days_med,
+            dio_med,
+            dpo_med,
+            ccc_med,
+            nwc_pct_med,
+            wc_turnover_med,
+            ccc_std,
+            params,
+        )
+        filter_metrics = _compute_value_creation_filter_metrics(
+            conn,
+            cid,
+            yr_start,
+            yr_end,
+            growth_weight_map,
+            stddev_weight_map,
+        )
+
+        rows.append(
+            {
+                "Ticker": row["ticker"],
+                "Company Name": row["name"],
+                "Industry Bucket": buckets_map.get(cid, "(no bucket)"),
+                **filter_metrics,
+                "Accounts Receivable Days": ar_days_med,
+                "Days Inventory Outstanding": dio_med,
+                "Days Payable Outstanding": dpo_med,
+                "Cash Conversion Cycle": ccc_med,
+                "Net Working Capital (NWC)": nwc_med,
+                "Net Working Capital as % of Revenue": nwc_pct_med,
+                "Working Capital Turnover": wc_turnover_med,
+                "Working Capital Efficiency Score": score,
+            }
+        )
+
+    if not rows:
+        progress_bar.progress(100, text="No scores to display for selected input.")
+        st.info("No scores could be computed for the selected input.")
+        return
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values(
+        "Working Capital Efficiency Score",
+        ascending=False,
+        na_position="last",
+    )
+    progress_bar.progress(100, text="Working capital score computation complete.")
+    df = _apply_ttc_filters(df, "ttc_working_capital")
+    if df.empty:
+        st.info("No companies match the selected filters.")
+        return
+
+    if view_mode == "Dashboard View":
+        show_cols = [
+            "Ticker",
+            "Company Name",
+            "Industry Bucket",
+            "Working Capital Efficiency Score",
+        ]
+        st.dataframe(
+            df[show_cols],
+            use_container_width=True,
+            hide_index=True,
+        )
+        return
+
+    show_cols = [
+        "Ticker",
+        "Company Name",
+        "Industry Bucket",
+        "Accounts Receivable Days",
+        "Days Inventory Outstanding",
+        "Days Payable Outstanding",
+        "Cash Conversion Cycle",
+        "Net Working Capital (NWC)",
+        "Net Working Capital as % of Revenue",
+        "Working Capital Turnover",
+        "Working Capital Efficiency Score",
+    ]
+    display_df = df[show_cols].copy()
+    if "Net Working Capital as % of Revenue" in display_df.columns:
+        display_df["Net Working Capital as % of Revenue"] = display_df["Net Working Capital as % of Revenue"].apply(
+            lambda v: f"{v * 100:.2f}%" if pd.notna(v) else ""
+        )
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_through_the_cycle_cash_flow_score_tab() -> None:
+    conn = get_db()
+    companies_df = list_companies(conn)
+    if companies_df.empty:
+        st.info("No companies in the database yet. Upload a spreadsheet under Equity Research -> Data Upload.")
+        return
+
+    mode = st.radio(
+        "Analyze by",
+        ["Company", "Industry Bucket"],
+        horizontal=True,
+        key="ttc_cash_flow_mode",
+    )
+
+    company_ids: List[int] = []
+
+    if mode == "Company":
+        options = [
+            f"{row['name']} ({row['ticker']}) [id={row['id']}]"
+            for _, row in companies_df.iterrows()
+        ]
+        selected = st.multiselect(
+            "Select one or more companies",
+            options=options,
+            key="ttc_cash_flow_companies",
+        )
+        for label in selected:
+            m = re.search(r"id=(\d+)\]$", label)
+            if m:
+                company_ids.append(int(m.group(1)))
+    else:
+        groups_df = read_df(
+            "SELECT id, name FROM company_groups ORDER BY name",
+            conn,
+        )
+        if groups_df.empty:
+            st.info("No industry buckets found yet.")
+            return
+        group_name_to_id = {str(row["name"]): int(row["id"]) for _, row in groups_df.iterrows()}
+        bucket_names_selected = st.multiselect(
+            "Select one or more industry buckets",
+            options=list(group_name_to_id.keys()),
+            key="ttc_cash_flow_buckets",
+        )
+        if bucket_names_selected:
+            group_ids = [group_name_to_id[name] for name in bucket_names_selected if name in group_name_to_id]
+            placeholders = ",".join(["?"] * len(group_ids))
+            bucket_members_df = read_df(
+                f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
+                conn,
+                params=group_ids,
+            )
+            if bucket_members_df is not None and not bucket_members_df.empty:
+                company_ids = [int(x) for x in bucket_members_df["company_id"].tolist()]
+
+    if not company_ids:
+        st.info("Select at least one company or industry bucket to compute scores.")
+        return
+    company_ids = sorted(set(company_ids))
+
+    year_range = st.text_input(
+        "Year range (e.g., 'Recent - 2020' or '2023-2018')",
+        value="Recent - 2020",
+        key="ttc_cash_flow_year_range",
+    )
+
+    view_mode = st.radio(
+        "View",
+        ["Dashboard View", "Company Detailed View"],
+        horizontal=True,
+        key="ttc_cash_flow_view_mode",
+    )
+
+    compute = st.button("Compute Score", type="primary", key="ttc_cash_flow_compute")
+    if compute:
+        st.session_state["ttc_cash_flow_has_run"] = True
+    if not st.session_state.get("ttc_cash_flow_has_run", False):
+        return
+
+    sections = _parse_assumptions_sections(conn)
+    if not sections.get("Cash Flow Efficiency Score"):
+        st.error("No TTC assumptions found in the database. Add them in the Assumptions tab first.")
+        return
+    params = _get_cash_flow_params(sections)
+    growth_weight_map, stddev_weight_map = _load_weight_maps(conn)
+
+    buckets_map = _get_company_buckets(conn, company_ids)
+    company_lookup = {int(row["id"]): row for _, row in companies_df.iterrows()}
+
+    rows: List[Dict[str, object]] = []
+    progress_bar = st.progress(0, text="Starting cash flow score computation...")
+    progress_total = max(len(company_ids), 1)
+
+    for idx, cid in enumerate(company_ids, start=1):
+        row = company_lookup.get(cid)
+        if row is None:
+            progress_bar.progress(int((idx / progress_total) * 100), text=f"Computing company {idx}/{progress_total}...")
+            continue
+        progress_bar.progress(
+            int((idx / progress_total) * 100),
+            text=f"Computing {row['name']} ({idx}/{progress_total})...",
+        )
+
+        revenue = _load_series(conn, "revenues_annual", "revenue", cid)
+        if not revenue:
+            continue
+        cfo = _load_series(conn, "operating_cash_flow_annual", "operating_cash_flow", cid)
+        capex = _load_series(conn, "capital_expenditures_annual", "capital_expenditures", cid)
+        net_income = _load_series(conn, "net_income_annual", "net_income", cid)
+        net_ppe = _load_series(conn, "net_ppe_annual", "net_ppe", cid)
+        current_assets = _load_series(conn, "total_current_assets_annual", "total_current_assets", cid)
+        current_liabilities = _load_series(conn, "total_current_liabilities_annual", "total_current_liabilities", cid)
+        current_debt = _load_series(conn, "current_debt_annual", "current_debt", cid)
+        cash_and_cash_equivalents = _load_series(
+            conn,
+            "cash_and_cash_equivalents_annual",
+            "cash_and_cash_equivalents",
+            cid,
+        )
+        short_term_investments = _load_series(
+            conn,
+            "short_term_investments_annual",
+            "short_term_investments",
+            cid,
+        )
+        goodwill_and_intangibles = _load_series(
+            conn,
+            "goodwill_and_intangibles_annual",
+            "goodwill_and_intangibles",
+            cid,
+        )
+        other_long_term_assets = _load_series(conn, "other_long_term_assets_annual", "other_long_term_assets", cid)
+        deferred_revenue = _load_series(conn, "deferred_revenue_annual", "deferred_revenue", cid)
+        deferred_tax_liabilities = _load_series(
+            conn,
+            "deferred_tax_liabilities_annual",
+            "deferred_tax_liabilities",
+            cid,
+        )
+        other_long_term_liabilities = _load_series(
+            conn,
+            "other_long_term_liabilities_annual",
+            "other_long_term_liabilities",
+            cid,
+        )
+
+        revenue = _merge_ttm_into_annual(conn, revenue, "revenues_ttm", "revenue", cid)
+        cfo = _merge_ttm_into_annual(conn, cfo, "operating_cash_flow_ttm", "operating_cash_flow", cid)
+        capex = _merge_ttm_into_annual(conn, capex, "capital_expenditures_ttm", "capital_expenditures", cid)
+        net_income = _merge_ttm_into_annual(conn, net_income, "net_income_ttm", "net_income", cid)
+        net_ppe = _merge_ttm_into_annual(conn, net_ppe, "net_ppe_ttm", "net_ppe", cid)
+        current_assets = _merge_ttm_into_annual(
+            conn,
+            current_assets,
+            "total_current_assets_ttm",
+            "total_current_assets",
+            cid,
+        )
+        current_liabilities = _merge_ttm_into_annual(
+            conn,
+            current_liabilities,
+            "total_current_liabilities_ttm",
+            "total_current_liabilities",
+            cid,
+        )
+        current_debt = _merge_ttm_into_annual(conn, current_debt, "current_debt_ttm", "current_debt", cid)
+        cash_and_cash_equivalents = _merge_ttm_into_annual(
+            conn,
+            cash_and_cash_equivalents,
+            "cash_and_cash_equivalents_ttm",
+            "cash_and_cash_equivalents",
+            cid,
+        )
+        short_term_investments = _merge_ttm_into_annual(
+            conn,
+            short_term_investments,
+            "short_term_investments_ttm",
+            "short_term_investments",
+            cid,
+        )
+        goodwill_and_intangibles = _merge_ttm_into_annual(
+            conn,
+            goodwill_and_intangibles,
+            "goodwill_and_intangibles_ttm",
+            "goodwill_and_intangibles",
+            cid,
+        )
+        other_long_term_assets = _merge_ttm_into_annual(
+            conn,
+            other_long_term_assets,
+            "other_long_term_assets_ttm",
+            "other_long_term_assets",
+            cid,
+        )
+        deferred_revenue = _merge_ttm_into_annual(
+            conn,
+            deferred_revenue,
+            "deferred_revenue_ttm",
+            "deferred_revenue",
+            cid,
+        )
+        deferred_tax_liabilities = _merge_ttm_into_annual(
+            conn,
+            deferred_tax_liabilities,
+            "deferred_tax_liabilities_ttm",
+            "deferred_tax_liabilities",
+            cid,
+        )
+        other_long_term_liabilities = _merge_ttm_into_annual(
+            conn,
+            other_long_term_liabilities,
+            "other_long_term_liabilities_ttm",
+            "other_long_term_liabilities",
+            cid,
+        )
+
+        # DB stores one combined field and "current_debt" directly.
+        # Spreadsheet logic uses Debt due within 1 year and separate Goodwill/Intangibles.
+        # For computation we use:
+        #  - debt_due_within_1_year = current_debt
+        #  - goodwill + intangibles = goodwill_and_intangibles
+        cash_equivalents_ex_sti = _build_cash_and_equivalents_series(
+            cash_and_cash_equivalents,
+            short_term_investments,
+        )
+
+        available_years = sorted(
+            set(revenue.keys())
+            | set(cfo.keys())
+            | set(capex.keys())
+            | set(net_income.keys())
+            | set(net_ppe.keys())
+            | set(current_assets.keys())
+            | set(current_liabilities.keys())
+            | set(current_debt.keys())
+            | set(cash_equivalents_ex_sti.keys())
+            | set(short_term_investments.keys())
+            | set(goodwill_and_intangibles.keys())
+            | set(other_long_term_assets.keys())
+            | set(deferred_revenue.keys())
+            | set(deferred_tax_liabilities.keys())
+            | set(other_long_term_liabilities.keys())
+        )
+        if not available_years:
+            continue
+
+        try:
+            yr_start, yr_end = _parse_year_range(year_range, available_years)
+        except ValueError as e:
+            st.error(str(e))
+            return
+
+        if yr_start < yr_end:
+            yr_start, yr_end = yr_end, yr_start
+
+        years_in_range = [y for y in available_years if yr_end <= y <= yr_start]
+        if not years_in_range:
+            continue
+
+        ocf_margin_vals: List[float] = []
+        fcf_margin_vals: List[float] = []
+        cfo_net_income_vals: List[float] = []
+        croic_vals: List[float] = []
+        capital_intensity_vals: List[float] = []
+
+        for y in years_in_range:
+            rev = revenue.get(y)
+            cfo_y = cfo.get(y)
+            capex_y = capex.get(y)
+            ni_y = net_income.get(y)
+            net_ppe_y = net_ppe.get(y)
+            ca_y = current_assets.get(y)
+            cl_y = current_liabilities.get(y)
+            cd_y = current_debt.get(y)  # Debt due within 1 year from DB mapping
+            cash_ex_sti_y = cash_equivalents_ex_sti.get(y)
+            sti_y = short_term_investments.get(y, 0.0)
+            gai_y = goodwill_and_intangibles.get(y)
+            olta_y = other_long_term_assets.get(y)
+            dr_y = deferred_revenue.get(y)
+            dtl_y = deferred_tax_liabilities.get(y, 0.0)
+            oltl_y = other_long_term_liabilities.get(y)
+
+            fcf_y: Optional[float] = None
+            if cfo_y is not None and capex_y is not None:
+                fcf_y = float(cfo_y) + float(capex_y)
+
+            if rev is not None and float(rev) != 0.0 and cfo_y is not None:
+                ocf_margin_vals.append(float(cfo_y) / float(rev))
+
+            if rev is not None and float(rev) != 0.0 and fcf_y is not None:
+                fcf_margin_vals.append(float(fcf_y) / float(rev))
+
+            if cfo_y is not None and ni_y is not None and float(ni_y) != 0.0:
+                cfo_net_income_vals.append(float(cfo_y) / float(ni_y))
+
+            if rev is not None and float(rev) != 0.0 and capex_y is not None:
+                capital_intensity_vals.append((-1.0 * float(capex_y)) / float(rev))
+
+            if (
+                fcf_y is not None
+                and net_ppe_y is not None
+                and ca_y is not None
+                and cl_y is not None
+                and cd_y is not None
+                and cash_ex_sti_y is not None
+                and gai_y is not None
+                and olta_y is not None
+                and dr_y is not None
+                and oltl_y is not None
+            ):
+                current_operating_assets = float(ca_y) - float(cash_ex_sti_y) - float(sti_y)
+                current_operating_liabilities = float(cl_y) - float(cd_y)
+                net_working_capital = current_operating_assets - current_operating_liabilities
+                other_operating_assets = float(gai_y) + float(olta_y)
+                non_interest_operating_liabilities = float(dr_y) + float(dtl_y) + float(oltl_y)
+                invested_capital = (
+                    float(net_ppe_y)
+                    + net_working_capital
+                    + other_operating_assets
+                    - non_interest_operating_liabilities
+                )
+                if invested_capital != 0.0:
+                    croic_vals.append(float(fcf_y) / invested_capital)
+
+        ocf_margin_med = _median(ocf_margin_vals)
+        fcf_margin_med = _median(fcf_margin_vals)
+        cfo_net_income_med = _median(cfo_net_income_vals)
+        croic_med = _median(croic_vals)
+        capital_intensity_med = _median(capital_intensity_vals)
+        fcf_margin_stdev = _stdev_sample(fcf_margin_vals)
+
+        score = _score_cash_flow(
+            ocf_margin_med,
+            fcf_margin_med,
+            cfo_net_income_med,
+            croic_med,
+            capital_intensity_med,
+            fcf_margin_stdev,
+            params,
+        )
+        filter_metrics = _compute_value_creation_filter_metrics(
+            conn,
+            cid,
+            yr_start,
+            yr_end,
+            growth_weight_map,
+            stddev_weight_map,
+        )
+
+        rows.append(
+            {
+                "Ticker": row["ticker"],
+                "Company Name": row["name"],
+                "Industry Bucket": buckets_map.get(cid, "(no bucket)"),
+                **filter_metrics,
+                "Operating Cash Flow Margin": ocf_margin_med,
+                "FCF Margin": fcf_margin_med,
+                "FCF Margin Standard Deviation": fcf_margin_stdev,
+                "CFO/Net Income": cfo_net_income_med,
+                "Cash Return on Invested Capital (CROIC)": croic_med,
+                "Capital intensity (Capex/Revenue)": capital_intensity_med,
+                "Cash Flow Efficiency Score (0-100)": score,
+            }
+        )
+
+    if not rows:
+        progress_bar.progress(100, text="No scores to display for selected input.")
+        st.info("No scores could be computed for the selected input.")
+        return
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values(
+        "Cash Flow Efficiency Score (0-100)",
+        ascending=False,
+        na_position="last",
+    )
+    progress_bar.progress(100, text="Cash flow score computation complete.")
+    df = _apply_ttc_filters(df, "ttc_cash_flow")
+    if df.empty:
+        st.info("No companies match the selected filters.")
+        return
+
+    if view_mode == "Dashboard View":
+        show_cols = [
+            "Ticker",
+            "Company Name",
+            "Industry Bucket",
+            "Cash Flow Efficiency Score (0-100)",
+        ]
+        st.dataframe(
+            df[show_cols],
+            use_container_width=True,
+            hide_index=True,
+        )
+        return
+
+    show_cols = [
+        "Ticker",
+        "Company Name",
+        "Industry Bucket",
+        "Operating Cash Flow Margin",
+        "FCF Margin",
+        "FCF Margin Standard Deviation",
+        "CFO/Net Income",
+        "Cash Return on Invested Capital (CROIC)",
+        "Capital intensity (Capex/Revenue)",
+        "Cash Flow Efficiency Score (0-100)",
+    ]
+    display_df = df[show_cols].copy()
+    ratio_cols = [
+        "Operating Cash Flow Margin",
+        "FCF Margin",
+        "FCF Margin Standard Deviation",
+        "CFO/Net Income",
+        "Cash Return on Invested Capital (CROIC)",
+        "Capital intensity (Capex/Revenue)",
+    ]
+    for col in ratio_cols:
+        if col in display_df.columns:
+            display_df[col] = display_df[col].apply(
+                lambda v: f"{v * 100:.2f}%" if pd.notna(v) else ""
+            )
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def render_through_the_cycle_combined_score_tab() -> None:
+    conn = get_db()
+    companies_df = list_companies(conn)
+    if companies_df.empty:
+        st.info("No companies in the database yet. Upload a spreadsheet under Equity Research -> Data Upload.")
+        return
+
+    mode = st.radio(
+        "Analyze by",
+        ["Company", "Industry Bucket"],
+        horizontal=True,
+        key="ttc_combined_mode",
+    )
+
+    company_ids: List[int] = []
+
+    if mode == "Company":
+        options = [
+            f"{row['name']} ({row['ticker']}) [id={row['id']}]"
+            for _, row in companies_df.iterrows()
+        ]
+        selected = st.multiselect(
+            "Select one or more companies",
+            options=options,
+            key="ttc_combined_companies",
+        )
+        for label in selected:
+            m = re.search(r"id=(\d+)\]$", label)
+            if m:
+                company_ids.append(int(m.group(1)))
+    else:
+        groups_df = read_df(
+            "SELECT id, name FROM company_groups ORDER BY name",
+            conn,
+        )
+        if groups_df.empty:
+            st.info("No industry buckets found yet.")
+            return
+        group_name_to_id = {str(row["name"]): int(row["id"]) for _, row in groups_df.iterrows()}
+        bucket_names_selected = st.multiselect(
+            "Select one or more industry buckets",
+            options=list(group_name_to_id.keys()),
+            key="ttc_combined_buckets",
+        )
+        if bucket_names_selected:
+            group_ids = [group_name_to_id[name] for name in bucket_names_selected if name in group_name_to_id]
+            placeholders = ",".join(["?"] * len(group_ids))
+            bucket_members_df = read_df(
+                f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
+                conn,
+                params=group_ids,
+            )
+            if bucket_members_df is not None and not bucket_members_df.empty:
+                company_ids = [int(x) for x in bucket_members_df["company_id"].tolist()]
+
+    if not company_ids:
+        st.info("Select at least one company or industry bucket to compute scores.")
+        return
+    company_ids = sorted(set(company_ids))
+
+    year_range = st.text_input(
+        "Year range (e.g., 'Recent - 2020' or '2023-2018')",
+        value="Recent - 2020",
+        key="ttc_combined_year_range",
+    )
+
+    view_mode = st.radio(
+        "View",
+        ["Dashboard View", "Company Detailed View"],
+        horizontal=True,
+        key="ttc_combined_view_mode",
+    )
+
+    compute = st.button("Compute Score", type="primary", key="ttc_combined_compute")
+    if compute:
+        st.session_state["ttc_combined_has_run"] = True
+    if not st.session_state.get("ttc_combined_has_run", False):
+        return
+
+    sections = _parse_assumptions_sections(conn)
+    if (
+        not sections.get("Income Statement Efficiency Score")
+        or not sections.get("Balance Sheet Strength Score")
+        or not sections.get("Working Capital Efficiency Score")
+        or not sections.get("Cash Flow Efficiency Score")
+    ):
+        st.error("Missing TTC assumptions. Configure all four score sections in the Assumptions tab first.")
+        return
+
+    income_params = _get_income_statement_params(sections)
+    balance_params = _get_balance_sheet_params(sections)
+    working_cap_params = _get_working_capital_params(sections)
+    cash_flow_params = _get_cash_flow_params(sections)
+    overall_weights = _get_overall_score_weights(sections)
+    growth_weight_map, stddev_weight_map = _load_weight_maps(conn)
+
+    buckets_map = _get_company_buckets(conn, company_ids)
+    company_lookup = {int(row["id"]): row for _, row in companies_df.iterrows()}
+
+    rows: List[Dict[str, object]] = []
+    progress_bar = st.progress(0, text="Starting combined score computation...")
+    progress_total = max(len(company_ids), 1)
+
+    for idx, cid in enumerate(company_ids, start=1):
+        row = company_lookup.get(cid)
+        if row is None:
+            progress_bar.progress(int((idx / progress_total) * 100), text=f"Computing company {idx}/{progress_total}...")
+            continue
+        progress_bar.progress(
+            int((idx / progress_total) * 100),
+            text=f"Computing {row['name']} ({idx}/{progress_total})...",
+        )
+
+        revenue_ann = _load_series(conn, "revenues_annual", "revenue", cid)
+        cogs_ann = _load_series(conn, "cost_of_revenue_annual", "cost_of_revenue", cid)
+        sga_ann = _load_series(conn, "sga_annual", "sga", cid)
+        operating_income_ann = _load_series(conn, "operating_income_annual", "operating_income", cid)
+        if not operating_income_ann:
+            operating_income_ann = _load_series(conn, "ebit_annual", "ebit", cid)
+
+        total_debt_ann = _load_series(conn, "total_debt_annual", "total_debt", cid)
+        cash_ann = _load_series(conn, "cash_and_cash_equivalents_annual", "cash_and_cash_equivalents", cid)
+        accounts_receivable_ann = _load_series(conn, "accounts_receivable_annual", "accounts_receivable", cid)
+        inventory_ann = _load_series(conn, "inventory_annual", "inventory", cid)
+        accounts_payable_ann = _load_series(conn, "accounts_payable_annual", "accounts_payable", cid)
+        total_current_assets_ann = _load_series(conn, "total_current_assets_annual", "total_current_assets", cid)
+        total_current_liabilities_ann = _load_series(conn, "total_current_liabilities_annual", "total_current_liabilities", cid)
+        current_debt_ann = _load_series(conn, "current_debt_annual", "current_debt", cid)
+        shareholders_equity_ann = _load_series(conn, "shareholders_equity_annual", "shareholders_equity", cid)
+        ebitda_ann = _load_series(conn, "ebitda_annual", "ebitda", cid)
+        interest_expense_ann = _load_series(conn, "interest_expense_annual", "interest_expense", cid)
+
+        ocf_ann = _load_series(conn, "operating_cash_flow_annual", "operating_cash_flow", cid)
+        capex_ann = _load_series(conn, "capital_expenditures_annual", "capital_expenditures", cid)
+        net_income_ann = _load_series(conn, "net_income_annual", "net_income", cid)
+        net_ppe_ann = _load_series(conn, "net_ppe_annual", "net_ppe", cid)
+        short_term_investments_ann = _load_series(conn, "short_term_investments_annual", "short_term_investments", cid)
+        goodwill_and_intangibles_ann = _load_series(conn, "goodwill_and_intangibles_annual", "goodwill_and_intangibles", cid)
+        other_long_term_assets_ann = _load_series(conn, "other_long_term_assets_annual", "other_long_term_assets", cid)
+        deferred_revenue_ann = _load_series(conn, "deferred_revenue_annual", "deferred_revenue", cid)
+        deferred_tax_liabilities_ann = _load_series(
+            conn,
+            "deferred_tax_liabilities_annual",
+            "deferred_tax_liabilities",
+            cid,
+        )
+        other_long_term_liabilities_ann = _load_series(
+            conn,
+            "other_long_term_liabilities_annual",
+            "other_long_term_liabilities",
+            cid,
+        )
+
+        revenue_wc = _merge_ttm_into_annual(conn, revenue_ann, "revenues_ttm", "revenue", cid)
+        cogs_wc = _merge_ttm_into_annual(conn, cogs_ann, "cost_of_revenue_ttm", "cost_of_revenue", cid)
+        accounts_receivable_wc = _merge_ttm_into_annual(
+            conn,
+            accounts_receivable_ann,
+            "accounts_receivable_ttm",
+            "accounts_receivable",
+            cid,
+        )
+        inventory_wc = _merge_ttm_into_annual(conn, inventory_ann, "inventory_ttm", "inventory", cid)
+        accounts_payable_wc = _merge_ttm_into_annual(
+            conn,
+            accounts_payable_ann,
+            "accounts_payable_ttm",
+            "accounts_payable",
+            cid,
+        )
+        total_current_assets_wc = _merge_ttm_into_annual(
+            conn,
+            total_current_assets_ann,
+            "total_current_assets_ttm",
+            "total_current_assets",
+            cid,
+        )
+        cash_wc = _merge_ttm_into_annual(
+            conn,
+            cash_ann,
+            "cash_and_cash_equivalents_ttm",
+            "cash_and_cash_equivalents",
+            cid,
+        )
+        short_term_investments_wc = _merge_ttm_into_annual(
+            conn,
+            short_term_investments_ann,
+            "short_term_investments_ttm",
+            "short_term_investments",
+            cid,
+        )
+        total_current_liabilities_wc = _merge_ttm_into_annual(
+            conn,
+            total_current_liabilities_ann,
+            "total_current_liabilities_ttm",
+            "total_current_liabilities",
+            cid,
+        )
+        current_debt_wc = _merge_ttm_into_annual(
+            conn,
+            current_debt_ann,
+            "current_debt_ttm",
+            "current_debt",
+            cid,
+        )
+        cash_and_equivalents_wc = _build_cash_and_equivalents_series(cash_wc, short_term_investments_wc)
+
+        revenue_cf = _merge_ttm_into_annual(conn, revenue_ann, "revenues_ttm", "revenue", cid)
+        ocf_cf = _merge_ttm_into_annual(conn, ocf_ann, "operating_cash_flow_ttm", "operating_cash_flow", cid)
+        capex_cf = _merge_ttm_into_annual(conn, capex_ann, "capital_expenditures_ttm", "capital_expenditures", cid)
+        net_income_cf = _merge_ttm_into_annual(conn, net_income_ann, "net_income_ttm", "net_income", cid)
+        net_ppe_cf = _merge_ttm_into_annual(conn, net_ppe_ann, "net_ppe_ttm", "net_ppe", cid)
+        total_current_assets_cf = _merge_ttm_into_annual(
+            conn,
+            total_current_assets_ann,
+            "total_current_assets_ttm",
+            "total_current_assets",
+            cid,
+        )
+        total_current_liabilities_cf = _merge_ttm_into_annual(
+            conn,
+            total_current_liabilities_ann,
+            "total_current_liabilities_ttm",
+            "total_current_liabilities",
+            cid,
+        )
+        current_debt_cf = _merge_ttm_into_annual(conn, current_debt_ann, "current_debt_ttm", "current_debt", cid)
+        cash_cf = _merge_ttm_into_annual(
+            conn,
+            cash_ann,
+            "cash_and_cash_equivalents_ttm",
+            "cash_and_cash_equivalents",
+            cid,
+        )
+        short_term_investments_cf = _merge_ttm_into_annual(
+            conn,
+            short_term_investments_ann,
+            "short_term_investments_ttm",
+            "short_term_investments",
+            cid,
+        )
+        goodwill_and_intangibles_cf = _merge_ttm_into_annual(
+            conn,
+            goodwill_and_intangibles_ann,
+            "goodwill_and_intangibles_ttm",
+            "goodwill_and_intangibles",
+            cid,
+        )
+        other_long_term_assets_cf = _merge_ttm_into_annual(
+            conn,
+            other_long_term_assets_ann,
+            "other_long_term_assets_ttm",
+            "other_long_term_assets",
+            cid,
+        )
+        deferred_revenue_cf = _merge_ttm_into_annual(
+            conn,
+            deferred_revenue_ann,
+            "deferred_revenue_ttm",
+            "deferred_revenue",
+            cid,
+        )
+        deferred_tax_liabilities_cf = _merge_ttm_into_annual(
+            conn,
+            deferred_tax_liabilities_ann,
+            "deferred_tax_liabilities_ttm",
+            "deferred_tax_liabilities",
+            cid,
+        )
+        other_long_term_liabilities_cf = _merge_ttm_into_annual(
+            conn,
+            other_long_term_liabilities_ann,
+            "other_long_term_liabilities_ttm",
+            "other_long_term_liabilities",
+            cid,
+        )
+        cash_equivalents_ex_sti_cf = _build_cash_and_equivalents_series(cash_cf, short_term_investments_cf)
+
+        available_years = sorted(
+            set(revenue_ann.keys())
+            | set(cogs_ann.keys())
+            | set(sga_ann.keys())
+            | set(operating_income_ann.keys())
+            | set(total_debt_ann.keys())
+            | set(cash_ann.keys())
+            | set(accounts_receivable_ann.keys())
+            | set(inventory_ann.keys())
+            | set(accounts_payable_ann.keys())
+            | set(total_current_assets_ann.keys())
+            | set(total_current_liabilities_ann.keys())
+            | set(current_debt_ann.keys())
+            | set(shareholders_equity_ann.keys())
+            | set(ebitda_ann.keys())
+            | set(interest_expense_ann.keys())
+            | set(revenue_wc.keys())
+            | set(cogs_wc.keys())
+            | set(accounts_receivable_wc.keys())
+            | set(inventory_wc.keys())
+            | set(accounts_payable_wc.keys())
+            | set(total_current_assets_wc.keys())
+            | set(cash_and_equivalents_wc.keys())
+            | set(total_current_liabilities_wc.keys())
+            | set(current_debt_wc.keys())
+            | set(revenue_cf.keys())
+            | set(ocf_cf.keys())
+            | set(capex_cf.keys())
+            | set(net_income_cf.keys())
+            | set(net_ppe_cf.keys())
+            | set(total_current_assets_cf.keys())
+            | set(total_current_liabilities_cf.keys())
+            | set(current_debt_cf.keys())
+            | set(cash_equivalents_ex_sti_cf.keys())
+            | set(short_term_investments_cf.keys())
+            | set(goodwill_and_intangibles_cf.keys())
+            | set(other_long_term_assets_cf.keys())
+            | set(deferred_revenue_cf.keys())
+            | set(deferred_tax_liabilities_cf.keys())
+            | set(other_long_term_liabilities_cf.keys())
+        )
+        if not available_years:
+            continue
+
+        try:
+            yr_start, yr_end = _parse_year_range(year_range, available_years)
+        except ValueError as e:
+            st.error(str(e))
+            return
+
+        if yr_start < yr_end:
+            yr_start, yr_end = yr_end, yr_start
+
+        years_in_range = [y for y in available_years if yr_end <= y <= yr_start]
+        if not years_in_range:
+            continue
+
+        op_margin_vals: List[float] = []
+        gross_margin_vals: List[float] = []
+        sga_ratio_vals: List[float] = []
+        incremental_vals: List[float] = []
+
+        for y in years_in_range:
+            rev = revenue_ann.get(y)
+            oi = operating_income_ann.get(y)
+            if rev is not None and rev != 0 and oi is not None:
+                op_margin_vals.append(float(oi) / float(rev))
+
+            cogs_y = cogs_ann.get(y)
+            if rev is not None and rev != 0 and cogs_y is not None:
+                gross_margin_vals.append((float(rev) - float(cogs_y)) / float(rev))
+
+            sga_y = sga_ann.get(y)
+            if rev is not None and rev != 0 and sga_y is not None:
+                sga_ratio_vals.append(float(sga_y) / float(rev))
+
+            if (y - 1) in revenue_ann and (y - 1) in operating_income_ann and rev is not None and oi is not None:
+                rev_prev = revenue_ann.get(y - 1)
+                oi_prev = operating_income_ann.get(y - 1)
+                if rev_prev is not None and oi_prev is not None:
+                    denom = float(rev) - float(rev_prev)
+                    if denom != 0:
+                        incremental_vals.append((float(oi) - float(oi_prev)) / denom)
+
+        income_score = _score_income_statement(
+            _median(op_margin_vals),
+            _stdev_sample(op_margin_vals),
+            _median(gross_margin_vals),
+            _median(sga_ratio_vals),
+            _median(incremental_vals),
+            income_params,
+        )
+
+        net_debt_ebitda_vals: List[float] = []
+        interest_coverage_vals: List[float] = []
+        quick_ratio_vals: List[float] = []
+        current_ratio_vals: List[float] = []
+        debt_to_cap_vals: List[float] = []
+        debt_maturity_vals: List[float] = []
+        nd_penalty = False
+
+        for y in years_in_range:
+            td = total_debt_ann.get(y)
+            if td is not None:
+                cash_val = cash_ann.get(y, 0.0)
+                ebitda_val = ebitda_ann.get(y)
+                net_debt = float(td) - float(cash_val)
+                if ebitda_val is not None and float(ebitda_val) <= 0 and net_debt > 0:
+                    nd_penalty = True
+                if ebitda_val is not None and ebitda_val != 0:
+                    net_debt_ebitda_vals.append(net_debt / float(ebitda_val))
+
+                se_val = shareholders_equity_ann.get(y)
+                if se_val is not None:
+                    denom = float(td) + float(se_val)
+                    if denom != 0:
+                        debt_to_cap_vals.append(float(td) / denom)
+
+                cd_val = current_debt_ann.get(y)
+                if cd_val is not None:
+                    if float(td) == 0 or float(cd_val) == 0:
+                        debt_maturity_vals.append(0.0)
+                    else:
+                        debt_maturity_vals.append(float(cd_val) / float(td))
+
+            oi_val = operating_income_ann.get(y)
+            ie_val = interest_expense_ann.get(y)
+            if oi_val is not None and ie_val is not None:
+                if float(ie_val) != 0:
+                    interest_coverage_vals.append(float(oi_val) / float(ie_val))
+                else:
+                    interest_coverage_vals.append(100.0 if float(oi_val) > 0 else 0.0)
+
+            ca_val = total_current_assets_ann.get(y)
+            cl_val = total_current_liabilities_ann.get(y)
+            if ca_val is not None and cl_val is not None and float(cl_val) != 0:
+                current_ratio_vals.append(float(ca_val) / float(cl_val))
+
+            if cl_val is not None and float(cl_val) != 0:
+                cash_val = cash_ann.get(y, 0.0)
+                ar_val = accounts_receivable_ann.get(y, 0.0)
+                quick_ratio_vals.append((float(cash_val) + float(ar_val)) / float(cl_val))
+
+        balance_score = _score_balance_sheet(
+            _median(net_debt_ebitda_vals),
+            _median(interest_coverage_vals),
+            _median(quick_ratio_vals),
+            _median(current_ratio_vals),
+            _median(debt_to_cap_vals),
+            _median(debt_maturity_vals),
+            nd_penalty,
+            balance_params,
+        )
+
+        ar_days_vals: List[float] = []
+        dio_vals: List[float] = []
+        dpo_vals: List[float] = []
+        ccc_vals: List[float] = []
+        nwc_vals: List[float] = []
+        nwc_pct_vals: List[float] = []
+        wc_turnover_vals: List[float] = []
+
+        ar_days_by_year: Dict[int, float] = {}
+        dio_by_year: Dict[int, float] = {}
+        dpo_by_year: Dict[int, float] = {}
+        nwc_by_year: Dict[int, float] = {}
+
+        for y in years_in_range:
+            rev_y = revenue_wc.get(y)
+            cogs_y = cogs_wc.get(y)
+
+            if rev_y is not None and rev_y != 0 and y in accounts_receivable_wc and (y - 1) in accounts_receivable_wc:
+                avg_ar = (float(accounts_receivable_wc[y]) + float(accounts_receivable_wc[y - 1])) / 2.0
+                ar_days = 365.0 * (avg_ar / float(rev_y))
+                ar_days_by_year[y] = ar_days
+                ar_days_vals.append(ar_days)
+
+            if cogs_y is not None and cogs_y != 0 and y in inventory_wc and (y - 1) in inventory_wc:
+                avg_inventory = (float(inventory_wc[y]) + float(inventory_wc[y - 1])) / 2.0
+                dio = 365.0 * (avg_inventory / float(cogs_y))
+                dio_by_year[y] = dio
+                dio_vals.append(dio)
+
+            if cogs_y is not None and cogs_y != 0 and y in accounts_payable_wc and (y - 1) in accounts_payable_wc:
+                avg_ap = (float(accounts_payable_wc[y]) + float(accounts_payable_wc[y - 1])) / 2.0
+                dpo = 365.0 * (avg_ap / float(cogs_y))
+                dpo_by_year[y] = dpo
+                dpo_vals.append(dpo)
+
+            ca_y = total_current_assets_wc.get(y)
+            cash_y = cash_and_equivalents_wc.get(y)
+            cl_y = total_current_liabilities_wc.get(y)
+            cd_y = current_debt_wc.get(y)
+            if ca_y is not None and cash_y is not None and cl_y is not None and cd_y is not None:
+                nwc_y = (float(ca_y) - float(cash_y)) - (float(cl_y) - float(cd_y))
+                nwc_by_year[y] = nwc_y
+                nwc_vals.append(nwc_y)
+                if rev_y is not None and float(rev_y) != 0.0:
+                    nwc_pct_vals.append(nwc_y / float(rev_y))
+
+            if rev_y is not None and float(rev_y) != 0.0 and y in nwc_by_year and (y - 1) in nwc_by_year:
+                avg_nwc = (float(nwc_by_year[y]) + float(nwc_by_year[y - 1])) / 2.0
+                if avg_nwc != 0.0:
+                    wc_turnover_vals.append(float(rev_y) / avg_nwc)
+
+        for y in years_in_range:
+            if y in ar_days_by_year and y in dio_by_year and y in dpo_by_year:
+                ccc_vals.append(ar_days_by_year[y] + dio_by_year[y] - dpo_by_year[y])
+
+        working_capital_score = _score_working_capital(
+            _median(ar_days_vals),
+            _median(dio_vals),
+            _median(dpo_vals),
+            _median(ccc_vals),
+            _median(nwc_pct_vals),
+            _median(wc_turnover_vals),
+            _stdev_sample(ccc_vals),
+            working_cap_params,
+        )
+
+        ocf_margin_vals: List[float] = []
+        fcf_margin_vals: List[float] = []
+        cfo_net_income_vals: List[float] = []
+        croic_vals: List[float] = []
+        capital_intensity_vals: List[float] = []
+
+        for y in years_in_range:
+            rev_y = revenue_cf.get(y)
+            cfo_y = ocf_cf.get(y)
+            capex_y = capex_cf.get(y)
+            ni_y = net_income_cf.get(y)
+            net_ppe_y = net_ppe_cf.get(y)
+            ca_y = total_current_assets_cf.get(y)
+            cl_y = total_current_liabilities_cf.get(y)
+            cd_y = current_debt_cf.get(y)
+            cash_ex_sti_y = cash_equivalents_ex_sti_cf.get(y)
+            sti_y = short_term_investments_cf.get(y, 0.0)
+            gai_y = goodwill_and_intangibles_cf.get(y)
+            olta_y = other_long_term_assets_cf.get(y)
+            dr_y = deferred_revenue_cf.get(y)
+            dtl_y = deferred_tax_liabilities_cf.get(y, 0.0)
+            oltl_y = other_long_term_liabilities_cf.get(y)
+
+            fcf_y: Optional[float] = None
+            if cfo_y is not None and capex_y is not None:
+                fcf_y = float(cfo_y) + float(capex_y)
+
+            if rev_y is not None and float(rev_y) != 0.0 and cfo_y is not None:
+                ocf_margin_vals.append(float(cfo_y) / float(rev_y))
+
+            if rev_y is not None and float(rev_y) != 0.0 and fcf_y is not None:
+                fcf_margin_vals.append(float(fcf_y) / float(rev_y))
+
+            if cfo_y is not None and ni_y is not None and float(ni_y) != 0.0:
+                cfo_net_income_vals.append(float(cfo_y) / float(ni_y))
+
+            if rev_y is not None and float(rev_y) != 0.0 and capex_y is not None:
+                capital_intensity_vals.append((-1.0 * float(capex_y)) / float(rev_y))
+
+            if (
+                fcf_y is not None
+                and net_ppe_y is not None
+                and ca_y is not None
+                and cl_y is not None
+                and cd_y is not None
+                and cash_ex_sti_y is not None
+                and gai_y is not None
+                and olta_y is not None
+                and dr_y is not None
+                and oltl_y is not None
+            ):
+                current_operating_assets = float(ca_y) - float(cash_ex_sti_y) - float(sti_y)
+                current_operating_liabilities = float(cl_y) - float(cd_y)
+                net_working_capital = current_operating_assets - current_operating_liabilities
+                other_operating_assets = float(gai_y) + float(olta_y)
+                non_interest_operating_liabilities = float(dr_y) + float(dtl_y) + float(oltl_y)
+                invested_capital = (
+                    float(net_ppe_y)
+                    + net_working_capital
+                    + other_operating_assets
+                    - non_interest_operating_liabilities
+                )
+                if invested_capital != 0.0:
+                    croic_vals.append(float(fcf_y) / invested_capital)
+
+        cash_flow_score = _score_cash_flow(
+            _median(ocf_margin_vals),
+            _median(fcf_margin_vals),
+            _median(cfo_net_income_vals),
+            _median(croic_vals),
+            _median(capital_intensity_vals),
+            _stdev_sample(fcf_margin_vals),
+            cash_flow_params,
+        )
+
+        overall_score: Optional[float] = None
+        if (
+            income_score is not None
+            and balance_score is not None
+            and working_capital_score is not None
+            and cash_flow_score is not None
+        ):
+            overall_score = (
+                float(overall_weights["income_statement"]) * float(income_score)
+                + float(overall_weights["balance_sheet"]) * float(balance_score)
+                + float(overall_weights["working_capital"]) * float(working_capital_score)
+                + float(overall_weights["cash_flow"]) * float(cash_flow_score)
+            )
+
+        filter_metrics = _compute_value_creation_filter_metrics(
+            conn,
+            cid,
+            yr_start,
+            yr_end,
+            growth_weight_map,
+            stddev_weight_map,
+        )
+
+        rows.append(
+            {
+                "Ticker": row["ticker"],
+                "Company Name": row["name"],
+                "Industry Bucket": buckets_map.get(cid, "(no bucket)"),
+                **filter_metrics,
+                "Income Statement Efficiency Score": income_score,
+                "Balance Sheet Strength Score": balance_score,
+                "Working Capital Efficiency Score": working_capital_score,
+                "Cash Flow Efficiency Score": cash_flow_score,
+                "Overall Score (0-400)": overall_score,
+            }
+        )
+
+    if not rows:
+        progress_bar.progress(100, text="No scores to display for selected input.")
+        st.info("No scores could be computed for the selected input.")
+        return
+
+    df = pd.DataFrame(rows)
+    df = df.sort_values(
+        "Overall Score (0-400)",
+        ascending=False,
+        na_position="last",
+    )
+    progress_bar.progress(100, text="Combined score computation complete.")
+    df = _apply_ttc_filters(df, "ttc_combined")
+    if df.empty:
+        st.info("No companies match the selected filters.")
+        return
+
+    if view_mode == "Dashboard View":
+        show_cols = [
+            "Ticker",
+            "Company Name",
+            "Industry Bucket",
+            "Overall Score (0-400)",
+        ]
+    else:
+        show_cols = [
+            "Ticker",
+            "Company Name",
+            "Industry Bucket",
+            "Income Statement Efficiency Score",
+            "Balance Sheet Strength Score",
+            "Working Capital Efficiency Score",
+            "Cash Flow Efficiency Score",
+            "Overall Score (0-400)",
+        ]
+
+    st.dataframe(
+        df[show_cols],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def render_through_the_cycle_assumptions_tab() -> None:
     conn = get_db()
     sections = _parse_assumptions_sections(conn)
@@ -1471,6 +3282,43 @@ def render_through_the_cycle_assumptions_tab() -> None:
             section_key = _slug(section)
             saved_key, work_key, work_df = _get_work_df(section, defaults)
             work_df = _ensure_ids(work_df, section_key)
+
+            if section == "Overall Score" and work_df.empty:
+                work_df = pd.DataFrame(
+                    [
+                        {
+                            "_id": 1,
+                            "Metric/Component": "Income Statement Efficiency Score",
+                            "Weight": 1.0,
+                            "Threshold": 0.0,
+                            "Units": "Score",
+                        },
+                        {
+                            "_id": 2,
+                            "Metric/Component": "Balance Sheet Strength Score",
+                            "Weight": 1.0,
+                            "Threshold": 0.0,
+                            "Units": "Score",
+                        },
+                        {
+                            "_id": 3,
+                            "Metric/Component": "Working Capital Efficiency Score",
+                            "Weight": 1.0,
+                            "Threshold": 0.0,
+                            "Units": "Score",
+                        },
+                        {
+                            "_id": 4,
+                            "Metric/Component": "Cash Flow Efficiency Score",
+                            "Weight": 1.0,
+                            "Threshold": 0.0,
+                            "Units": "Score",
+                        },
+                    ]
+                )
+                st.session_state[work_key] = work_df.copy()
+                next_id_key = f"ttc_next_id_{section_key}"
+                st.session_state[next_id_key] = 5
 
             if "Delete" not in work_df.columns:
                 work_df["Delete"] = False
@@ -1555,9 +3403,10 @@ def render_through_the_cycle_assumptions_tab() -> None:
                 if "Delete" in df_to_save.columns:
                     df_to_save = df_to_save[df_to_save["Delete"] != True]  # noqa: E712
                 weight_sum = float(df_to_save["Weight"].sum()) if not df_to_save.empty else 0.0
-                if abs(weight_sum - 1.0) > 1e-6:
+                expected_weight_sum = 4.0 if section == "Overall Score" else 1.0
+                if abs(weight_sum - expected_weight_sum) > 1e-6:
                     st.error(
-                        f"Total weight must equal 1.0. Current total: {weight_sum:.4f}"
+                        f"Total weight must equal {expected_weight_sum:.1f}. Current total: {weight_sum:.4f}"
                     )
                 else:
                     df_to_save = df_to_save.drop(columns=["Delete"], errors="ignore")
@@ -1573,3 +3422,171 @@ def render_through_the_cycle_assumptions_tab() -> None:
                         st.session_state[saved_key] = df_to_save
                         st.session_state[work_key] = df_to_save.copy()
                         st.success("Saved.")
+
+
+def render_through_the_cycle_formula_tab() -> None:
+    st.subheader("Formula Hierarchy Tree")
+    st.caption(
+        "This view mirrors the live computation used by the Through-the-Cycle score tabs. "
+        "Weights/thresholds come from Admin -> Assumptions."
+    )
+
+    st.markdown(
+        """
+        <style>
+          .ttc-tree-wrap {
+            display: grid;
+            gap: 0.75rem;
+            margin-top: 0.25rem;
+          }
+          .ttc-box {
+            border-radius: 10px;
+            padding: 0.75rem 0.9rem;
+            border: 1px solid rgba(15, 23, 42, 0.18);
+            background: #ffffff;
+          }
+          .ttc-root {
+            border-left: 8px solid #111827;
+            background: #f8fafc;
+          }
+          .ttc-inc {
+            border-left: 8px solid #1d4ed8;
+            background: #eff6ff;
+          }
+          .ttc-bal {
+            border-left: 8px solid #15803d;
+            background: #f0fdf4;
+          }
+          .ttc-wc {
+            border-left: 8px solid #b45309;
+            background: #fffbeb;
+          }
+          .ttc-cf {
+            border-left: 8px solid #0f766e;
+            background: #f0fdfa;
+          }
+          .ttc-common {
+            border-left: 8px solid #6b7280;
+            background: #f9fafb;
+          }
+          .ttc-box h4 {
+            margin: 0 0 0.35rem 0;
+            font-size: 1rem;
+          }
+          .ttc-box p {
+            margin: 0.15rem 0;
+            line-height: 1.35;
+          }
+          .ttc-arrow {
+            color: #475569;
+            font-weight: 600;
+            margin: 0.1rem 0 0.1rem 0.2rem;
+          }
+          .ttc-note {
+            margin-top: 0.3rem;
+            font-size: 0.88rem;
+            color: #334155;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        """
+        <div class="ttc-tree-wrap">
+          <div class="ttc-box ttc-root">
+            <h4>Combined Score (Overall Score, range 0-400)</h4>
+            <p>
+              Overall Score =
+              (W_income * Income Statement Score) +
+              (W_balance * Balance Sheet Score) +
+              (W_wc * Working Capital Score) +
+              (W_cf * Cash Flow Score)
+            </p>
+            <p class="ttc-note">
+              Overall weights are maintained in Assumptions -> Overall Score and are validated to sum to 4.0.
+            </p>
+          </div>
+
+          <div class="ttc-arrow">-> branch 1</div>
+          <div class="ttc-box ttc-inc">
+            <h4>Income Statement Efficiency Score (0-100)</h4>
+            <p>Score = 100 * CLAMP01(sum(weight_i * term_i))</p>
+            <p>Operating Margin term = CLAMP01(max(0, median(Operating Income / Revenue)) / Threshold)</p>
+            <p>Gross Margin term = CLAMP01(max(0, median((Revenue - COGS) / Revenue)) / Threshold)</p>
+            <p>SG&amp;A Ratio term = CLAMP01(1 - max(0, median(SG&amp;A / Revenue)) / Threshold)</p>
+            <p>Incremental Margin term = CLAMP01(max(0, median((OI_t - OI_t-1) / (Rev_t - Rev_t-1))) / Threshold)</p>
+            <p>Op Margin Volatility term = CLAMP01(1 - max(0, stdev(Operating Margin)) / Threshold)</p>
+          </div>
+
+          <div class="ttc-arrow">-> branch 2</div>
+          <div class="ttc-box ttc-bal">
+            <h4>Balance Sheet Strength Score (0-100)</h4>
+            <p>Score = 100 * CLAMP01(sum(weight_i * term_i))</p>
+            <p>Net Debt/EBITDA term = CLAMP01(1 - max(0, median((Total Debt - Cash) / EBITDA)) / Threshold)</p>
+            <p>Interest Coverage term = CLAMP01(max(0, median(Operating Income / Interest Expense)) / Threshold)</p>
+            <p>Quick Ratio term = CLAMP01(max(0, median((Cash + Accounts Receivable) / Current Liabilities)) / Threshold)</p>
+            <p>Current Ratio term = CLAMP01(max(0, median(Current Assets / Current Liabilities)) / Threshold)</p>
+            <p>Debt/Capitalization term = CLAMP01(1 - max(0, median(Total Debt / (Total Debt + Shareholders Equity))) / Threshold)</p>
+            <p>Debt Maturity Pressure term = CLAMP01(1 - max(0, median(Current Debt / Total Debt)) / Threshold)</p>
+            <p class="ttc-note">
+              Hard penalty rule: if EBITDA &lt;= 0 and Net Debt &gt; 0 in range, Net Debt/EBITDA term is forced to 0.
+              (Operating income &lt; 0 is flagged in UI as a warning note.)
+            </p>
+          </div>
+
+          <div class="ttc-arrow">-> branch 3</div>
+          <div class="ttc-box ttc-wc">
+            <h4>Working Capital Efficiency Score (0-100)</h4>
+            <p>Score = 100 * CLAMP01(sum(weight_i * term_i))</p>
+            <p>AR Days = 365 * (Average AR / Revenue)</p>
+            <p>DIO = 365 * (Average Inventory / COGS)</p>
+            <p>DPO = 365 * (Average AP / COGS)</p>
+            <p>CCC = AR Days + DIO - DPO</p>
+            <p>NWC = (Current Assets - Cash &amp; Equivalents) - (Current Liabilities - Current Debt)</p>
+            <p>NWC % Revenue = NWC / Revenue</p>
+            <p>Working Capital Turnover = Revenue / Average NWC</p>
+            <p>AR Days term = CLAMP01(1 - max(0, median(AR Days)) / Threshold)</p>
+            <p>DIO term = CLAMP01(1 - max(0, median(DIO)) / Threshold)</p>
+            <p>DPO term = CLAMP01(max(0, median(DPO)) / Threshold)</p>
+            <p>CCC term = CLAMP01(1 - max(0, median(CCC)) / Threshold)</p>
+            <p>NWC % Revenue term = CLAMP01(1 - max(0, median(NWC % Revenue)) / Threshold)</p>
+            <p>Working Capital Turnover term = CLAMP01(median(Turnover) / Threshold), except if median(Turnover) &lt;= 0 then term = 1</p>
+            <p>CCC Volatility term = CLAMP01(1 - max(0, stdev(CCC)) / Threshold)</p>
+          </div>
+
+          <div class="ttc-arrow">-> branch 4</div>
+          <div class="ttc-box ttc-cf">
+            <h4>Cash Flow Efficiency Score (0-100)</h4>
+            <p>Score = 100 * CLAMP01(sum(weight_i * term_i))</p>
+            <p>FCF = Operating Cash Flow + Capex</p>
+            <p>OCF Margin = OCF / Revenue</p>
+            <p>FCF Margin = FCF / Revenue</p>
+            <p>CFO/Net Income = OCF / Net Income</p>
+            <p>Capital Intensity = (-Capex) / Revenue</p>
+            <p>
+              Invested Capital = Net PPE + Net Working Capital + (Goodwill + Intangibles + Other LT Assets)
+              - (Deferred Revenue + Deferred Tax Liabilities + Other LT Liabilities)
+            </p>
+            <p>CROIC = FCF / Invested Capital</p>
+            <p>OCF Margin term = CLAMP01(max(0, median(OCF Margin)) / Threshold)</p>
+            <p>FCF Margin term = CLAMP01(max(0, median(FCF Margin)) / Threshold)</p>
+            <p>CFO/Net Income term = CLAMP01(max(0, median(CFO/Net Income)) / Threshold)</p>
+            <p>CROIC term = CLAMP01(max(0, median(CROIC)) / Threshold)</p>
+            <p>Capital Intensity term = CLAMP01(1 - max(0, median(Capital Intensity)) / Threshold)</p>
+            <p>FCF Margin Volatility term = CLAMP01(1 - max(0, stdev(FCF Margin)) / Threshold)</p>
+          </div>
+
+          <div class="ttc-box ttc-common">
+            <h4>Common Scoring Rules</h4>
+            <p>CLAMP01(x) = min(max(x, 0), 1)</p>
+            <p>ratio_term = CLAMP01(max(0, value) / threshold)</p>
+            <p>inverse_term = CLAMP01(1 - max(0, value) / threshold)</p>
+            <p>If threshold &lt;= 0, the corresponding term is treated as 0.</p>
+            <p>Each section score uses medians across the selected year range and sample standard deviation for volatility terms.</p>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )

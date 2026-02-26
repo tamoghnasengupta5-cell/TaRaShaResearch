@@ -21,6 +21,10 @@ from ttc_efficiency import (
     render_through_the_cycle_assumptions_tab,
     render_through_the_cycle_income_statement_score_tab,
     render_through_the_cycle_balance_sheet_score_tab,
+    render_through_the_cycle_cash_flow_score_tab,
+    render_through_the_cycle_working_capital_score_tab,
+    render_through_the_cycle_combined_score_tab,
+    render_through_the_cycle_formula_tab,
 )
 
 # --- Branding assets (kept local to the repo) ---
@@ -920,15 +924,32 @@ def _render_equity_research_body() -> None:
             render_admin_tab()
 
     with tab_ttc:
-        tab_assumptions, tab_income_stmt, tab_balance_sheet = st.tabs(
-            ["Assumptions", "Income Statement Efficiency Score", "Balance Sheet Strength Score"]
+        tab_income_stmt, tab_balance_sheet, tab_cash_flow, tab_working_capital, tab_combined, tab_admin = st.tabs(
+            [
+                "Income Statement Efficiency Score",
+                "Balance Sheet Strength Score",
+                "Cash Flow Efficiency Score",
+                "Working Capital Efficiency Score",
+                "Combined Score",
+                "Admin",
+            ]
         )
-        with tab_assumptions:
-            render_through_the_cycle_assumptions_tab()
         with tab_income_stmt:
             render_through_the_cycle_income_statement_score_tab()
         with tab_balance_sheet:
             render_through_the_cycle_balance_sheet_score_tab()
+        with tab_cash_flow:
+            render_through_the_cycle_cash_flow_score_tab()
+        with tab_working_capital:
+            render_through_the_cycle_working_capital_score_tab()
+        with tab_combined:
+            render_through_the_cycle_combined_score_tab()
+        with tab_admin:
+            tab_assumptions, tab_formula = st.tabs(["Assumptions", "Formula"])
+            with tab_assumptions:
+                render_through_the_cycle_assumptions_tab()
+            with tab_formula:
+                render_through_the_cycle_formula_tab()
 
 def _render_key_data_body() -> None:
     render_key_data_tab()
