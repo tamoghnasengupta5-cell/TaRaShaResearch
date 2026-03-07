@@ -1700,11 +1700,76 @@ def extract_latest_ttm_ebitda(file_bytes: bytes) -> Tuple[str, float]:
 
 def extract_annual_interest_expense_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Interest Expense / Income", "Interest Expense", "Interest expense / income"]
-    return extract_annual_series_by_rowlabel(file_bytes, "Interest Expense / Income", fallbacks=fallbacks)
+    min_interest_expense = 0.0001
+
+    # Preferred path: extract real values, then normalize sign to positive.
+    try:
+        series = extract_annual_series_by_rowlabel(
+            file_bytes,
+            "Interest Expense / Income",
+            fallbacks=fallbacks,
+        )
+    except Exception:
+        series = {}
+
+    normalized: Dict[int, float] = {}
+    for year, val in series.items():
+        try:
+            fv = float(val)
+            if pd.isna(fv):
+                continue
+            normalized[int(year)] = abs(fv)
+        except Exception:
+            continue
+    if normalized:
+        return normalized
+
+    # Fallback path: row missing OR row present but values missing.
+    # Populate all detectable fiscal years with a tiny non-zero default.
+    try:
+        df = _read_sheet(file_bytes, "Income-Annual")
+        fallback_series: Dict[int, float] = {}
+        for col in df.columns:
+            if col == "Date":
+                continue
+            try:
+                year = int(str(col)[:4])
+                fallback_series[year] = min_interest_expense
+            except Exception:
+                continue
+        if fallback_series:
+            return fallback_series
+    except Exception:
+        pass
+    return {}
 
 def extract_latest_ttm_interest_expense(file_bytes: bytes) -> Tuple[str, float]:
     fallbacks = ["Interest Expense / Income", "Interest Expense", "Interest expense / income"]
-    return extract_latest_ttm_by_rowlabel(file_bytes, "Interest Expense / Income", fallbacks=fallbacks)
+    min_interest_expense = 0.0001
+
+    # Determine the TTM as-of label first so fallback can still upsert into TTM table.
+    as_of = ""
+    try:
+        as_of = _extract_latest_ttm_column_label(file_bytes, "Income-TTM")
+    except Exception:
+        as_of = ""
+
+    # Preferred path: extract real value, then normalize sign to positive.
+    try:
+        raw_as_of, raw_val = extract_latest_ttm_by_rowlabel(
+            file_bytes,
+            "Interest Expense / Income",
+            fallbacks=fallbacks,
+        )
+        out_as_of = str(raw_as_of).strip() if raw_as_of is not None else as_of
+        fv = float(raw_val)
+        if not pd.isna(fv):
+            return out_as_of, abs(fv)
+    except Exception:
+        pass
+
+    # Fallback path: row missing OR row present but value missing.
+    return as_of, min_interest_expense
 
 def extract_annual_operating_income_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Operating Income", "Operating income", "EBIT"]
@@ -1758,6 +1823,238 @@ def extract_bs_latest_ttm_by_rowlabel(file_bytes: bytes, rowlabel: str, fallback
     # Fallback: last non-empty column if date parsing fails
     last = non_empty[-1]
     return last[0], last[1]
+
+
+def _latest_sheet_column_label(df: pd.DataFrame) -> str:
+    """Return the latest-looking non-Date column label from a sheet."""
+    labels = [str(col) for col in df.columns if col != "Date"]
+    if not labels:
+        return ""
+
+    dated = [(label, _parse_date_label(label)) for label in labels]
+    dated = [(label, parsed) for label, parsed in dated if parsed is not None]
+    if dated:
+        return max(dated, key=lambda item: item[1])[0]
+    return labels[-1]
+
+
+def _extract_short_term_investments_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0001,
+) -> Tuple[Dict[int, float], Tuple[str, float]]:
+    """Return annual + latest TTM Short-TermInvestments with defaults for missing rows/cells."""
+    fallbacks = ["Short-Term Investments", "Short Term Investments", "Short-TermInvestments"]
+    targets = ["Short-TermInvestments"] + fallbacks
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
+    try:
+        annual_row = _find_row(annual_df, targets)
+    except Exception:
+        annual_row = None
+
+    annual_series: Dict[int, float] = {}
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if annual_row is None:
+            annual_series[year] = default_value
+            continue
+        val = annual_row[col]
+        annual_series[year] = float(val) if pd.notna(val) else default_value
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    try:
+        ttm_row = _find_row(ttm_df, targets)
+    except Exception:
+        ttm_row = None
+
+    if ttm_row is None:
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+    non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+    for col in ttm_df.columns:
+        if col == "Date":
+            continue
+        val = ttm_row[col]
+        if pd.notna(val):
+            non_empty.append((str(col), float(val), _parse_date_label(col)))
+
+    if non_empty:
+        dated = [x for x in non_empty if x[2] is not None]
+        latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+        return dict(sorted(annual_series.items())), (latest[0], latest[1])
+
+    return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+
+def extract_net_ppe_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0001,
+) -> Tuple[Dict[int, float], Tuple[str, float], List[str]]:
+    """Return annual + latest TTM Net PPE with defaults and warning messages."""
+    fallbacks = [
+        "Property, Plant & Equipment",
+        "Property Plant & Equipment",
+        "Net PP&E",
+        "Net PPE",
+        "Net Property, Plant & Equipment",
+        "Net Property Plant & Equipment",
+    ]
+    targets = ["Property, Plant & Equipment"] + fallbacks
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
+    try:
+        annual_row = _find_row(annual_df, targets)
+    except Exception:
+        annual_row = None
+
+    annual_series: Dict[int, float] = {}
+    annual_missing_cols: List[str] = []
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if annual_row is None:
+            annual_series[year] = default_value
+            continue
+        val = annual_row[col]
+        if pd.notna(val):
+            annual_series[year] = float(val)
+        else:
+            annual_series[year] = default_value
+            annual_missing_cols.append(str(col))
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    try:
+        ttm_row = _find_row(ttm_df, targets)
+    except Exception:
+        ttm_row = None
+
+    ttm_all_values_missing = False
+    if ttm_row is None:
+        ttm_value = default_value
+    else:
+        non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+        for col in ttm_df.columns:
+            if col == "Date":
+                continue
+            val = ttm_row[col]
+            if pd.notna(val):
+                non_empty.append((str(col), float(val), _parse_date_label(col)))
+
+        if non_empty:
+            dated = [x for x in non_empty if x[2] is not None]
+            latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+            ttm_as_of, ttm_value = latest[0], latest[1]
+        else:
+            ttm_value = default_value
+            ttm_all_values_missing = True
+
+    warnings: List[str] = []
+    if annual_row is None:
+        warnings.append(
+            "WARNING: Net PPE row not found in Balance-Sheet-Annual; uploaded 0.0001 for all annual Net PPE values."
+        )
+    elif annual_missing_cols:
+        missing_years = ", ".join(annual_missing_cols)
+        warnings.append(
+            "WARNING: Net PPE row found in Balance-Sheet-Annual but values were blank for "
+            f"{missing_years}; uploaded 0.0001 for those annual Net PPE values."
+        )
+
+    if ttm_row is None:
+        warnings.append(
+            "WARNING: Net PPE row not found in Balance-Sheet-TTM; uploaded 0.0001 for TTM Net PPE."
+        )
+    elif ttm_all_values_missing:
+        warnings.append(
+            "WARNING: Net PPE row found in Balance-Sheet-TTM but all values were blank; uploaded 0.0001 for TTM Net PPE."
+        )
+
+    return dict(sorted(annual_series.items())), (ttm_as_of, float(ttm_value)), warnings
+
+
+def _extract_comprehensive_income_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0001,
+) -> Tuple[Dict[int, float], Tuple[str, float]]:
+    """Return annual + latest TTM Comprehensive Income with fallback/default rules."""
+    primary_targets = ["Comprehensive Income"]
+    fallback_targets = [
+        "Accumulated Other Comprehensive Income",
+        "Other Comprehensive Income",
+    ]
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
+    annual_source_row = None
+    try:
+        annual_source_row = _find_row(annual_df, primary_targets)
+    except Exception:
+        try:
+            annual_source_row = _find_row(annual_df, fallback_targets)
+        except Exception:
+            annual_source_row = None
+
+    annual_series: Dict[int, float] = {}
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if annual_source_row is None:
+            annual_series[year] = default_value
+            continue
+        val = annual_source_row[col]
+        annual_series[year] = float(val) if pd.notna(val) else default_value
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    ttm_source_row = None
+    try:
+        ttm_source_row = _find_row(ttm_df, primary_targets)
+    except Exception:
+        try:
+            ttm_source_row = _find_row(ttm_df, fallback_targets)
+        except Exception:
+            ttm_source_row = None
+
+    if ttm_source_row is None:
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+    non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+    for col in ttm_df.columns:
+        if col == "Date":
+            continue
+        val = ttm_source_row[col]
+        if pd.notna(val):
+            non_empty.append((str(col), float(val), _parse_date_label(col)))
+
+    if non_empty:
+        dated = [x for x in non_empty if x[2] is not None]
+        latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+        return dict(sorted(annual_series.items())), (latest[0], latest[1])
+
+    return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
 
 
 
@@ -1815,7 +2112,36 @@ def extract_annual_research_and_development_expense_series(file_bytes: bytes) ->
         "R&D",
         "R & D",
     ]
-    return extract_annual_series_by_rowlabel(file_bytes, "Research & Development", fallbacks=fallbacks)
+    min_rd = 0.0001
+    try:
+        df = _read_sheet(file_bytes, "Income-Annual")
+    except Exception:
+        return {}
+
+    targets = ["Research & Development"] + fallbacks
+    try:
+        row = _find_row(df, targets)
+    except Exception:
+        row = None
+
+    out: Dict[int, float] = {}
+    for col in df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if row is None:
+            out[year] = min_rd
+            continue
+        try:
+            val = row[col]
+            out[year] = min_rd if pd.isna(val) else float(val)
+        except Exception:
+            out[year] = min_rd
+
+    return dict(sorted(out.items(), key=lambda kv: kv[0]))
 
 def extract_latest_ttm_research_and_development_expense(file_bytes: bytes) -> Tuple[str, float]:
     fallbacks = [
@@ -1826,7 +2152,25 @@ def extract_latest_ttm_research_and_development_expense(file_bytes: bytes) -> Tu
         "R&D",
         "R & D",
     ]
-    return extract_latest_ttm_by_rowlabel(file_bytes, "Research & Development", fallbacks=fallbacks)
+    min_rd = 0.0001
+    as_of = ""
+    try:
+        as_of = _extract_latest_ttm_column_label(file_bytes, "Income-TTM")
+    except Exception:
+        as_of = ""
+
+    try:
+        raw_as_of, raw_val = extract_latest_ttm_by_rowlabel(
+            file_bytes,
+            "Research & Development",
+            fallbacks=fallbacks,
+        )
+        out_as_of = str(raw_as_of).strip() if raw_as_of is not None else as_of
+        if pd.isna(raw_val):
+            return out_as_of, min_rd
+        return out_as_of, float(raw_val)
+    except Exception:
+        return as_of, min_rd
 
 def extract_annual_capital_expenditures_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = [
@@ -1876,32 +2220,74 @@ def extract_latest_ttm_depreciation_amortization(file_bytes: bytes) -> Tuple[str
 
 
 def extract_annual_net_debt_issued_paid_series(file_bytes: bytes) -> Dict[int, float]:
+    default_value = 0.0
     fallbacks = [
         "Debt Issued / Paid",
         "Debt issued / paid",
         "Debt Issued/ Paid",
         "Debt Issued/Paid",
+        "Net Long-Term Debt Issued (Repaid)",
     ]
-    # Optional field: many non-U.S. templates don't include a dedicated debt-issuance line.
-    # If the row is missing, return an empty series (callers may apply a fallback).
+    targets = ["Debt Issued / Paid"] + fallbacks
+
+    df = _read_sheet(file_bytes, "Cash-Flow-Annual")
     try:
-        return extract_cf_annual_series_by_rowlabel(file_bytes, "Debt Issued / Paid", fallbacks=fallbacks)
+        row = _find_row(df, targets)
     except Exception:
-        return {}
+        row = None
+
+    series: Dict[int, float] = {}
+    for col in df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if row is None:
+            series[year] = default_value
+            continue
+        val = row[col]
+        series[year] = default_value if pd.isna(val) else float(val)
+    return dict(sorted(series.items(), key=lambda kv: kv[0]))
 
 
 def extract_latest_ttm_net_debt_issued_paid(file_bytes: bytes) -> Tuple[str, float]:
+    default_value = 0.0
     fallbacks = [
         "Debt Issued / Paid",
         "Debt issued / paid",
         "Debt Issued/ Paid",
         "Debt Issued/Paid",
+        "Net Long-Term Debt Issued (Repaid)",
     ]
-    # Optional field: return a safe default when missing.
+    targets = ["Debt Issued / Paid"] + fallbacks
+
+    df = _read_sheet(file_bytes, "Cash-Flow-TTM")
+    as_of = _latest_sheet_column_label(_normalize_first_column_to_date(df))
+
     try:
-        return extract_cf_latest_ttm_by_rowlabel(file_bytes, "Debt Issued / Paid", fallbacks=fallbacks)
+        row = _find_row(df, targets)
     except Exception:
-        return ("", 0.0)
+        row = None
+
+    if not as_of or row is None:
+        return as_of, default_value
+
+    non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+    for col in df.columns:
+        if col == "Date":
+            continue
+        val = row[col]
+        if pd.notna(val):
+            non_empty.append((str(col), float(val), _parse_date_label(col)))
+
+    if non_empty:
+        dated = [x for x in non_empty if x[2] is not None]
+        latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+        return latest[0], latest[1]
+
+    return as_of, default_value
 
 
 def extract_annual_operating_cash_flow_series(file_bytes: bytes) -> Dict[int, float]:
@@ -1921,7 +2307,14 @@ def extract_latest_ttm_operating_cash_flow(file_bytes: bytes) -> Tuple[str, floa
 
 
 def extract_annual_net_ppe_series(file_bytes: bytes) -> Dict[int, float]:
-    fallbacks = ["Property, Plant & Equipment", "Property Plant & Equipment", "Net PP&E", "Net PPE"]
+    fallbacks = [
+        "Property, Plant & Equipment",
+        "Property Plant & Equipment",
+        "Net PP&E",
+        "Net PPE",
+        "Net Property, Plant & Equipment",
+        "Net Property Plant & Equipment",
+    ]
     try:
         return extract_bs_annual_series_by_rowlabel(file_bytes, "Property, Plant & Equipment", fallbacks=fallbacks)
     except Exception:
@@ -1929,27 +2322,129 @@ def extract_annual_net_ppe_series(file_bytes: bytes) -> Dict[int, float]:
 
 
 def extract_latest_ttm_net_ppe(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks = ["Property, Plant & Equipment", "Property Plant & Equipment", "Net PP&E", "Net PPE"]
+    fallbacks = [
+        "Property, Plant & Equipment",
+        "Property Plant & Equipment",
+        "Net PP&E",
+        "Net PPE",
+        "Net Property, Plant & Equipment",
+        "Net Property Plant & Equipment",
+    ]
     try:
         return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Property, Plant & Equipment", fallbacks=fallbacks)
     except Exception:
         return ("", 0.0)
 
 
-def extract_annual_goodwill_and_intangibles_series(file_bytes: bytes) -> Dict[int, float]:
-    fallbacks = ["Goodwill and Intangibles", "Goodwill & Intangibles", "Goodwill and Intangible Assets"]
+def _extract_goodwill_and_intangibles_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0001,
+) -> Tuple[Dict[int, float], Tuple[str, float]]:
+    """Return annual + latest TTM Goodwill and Intangibles with separate-row precedence."""
+    combined_targets = [
+        "Goodwill and Intangibles",
+        "Goodwill & Intangibles",
+        "Goodwill and Intangible Assets",
+    ]
+    goodwill_targets = ["Goodwill"]
+    intangible_targets = ["Other Intangible Assets"]
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
     try:
-        return extract_bs_annual_series_by_rowlabel(file_bytes, "Goodwill and Intangibles", fallbacks=fallbacks)
+        annual_goodwill_row = _find_row(annual_df, goodwill_targets)
     except Exception:
-        return {}
+        annual_goodwill_row = None
+    try:
+        annual_intangible_row = _find_row(annual_df, intangible_targets)
+    except Exception:
+        annual_intangible_row = None
+    try:
+        annual_combined_row = _find_row(annual_df, combined_targets)
+    except Exception:
+        annual_combined_row = None
+
+    use_annual_separate = annual_goodwill_row is not None and annual_intangible_row is not None
+    annual_series: Dict[int, float] = {}
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if use_annual_separate:
+            goodwill_val = annual_goodwill_row[col]
+            intangible_val = annual_intangible_row[col]
+            goodwill_num = default_value if pd.isna(goodwill_val) else float(goodwill_val)
+            intangible_num = default_value if pd.isna(intangible_val) else float(intangible_val)
+            annual_series[year] = goodwill_num + intangible_num
+        elif annual_combined_row is not None:
+            combined_val = annual_combined_row[col]
+            annual_series[year] = default_value if pd.isna(combined_val) else float(combined_val)
+        else:
+            annual_series[year] = default_value
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    try:
+        ttm_goodwill_row = _find_row(ttm_df, goodwill_targets)
+    except Exception:
+        ttm_goodwill_row = None
+    try:
+        ttm_intangible_row = _find_row(ttm_df, intangible_targets)
+    except Exception:
+        ttm_intangible_row = None
+    try:
+        ttm_combined_row = _find_row(ttm_df, combined_targets)
+    except Exception:
+        ttm_combined_row = None
+
+    use_ttm_separate = ttm_goodwill_row is not None and ttm_intangible_row is not None
+    if use_ttm_separate:
+        non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+        for col in ttm_df.columns:
+            if col == "Date":
+                continue
+            goodwill_val = ttm_goodwill_row[col]
+            intangible_val = ttm_intangible_row[col]
+            if pd.notna(goodwill_val) or pd.notna(intangible_val):
+                goodwill_num = default_value if pd.isna(goodwill_val) else float(goodwill_val)
+                intangible_num = default_value if pd.isna(intangible_val) else float(intangible_val)
+                non_empty.append((str(col), goodwill_num + intangible_num, _parse_date_label(col)))
+        if non_empty:
+            dated = [x for x in non_empty if x[2] is not None]
+            latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+            return dict(sorted(annual_series.items())), (latest[0], latest[1])
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value + default_value)
+
+    if ttm_combined_row is not None:
+        non_empty = []
+        for col in ttm_df.columns:
+            if col == "Date":
+                continue
+            val = ttm_combined_row[col]
+            if pd.notna(val):
+                non_empty.append((str(col), float(val), _parse_date_label(col)))
+        if non_empty:
+            dated = [x for x in non_empty if x[2] is not None]
+            latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+            return dict(sorted(annual_series.items())), (latest[0], latest[1])
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+    return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+
+def extract_annual_goodwill_and_intangibles_series(file_bytes: bytes) -> Dict[int, float]:
+    annual_series, _ = _extract_goodwill_and_intangibles_defaults(file_bytes)
+    return annual_series
 
 
 def extract_latest_ttm_goodwill_and_intangibles(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks = ["Goodwill and Intangibles", "Goodwill & Intangibles", "Goodwill and Intangible Assets"]
-    try:
-        return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Goodwill and Intangibles", fallbacks=fallbacks)
-    except Exception:
-        return ("", 0.0)
+    _, latest_ttm = _extract_goodwill_and_intangibles_defaults(file_bytes)
+    return latest_ttm
 
 
 def extract_annual_other_long_term_assets_series(file_bytes: bytes) -> Dict[int, float]:
@@ -1968,20 +2463,76 @@ def extract_latest_ttm_other_long_term_assets(file_bytes: bytes) -> Tuple[str, f
         return ("", 0.0)
 
 
-def extract_annual_deferred_revenue_series(file_bytes: bytes) -> Dict[int, float]:
-    fallbacks = ["Deferred Revenue", "Deferred revenue"]
+def _extract_deferred_revenue_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0001,
+) -> Tuple[Dict[int, float], Tuple[str, float]]:
+    """Return annual + latest TTM Deferred Revenue with defaults for missing rows/cells."""
+    fallbacks = [
+        "Deferred Revenue",
+        "Deferred revenue",
+        "Unearned Revenue",
+        "Unearned revenue",
+    ]
+    targets = ["Deferred Revenue"] + fallbacks
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
     try:
-        return extract_bs_annual_series_by_rowlabel(file_bytes, "Deferred Revenue", fallbacks=fallbacks)
+        annual_row = _find_row(annual_df, targets)
     except Exception:
-        return {}
+        annual_row = None
+
+    annual_series: Dict[int, float] = {}
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if annual_row is None:
+            annual_series[year] = default_value
+            continue
+        val = annual_row[col]
+        annual_series[year] = default_value if pd.isna(val) else float(val)
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    try:
+        ttm_row = _find_row(ttm_df, targets)
+    except Exception:
+        ttm_row = None
+
+    if ttm_row is None:
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+    non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+    for col in ttm_df.columns:
+        if col == "Date":
+            continue
+        val = ttm_row[col]
+        if pd.notna(val):
+            non_empty.append((str(col), float(val), _parse_date_label(col)))
+
+    if non_empty:
+        dated = [x for x in non_empty if x[2] is not None]
+        latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+        return dict(sorted(annual_series.items())), (latest[0], latest[1])
+
+    return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+
+def extract_annual_deferred_revenue_series(file_bytes: bytes) -> Dict[int, float]:
+    annual_series, _ = _extract_deferred_revenue_defaults(file_bytes)
+    return annual_series
 
 
 def extract_latest_ttm_deferred_revenue(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks = ["Deferred Revenue", "Deferred revenue"]
-    try:
-        return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Deferred Revenue", fallbacks=fallbacks)
-    except Exception:
-        return ("", 0.0)
+    _, latest_ttm = _extract_deferred_revenue_defaults(file_bytes)
+    return latest_ttm
 
 
 def extract_annual_deferred_tax_liabilities_series(file_bytes: bytes) -> Dict[int, float]:
@@ -2049,22 +2600,144 @@ def extract_latest_ttm_total_long_term_liabilities(file_bytes: bytes) -> Tuple[s
     fallbacks = ["Total Long-Term Liabilities", "Total Long Term Liabilities", "Total long-term liabilities"]
     return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Total Long-Term Liabilities", fallbacks=fallbacks)
 
-def extract_annual_total_debt_series(file_bytes: bytes) -> Dict[int, float]:
+def _extract_total_debt_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0001,
+) -> Tuple[Dict[int, float], Tuple[str, float]]:
+    """Return annual + latest TTM Total Debt with defaults for missing rows/cells."""
     fallbacks = ["Total Debt", "Total debt"]
-    return extract_bs_annual_series_by_rowlabel(file_bytes, "Total Debt", fallbacks=fallbacks)
+    targets = ["Total Debt"] + fallbacks
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
+    try:
+        annual_row = _find_row(annual_df, targets)
+    except Exception:
+        annual_row = None
+
+    annual_series: Dict[int, float] = {}
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if annual_row is None:
+            annual_series[year] = default_value
+            continue
+        val = annual_row[col]
+        annual_series[year] = float(val) if pd.notna(val) else default_value
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    try:
+        ttm_row = _find_row(ttm_df, targets)
+    except Exception:
+        ttm_row = None
+
+    if ttm_row is None:
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+    non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+    for col in ttm_df.columns:
+        if col == "Date":
+            continue
+        val = ttm_row[col]
+        if pd.notna(val):
+            non_empty.append((str(col), float(val), _parse_date_label(col)))
+
+    if non_empty:
+        dated = [x for x in non_empty if x[2] is not None]
+        latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+        return dict(sorted(annual_series.items())), (latest[0], latest[1])
+
+    return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+
+def extract_annual_total_debt_series(file_bytes: bytes) -> Dict[int, float]:
+    annual_series, _ = _extract_total_debt_defaults(file_bytes)
+    return annual_series
+
 
 def extract_latest_ttm_total_debt(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks = ["Total Debt", "Total debt"]
-    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Total Debt", fallbacks=fallbacks)
+    _, latest_ttm = _extract_total_debt_defaults(file_bytes)
+    return latest_ttm
+
+
+def _extract_current_debt_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0001,
+) -> Tuple[Dict[int, float], Tuple[str, float]]:
+    """Return annual + latest TTM Current Debt as short-term debt plus current LTD portion."""
+
+    short_term_targets = ["Short-Term Debt", "Short-term debt", "Short Term Debt"]
+    current_portion_targets = [
+        "Current Portion of Long-Term Debt",
+        "Current Portion of Long Term Debt",
+        "Current portion of long-term debt",
+        "Current portion of long term debt",
+    ]
+
+    def _find_optional_row(df: pd.DataFrame, targets: List[str]) -> Optional[pd.Series]:
+        try:
+            return _find_row(df, targets)
+        except Exception:
+            return None
+
+    def _component_value(row: Optional[pd.Series], col: object) -> float:
+        if row is None:
+            return default_value
+        try:
+            val = row[col]
+        except Exception:
+            return default_value
+        return float(val) if pd.notna(val) else default_value
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
+    annual_short_term_row = _find_optional_row(annual_df, short_term_targets)
+    annual_current_portion_row = _find_optional_row(annual_df, current_portion_targets)
+
+    annual_series: Dict[int, float] = {}
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        annual_series[year] = _component_value(annual_short_term_row, col) + _component_value(
+            annual_current_portion_row,
+            col,
+        )
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    ttm_short_term_row = _find_optional_row(ttm_df, short_term_targets)
+    ttm_current_portion_row = _find_optional_row(ttm_df, current_portion_targets)
+
+    if not ttm_as_of:
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value + default_value)
+
+    ttm_value = _component_value(ttm_short_term_row, ttm_as_of) + _component_value(
+        ttm_current_portion_row,
+        ttm_as_of,
+    )
+    return dict(sorted(annual_series.items())), (ttm_as_of, ttm_value)
 
 
 def extract_annual_current_debt_series(file_bytes: bytes) -> Dict[int, float]:
-    fallbacks = ["Current Debt", "Current debt", "Short-Term Debt", "Short-term debt", "Short Term Debt"]
-    return extract_bs_annual_series_by_rowlabel(file_bytes, "Current Debt", fallbacks=fallbacks)
+    annual_series, _ = _extract_current_debt_defaults(file_bytes)
+    return annual_series
 
 def extract_latest_ttm_current_debt(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks = ["Current Debt", "Current debt", "Short-Term Debt", "Short-term debt", "Short Term Debt"]
-    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Current Debt", fallbacks=fallbacks)
+    _, latest_ttm = _extract_current_debt_defaults(file_bytes)
+    return latest_ttm
 
 def extract_annual_cash_and_cash_equivalents_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Cash & Cash Equivalents", "Cash and Cash Equivalents", "Cash & cash equivalents"]
@@ -2074,21 +2747,77 @@ def extract_latest_ttm_cash_and_cash_equivalents(file_bytes: bytes) -> Tuple[str
     fallbacks = ["Cash & Cash Equivalents", "Cash and Cash Equivalents", "Cash & cash equivalents"]
     return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Cash & Cash Equivalents", fallbacks=fallbacks)
 
-def extract_annual_long_term_investments_series(file_bytes: bytes) -> Dict[int, float]:
+def _extract_long_term_investments_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0001,
+) -> Tuple[Dict[int, float], Tuple[str, float]]:
+    """Return annual + latest TTM Long-Term Investments with defaults for missing rows/cells."""
     fallbacks = ["Long-Term Investments", "Long Term Investments", "Long-term investments"]
-    return extract_bs_annual_series_by_rowlabel(file_bytes, "Long-Term Investments", fallbacks=fallbacks)
+    targets = ["Long-Term Investments"] + fallbacks
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
+    try:
+        annual_row = _find_row(annual_df, targets)
+    except Exception:
+        annual_row = None
+
+    annual_series: Dict[int, float] = {}
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if annual_row is None:
+            annual_series[year] = default_value
+            continue
+        val = annual_row[col]
+        annual_series[year] = float(val) if pd.notna(val) else default_value
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    try:
+        ttm_row = _find_row(ttm_df, targets)
+    except Exception:
+        ttm_row = None
+
+    if ttm_row is None:
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+    non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+    for col in ttm_df.columns:
+        if col == "Date":
+            continue
+        val = ttm_row[col]
+        if pd.notna(val):
+            non_empty.append((str(col), float(val), _parse_date_label(col)))
+
+    if non_empty:
+        dated = [x for x in non_empty if x[2] is not None]
+        latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+        return dict(sorted(annual_series.items())), (latest[0], latest[1])
+
+    return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+def extract_annual_long_term_investments_series(file_bytes: bytes) -> Dict[int, float]:
+    annual_series, _ = _extract_long_term_investments_defaults(file_bytes)
+    return annual_series
 
 def extract_latest_ttm_long_term_investments(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks = ["Long-Term Investments", "Long Term Investments", "Long-term investments"]
-    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Long-Term Investments", fallbacks=fallbacks)
+    _, latest_ttm = _extract_long_term_investments_defaults(file_bytes)
+    return latest_ttm
 
 def extract_annual_short_term_investments_series(file_bytes: bytes) -> Dict[int, float]:
-    fallbacks = ["Short-Term Investments", "Short Term Investments", "Short-TermInvestments"]
-    return extract_bs_annual_series_by_rowlabel(file_bytes, "Short-TermInvestments", fallbacks=fallbacks)
+    annual_series, _ = _extract_short_term_investments_defaults(file_bytes)
+    return annual_series
 
 def extract_latest_ttm_short_term_investments(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks = ["Short-Term Investments", "Short Term Investments", "Short-TermInvestments"]
-    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Short-TermInvestments", fallbacks=fallbacks)
+    _, latest_ttm = _extract_short_term_investments_defaults(file_bytes)
+    return latest_ttm
 
 def extract_annual_accounts_receivable_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Receivables", "Accounts Receivable", "Accounts Receivable, Net"]
@@ -2098,13 +2827,71 @@ def extract_latest_ttm_accounts_receivable(file_bytes: bytes) -> Tuple[str, floa
     fallbacks = ["Receivables", "Accounts Receivable", "Accounts Receivable, Net"]
     return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Receivables", fallbacks=fallbacks)
 
-def extract_annual_inventory_series(file_bytes: bytes) -> Dict[int, float]:
+def _extract_inventory_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0001,
+) -> Tuple[Dict[int, float], Tuple[str, float]]:
+    """Return annual + latest TTM Inventory with defaults for missing rows/cells."""
     fallbacks = ["Inventory", "Inventories"]
-    return extract_bs_annual_series_by_rowlabel(file_bytes, "Inventory", fallbacks=fallbacks)
+    targets = ["Inventory"] + fallbacks
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
+    try:
+        annual_row = _find_row(annual_df, targets)
+    except Exception:
+        annual_row = None
+
+    annual_series: Dict[int, float] = {}
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if annual_row is None:
+            annual_series[year] = default_value
+            continue
+        val = annual_row[col]
+        annual_series[year] = float(val) if pd.notna(val) else default_value
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    try:
+        ttm_row = _find_row(ttm_df, targets)
+    except Exception:
+        ttm_row = None
+
+    if ttm_row is None:
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+    non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+    for col in ttm_df.columns:
+        if col == "Date":
+            continue
+        val = ttm_row[col]
+        if pd.notna(val):
+            non_empty.append((str(col), float(val), _parse_date_label(col)))
+
+    if non_empty:
+        dated = [x for x in non_empty if x[2] is not None]
+        latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+        return dict(sorted(annual_series.items())), (latest[0], latest[1])
+
+    return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+
+def extract_annual_inventory_series(file_bytes: bytes) -> Dict[int, float]:
+    annual_series, _ = _extract_inventory_defaults(file_bytes)
+    return annual_series
+
 
 def extract_latest_ttm_inventory(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks = ["Inventory", "Inventories"]
-    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Inventory", fallbacks=fallbacks)
+    _, latest_ttm = _extract_inventory_defaults(file_bytes)
+    return latest_ttm
 
 def extract_annual_accounts_payable_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Accounts Payable", "Account Payables", "Accounts payable"]
@@ -2132,12 +2919,12 @@ def extract_latest_ttm_retained_earnings(file_bytes: bytes) -> Tuple[str, float]
     return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Retained Earnings", fallbacks=fallbacks)
 
 def extract_annual_comprehensive_income_series(file_bytes: bytes) -> Dict[int, float]:
-    fallbacks: List[str] = []
-    return extract_bs_annual_series_by_rowlabel(file_bytes, "Comprehensive Income", fallbacks=fallbacks)
+    annual_series, _ = _extract_comprehensive_income_defaults(file_bytes)
+    return annual_series
 
 def extract_latest_ttm_comprehensive_income(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks: List[str] = []
-    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Comprehensive Income", fallbacks=fallbacks)
+    _, latest_ttm = _extract_comprehensive_income_defaults(file_bytes)
+    return latest_ttm
 
 # ---------------------------
 # Ingest & compute
