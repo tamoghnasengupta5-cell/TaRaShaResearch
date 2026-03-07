@@ -76,7 +76,7 @@ def _normalize_manifest_df(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _bucket_has_betas(conn, bucket_name: str) -> bool:
+def _bucket_has_unlevered_beta(conn, bucket_name: str) -> bool:
     if not bucket_name:
         return False
     sql = """
@@ -84,12 +84,33 @@ def _bucket_has_betas(conn, bucket_name: str) -> bool:
         FROM industry_betas
         WHERE user_industry_bucket = ?
           AND unlevered_beta IS NOT NULL
-          AND cash_adjusted_beta IS NOT NULL
     """
     df = read_df(sql, conn, params=(bucket_name,))
     if df.empty:
         return False
     return int(df.iloc[0, 0]) > 0
+
+
+def _compute_bucket_dependent_metrics(conn, company_id: int) -> None:
+    try:
+        compute_and_store_levered_beta(conn, company_id)
+    except Exception:
+        pass
+
+    try:
+        compute_and_store_cost_of_equity(conn, company_id)
+    except Exception:
+        pass
+
+    try:
+        compute_and_store_wacc(conn, company_id)
+    except Exception:
+        pass
+
+    try:
+        compute_and_store_roic_wacc_spread(conn, company_id)
+    except Exception:
+        pass
 
 
 def _render_bulk_status(placeholder, company_label: str, status: str, percent: str, color: str) -> None:
@@ -111,6 +132,8 @@ def ingest_financials_bytes(
     conn,
     country: Optional[str] = None,
 ) -> Dict[str, object]:
+    ingest_warnings: list[str] = []
+
     # Extract Revenue (annual + TTM)
     annual_rev = extract_annual_revenue_series(bytes_data)
     as_of_rev, ttm_rev = extract_latest_ttm_revenue(bytes_data)
@@ -298,8 +321,8 @@ def ingest_financials_bytes(
         pass
 
     # Extract Net PP&E (annual + latest TTM from Balance-Sheet-TTM)
-    annual_net_ppe = extract_annual_net_ppe_series(bytes_data)
-    as_of_net_ppe, ttm_net_ppe = extract_latest_ttm_net_ppe(bytes_data)
+    annual_net_ppe, (as_of_net_ppe, ttm_net_ppe), net_ppe_warnings = extract_net_ppe_defaults(bytes_data)
+    ingest_warnings.extend(net_ppe_warnings)
     try:
         ttm_nppe_year = int(str(as_of_net_ppe)[:4])
         prev_year = ttm_nppe_year - 1
@@ -829,30 +852,6 @@ def ingest_financials_bytes(
     if annual_debt_equity:
         upsert_annual_debt_equity(conn, cid, annual_debt_equity)
 
-    # Levered Beta (Derived)
-    try:
-        compute_and_store_levered_beta(conn, cid)
-    except Exception:
-        pass
-
-    # Derived: Cost of Equity
-    try:
-        compute_and_store_cost_of_equity(conn, cid)
-    except Exception:
-        pass
-
-    # Derived: WACC
-    try:
-        compute_and_store_wacc(conn, cid)
-    except Exception:
-        pass
-
-    # Derived: Spread% = ROIC% - WACC%
-    try:
-        compute_and_store_roic_wacc_spread(conn, cid)
-    except Exception:
-        pass
-
     upsert_annual_current_debt(conn, cid, annual_current_debt)
     upsert_ttm_current_debt(conn, cid, as_of_current_debt, ttm_current_debt)
 
@@ -889,6 +888,7 @@ def ingest_financials_bytes(
 
     return {
         "company_id": cid,
+        "warnings": ingest_warnings,
         "annual_rev": annual_rev,
         "as_of_rev": as_of_rev,
         "ttm_rev": ttm_rev,
@@ -1116,8 +1116,7 @@ def render_data_upload_tab():
                         pass
 
                     # Extract Net PP&E (annual + latest TTM from Balance-Sheet-TTM)
-                    annual_net_ppe = extract_annual_net_ppe_series(bytes_data)
-                    as_of_net_ppe, ttm_net_ppe = extract_latest_ttm_net_ppe(bytes_data)
+                    annual_net_ppe, (as_of_net_ppe, ttm_net_ppe), net_ppe_warnings = extract_net_ppe_defaults(bytes_data)
                     try:
                         ttm_nppe_year = int(str(as_of_net_ppe)[:4])
                         prev_year = ttm_nppe_year - 1
@@ -1743,6 +1742,8 @@ def render_data_upload_tab():
                         f"Annual Net Income years: {len(annual_ni)}; TTM Net Income as of {as_of_ni}: {ttm_ni:,.2f}. "
                         f"NOPAT years (derived from EBIT and Effective Tax Rate): {len(annual_nopat)}"
                     )
+                    for warning in net_ppe_warnings:
+                        st.warning(warning)
                 except Exception as e:
                     st.error(f"Upload failed: {e}")
 
@@ -1820,8 +1821,11 @@ def render_data_upload_tab():
                                         raise ValueError(
                                             "Country is not supported (allowed: USA, India, China, Japan, UK, UAE)."
                                         )
-                                    if not _bucket_has_betas(conn, manifest_row["industry_bucket"]):
-                                        raise ValueError("Industry bucket is missing stored betas.")
+                                    if not _bucket_has_unlevered_beta(conn, manifest_row["industry_bucket"]):
+                                        raise ValueError(
+                                            "Upload blocked: Industry bucket "
+                                            f"'{manifest_row['industry_bucket']}' does not have an unlevered beta defined."
+                                        )
 
                                     bytes_data = file_path.read_bytes()
                                     result = ingest_financials_bytes(
@@ -1836,11 +1840,13 @@ def render_data_upload_tab():
                                     if bucket_id is None:
                                         raise ValueError("Failed to create or find industry bucket.")
                                     add_company_group_members(conn, bucket_id, [result["company_id"]])
+                                    _compute_bucket_dependent_metrics(conn, result["company_id"])
 
                                     progress.progress(100)
                                     _render_bulk_status(status_placeholder, company_label, "Success", "100%", "#1f7a1f")
+                                    warning_msg = " | ".join(result.get("warnings", []))
                                     log_lines.append(
-                                        f"{ticker}\t{company_label}\tSUCCESS\t100\t{file_path.name}"
+                                        f"{ticker}\t{company_label}\tSUCCESS\t100\t{file_path.name}\t{warning_msg}"
                                     )
                                 except Exception as e:
                                     progress.empty()
