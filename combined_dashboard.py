@@ -194,39 +194,85 @@ def render_combined_dashboard_tab() -> None:
         # -----------------------------
         # Bucket / company selection
         # -----------------------------
-        groups_df = read_df(
-            "SELECT id, name FROM company_groups ORDER BY name",
-            conn,
-        )
-        if groups_df.empty:
-            st.info("No buckets defined yet. Define buckets in the P&L or Balance Sheet Metrics sections.")
-            return
-
-        group_name_to_id = {
-            str(row["name"]): int(row["id"]) for _, row in groups_df.iterrows()
-        }
-        bucket_names_selected = st.multiselect(
-            "Select one or more buckets for Overall Score computation",
-            options=list(group_name_to_id.keys()),
-            key="combined_score_bucket_select",
+        selection_mode = st.radio(
+            "Analyze by",
+            ["Company", "Industry Bucket"],
+            horizontal=True,
+            key="combined_score_mode",
         )
 
         score_company_ids: List[int] = []
-        if bucket_names_selected:
-            group_ids = [group_name_to_id[name] for name in bucket_names_selected if name in group_name_to_id]
-            if group_ids:
-                placeholders = ",".join(["?"] * len(group_ids))
-                bucket_members_df = read_df(
-                    f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
-                    conn,
-                    params=group_ids,
-                )
-                if not bucket_members_df.empty:
-                    score_company_ids = [int(x) for x in bucket_members_df["company_id"].tolist()]
+
+        if selection_mode == "Company":
+            company_options = [
+                f"{row['name']} ({row['ticker']}) [id={row['id']}]"
+                for _, row in companies_df.iterrows()
+            ]
+            selected_companies = st.multiselect(
+                "Select one or more companies for Overall Score computation",
+                options=company_options,
+                key="combined_score_company_select",
+            )
+            for label in selected_companies:
+                m = re.search(r"id=(\d+)\]$", label)
+                if m:
+                    score_company_ids.append(int(m.group(1)))
+        else:
+            groups_df = read_df(
+                "SELECT id, name FROM company_groups ORDER BY name",
+                conn,
+            )
+            if groups_df.empty:
+                st.info("No buckets defined yet. Define buckets in the P&L or Balance Sheet Metrics sections.")
+                return
+
+            group_name_to_id = {
+                str(row["name"]): int(row["id"]) for _, row in groups_df.iterrows()
+            }
+            bucket_names_selected = st.multiselect(
+                "Select one or more buckets for Overall Score computation",
+                options=list(group_name_to_id.keys()),
+                key="combined_score_bucket_select",
+            )
+
+            if bucket_names_selected:
+                group_ids = [group_name_to_id[name] for name in bucket_names_selected if name in group_name_to_id]
+                if group_ids:
+                    placeholders = ",".join(["?"] * len(group_ids))
+                    bucket_members_df = read_df(
+                        f"SELECT DISTINCT company_id FROM company_group_members WHERE group_id IN ({placeholders})",
+                        conn,
+                        params=group_ids,
+                    )
+                    if not bucket_members_df.empty:
+                        score_company_ids = [int(x) for x in bucket_members_df["company_id"].tolist()]
 
         if not score_company_ids:
-            st.info("Select at least one bucket to compute Overall Scores.")
+            st.info("Select at least one company or bucket to compute Overall Scores.")
             return
+
+        score_company_ids = sorted(set(score_company_ids))
+
+        bucket_map_df = read_df(
+            f"""
+            SELECT m.company_id, g.name
+            FROM company_group_members m
+            JOIN company_groups g ON g.id = m.group_id
+            WHERE m.company_id IN ({",".join(["?"] * len(score_company_ids))})
+            ORDER BY g.name
+            """,
+            conn,
+            params=score_company_ids,
+        )
+        company_buckets_map: Dict[int, str] = {}
+        if bucket_map_df is not None and not bucket_map_df.empty:
+            bucket_names_by_company: Dict[int, List[str]] = {}
+            for _, row in bucket_map_df.iterrows():
+                cid = int(row["company_id"])
+                bucket_names_by_company.setdefault(cid, []).append(str(row["name"]))
+            company_buckets_map = {
+                cid: ", ".join(names) for cid, names in bucket_names_by_company.items()
+            }
 
         compute_overall_scores = st.button(
             "Compute Overall Scores",
@@ -718,6 +764,7 @@ def render_combined_dashboard_tab() -> None:
                 {
                     "Company Name": name,
                     "Ticker": ticker,
+                    "Industry Bucket": company_buckets_map.get(cid, "(no bucket)"),
                     "Total Scaled Volatility-Adjusted Score": breakup_total_scaled,
                     "Total Debt-Adjusted Scaled Volatility-Adjusted Score": breakup_total_debt_adjusted_scaled,
                     "Median Spread % (ROIC - WACC)": breakup_median_spread_pct,
@@ -738,6 +785,7 @@ def render_combined_dashboard_tab() -> None:
                 {
                     "Company Name": name,
                     "Ticker": ticker,
+                    "Industry Bucket": company_buckets_map.get(cid, "(no bucket)"),
                     "Additive Volatility-Adjusted Balance Sheet Strength Score": bs_add,
                     "Scaled Volatility-Adjusted Balance Sheet Strength Score": bs_scaled,
                     "Debt-Adjusted Balance Sheet Strength Score": bs_debt,
@@ -781,6 +829,27 @@ def render_combined_dashboard_tab() -> None:
             df_sorted = df.sort_values(by=sort_col, ascending=False)
         else:
             df_sorted = df
+
+        ordered_main_cols = [
+            "Company Name",
+            "Ticker",
+            "Industry Bucket",
+            "Additive Volatility-Adjusted Balance Sheet Strength Score",
+            "Scaled Volatility-Adjusted Balance Sheet Strength Score",
+            "Debt-Adjusted Balance Sheet Strength Score",
+            "Additive Volatility-Adjusted P&L Growth Score",
+            "Scaled Volatility-Adjusted P&L Growth Score",
+            "Additive FCFF and Spread Score",
+            "Scaled FCFF and Spread Score",
+            "Total Additive Volatility-Adjusted Score",
+            "Total Scaled Volatility-Adjusted Score",
+            "Total Debt-Adjusted Scaled Volatility-Adjusted Score",
+            "2020-2025 CAGR",
+            "2015-2020 CAGR",
+            "2010-2015 CAGR",
+            "Above 15% Year%",
+        ]
+        df_sorted = df_sorted[[c for c in ordered_main_cols if c in df_sorted.columns]]
 
         # Columns to show with 2-decimal formatting (including price metrics).
         score_cols = [
