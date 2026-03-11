@@ -1328,6 +1328,63 @@ def _find_row(df: pd.DataFrame, targets: List[str]) -> pd.Series:
         raise ValueError(f"Couldn't find any of {targets} in the sheet.")
     return df.loc[idx[0]]
 
+
+def _extract_series_from_revenue_minus_gross_profit(
+    file_bytes: bytes,
+    sheet_name: str,
+) -> Dict[int, float]:
+    df = _read_sheet(file_bytes, sheet_name)
+    revenue_row = _find_row(df, ["Revenue"])
+    gross_profit_row = _find_row(df, ["Gross Profit"])
+
+    series: Dict[int, float] = {}
+    for col in df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+            revenue_val = revenue_row[col]
+            gross_profit_val = gross_profit_row[col]
+            if pd.notna(revenue_val) and pd.notna(gross_profit_val):
+                series[year] = float(revenue_val) - float(gross_profit_val)
+        except Exception:
+            continue
+
+    if not series:
+        raise ValueError(
+            "Couldn't derive Cost of Revenue from Revenue - Gross Profit because no matching non-empty year values were found."
+        )
+    return dict(sorted(series.items(), key=lambda kv: kv[0]))
+
+
+def _extract_latest_ttm_from_revenue_minus_gross_profit(file_bytes: bytes) -> Tuple[str, float]:
+    df = _read_sheet(file_bytes, "Income-TTM")
+    revenue_row = _find_row(df, ["Revenue"])
+    gross_profit_row = _find_row(df, ["Gross Profit"])
+
+    non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+    for col in df.columns:
+        if col == "Date":
+            continue
+        revenue_val = revenue_row[col]
+        gross_profit_val = gross_profit_row[col]
+        if pd.notna(revenue_val) and pd.notna(gross_profit_val):
+            non_empty.append(
+                (str(col), float(revenue_val) - float(gross_profit_val), _parse_date_label(col))
+            )
+
+    if not non_empty:
+        raise ValueError(
+            "Couldn't derive TTM Cost of Revenue from Revenue - Gross Profit because no matching non-empty period values were found."
+        )
+
+    dated = [x for x in non_empty if x[2] is not None]
+    if dated:
+        latest = max(dated, key=lambda t: t[2])
+        return latest[0], latest[1]
+
+    return non_empty[-1][0], non_empty[-1][1]
+
 def extract_annual_series_by_rowlabel(file_bytes: bytes, rowlabel: str, fallbacks: Optional[List[str]] = None) -> Dict[int, float]:
     df = _read_sheet(file_bytes, "Income-Annual")
     targets = [rowlabel] + (fallbacks or [])
@@ -1509,7 +1566,19 @@ def extract_annual_cost_of_revenue_series(file_bytes: bytes) -> Dict[int, float]
         "Cost of Sales",
         "COGS",
     ]
-    return extract_annual_series_by_rowlabel(file_bytes, "Cost of Revenue", fallbacks=fallbacks)
+    try:
+        return extract_annual_series_by_rowlabel(file_bytes, "Cost of Revenue", fallbacks=fallbacks)
+    except ValueError as primary_exc:
+        if "Couldn't find any of" not in str(primary_exc):
+            raise
+        try:
+            return _extract_series_from_revenue_minus_gross_profit(file_bytes, "Income-Annual")
+        except ValueError as fallback_exc:
+            raise ValueError(
+                "Couldn't populate Cost of Revenue. Direct labels "
+                f"{['Cost of Revenue', 'Cost of Revenue', 'Cost of Goods Sold', 'Cost of Sales', 'COGS']} "
+                "were not found, and the Revenue - Gross Profit fallback could not be derived."
+            ) from fallback_exc
 
 def extract_latest_ttm_cost_of_revenue(file_bytes: bytes) -> Tuple[str, float]:
     fallbacks = [
@@ -1518,7 +1587,19 @@ def extract_latest_ttm_cost_of_revenue(file_bytes: bytes) -> Tuple[str, float]:
         "Cost of Sales",
         "COGS",
     ]
-    return extract_latest_ttm_by_rowlabel(file_bytes, "Cost of Revenue", fallbacks=fallbacks)
+    try:
+        return extract_latest_ttm_by_rowlabel(file_bytes, "Cost of Revenue", fallbacks=fallbacks)
+    except ValueError as primary_exc:
+        if "Couldn't find any of" not in str(primary_exc):
+            raise
+        try:
+            return _extract_latest_ttm_from_revenue_minus_gross_profit(file_bytes)
+        except ValueError as fallback_exc:
+            raise ValueError(
+                "Couldn't populate Cost of Revenue. Direct labels "
+                f"{['Cost of Revenue', 'Cost of Revenue', 'Cost of Goods Sold', 'Cost of Sales', 'COGS']} "
+                "were not found, and the Revenue - Gross Profit fallback could not be derived."
+            ) from fallback_exc
 
 def extract_annual_sga_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = [
@@ -1529,7 +1610,28 @@ def extract_annual_sga_series(file_bytes: bytes) -> Dict[int, float]:
         "SG&A",
         "SGA",
     ]
-    return extract_annual_series_by_rowlabel(file_bytes, "Selling, General & Admin", fallbacks=fallbacks)
+    ordered_fallbacks = [
+        "Operations and Maintenance Expenses",
+        "Direct Selling, General & Admin",
+        "Operating Expenses",
+        "Total Operating Expenses",
+    ]
+    try:
+        return extract_annual_series_by_rowlabel(file_bytes, "Selling, General & Admin", fallbacks=fallbacks)
+    except ValueError as primary_exc:
+        if "Couldn't find any of" not in str(primary_exc):
+            raise
+        for fallback_label in ordered_fallbacks:
+            try:
+                return extract_annual_series_by_rowlabel(file_bytes, fallback_label)
+            except ValueError:
+                continue
+        raise ValueError(
+            "Couldn't populate SG&A. Direct labels "
+            f"{['Selling, General & Admin', 'Selling, General & Admin', 'Selling, General & Administrative', 'Selling, General and Admin', 'Selling, General and Administrative', 'SG&A', 'SGA']} "
+            "were not found, and none of the ordered fallback labels "
+            f"{ordered_fallbacks} were found."
+        )
 
 def extract_latest_ttm_sga(file_bytes: bytes) -> Tuple[str, float]:
     fallbacks = [
@@ -1540,7 +1642,28 @@ def extract_latest_ttm_sga(file_bytes: bytes) -> Tuple[str, float]:
         "SG&A",
         "SGA",
     ]
-    return extract_latest_ttm_by_rowlabel(file_bytes, "Selling, General & Admin", fallbacks=fallbacks)
+    ordered_fallbacks = [
+        "Operations and Maintenance Expenses",
+        "Direct Selling, General & Admin",
+        "Operating Expenses",
+        "Total Operating Expenses",
+    ]
+    try:
+        return extract_latest_ttm_by_rowlabel(file_bytes, "Selling, General & Admin", fallbacks=fallbacks)
+    except ValueError as primary_exc:
+        if "Couldn't find any of" not in str(primary_exc):
+            raise
+        for fallback_label in ordered_fallbacks:
+            try:
+                return extract_latest_ttm_by_rowlabel(file_bytes, fallback_label)
+            except ValueError:
+                continue
+        raise ValueError(
+            "Couldn't populate SG&A. Direct labels "
+            f"{['Selling, General & Admin', 'Selling, General & Admin', 'Selling, General & Administrative', 'Selling, General and Admin', 'Selling, General and Administrative', 'SG&A', 'SGA']} "
+            "were not found, and none of the ordered fallback labels "
+            f"{ordered_fallbacks} were found."
+        )
 
 def extract_annual_operating_margin_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Operating Margin %", "Operating Income Margin", "Op Margin", "Operating margin"]
