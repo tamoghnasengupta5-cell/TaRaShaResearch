@@ -14,9 +14,19 @@ from bs_metrics import render_balance_sheet_metrics_tab
 from cap_structure_cost import render_capital_structure_cost_of_capital_tab
 from cash_flow_spread import render_cash_flow_and_spread_tab
 from combined_dashboard import render_combined_dashboard_tab
+from core import get_db
 from data_upload import render_data_upload_tab
 from pl_metrics import render_pl_metrics_tab
 from key_data import render_key_data_tab
+from search_aggregate import (
+    DEFAULT_YEAR_RANGE,
+    SEARCH_ACTIVATE_KEY,
+    SEARCH_SELECTED_IDS_KEY,
+    SEARCH_TAB_LABEL,
+    SEARCH_YEAR_RANGE_KEY,
+    get_header_search_context,
+    render_search_aggregate_tab,
+)
 from ttc_efficiency import (
     render_through_the_cycle_assumptions_tab,
     render_through_the_cycle_income_statement_score_tab,
@@ -129,6 +139,67 @@ def _inject_shell_css() -> None:
             margin-bottom: 0.15rem !important;
           }
 
+          /* Home header search styling, scoped so other tabs keep their existing widget look */
+          .st-key-home_header_search [data-testid="stMultiSelect"] [data-baseweb="select"] > div,
+          .st-key-home_header_search [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+            border: 1px solid #d4dbe4 !important;
+            box-shadow: none !important;
+            min-height: 2.65rem !important;
+          }
+
+          .st-key-home_header_search [data-testid="stMultiSelect"] [data-baseweb="select"] > div {
+            background: #f9fafb !important;
+            border-radius: 999px !important;
+            padding-left: 0.35rem !important;
+          }
+
+          .st-key-home_header_search [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+            background: #f0f2f6 !important;
+            border-radius: 0.7rem !important;
+          }
+
+          .st-key-home_header_search [data-testid="stMultiSelect"] input,
+          .st-key-home_header_search [data-testid="stMultiSelect"] input::placeholder,
+          .st-key-home_header_search [data-testid="stMultiSelect"] [data-baseweb="tag"] span,
+          .st-key-home_header_search [data-testid="stSelectbox"] [data-baseweb="select"] span,
+          .st-key-home_header_search [data-testid="stSelectbox"] [data-baseweb="select"] input,
+          .st-key-home_header_search [data-testid="stSelectbox"] [data-baseweb="select"] svg,
+          .st-key-home_header_search [data-testid="stMultiSelect"] [data-baseweb="select"] svg {
+            color: #111827 !important;
+            opacity: 1 !important;
+          }
+
+          .st-key-home_header_search [data-testid="stMultiSelect"] [data-baseweb="tag"] {
+            background: #e9eff7 !important;
+            border: 1px solid #d4dbe4 !important;
+            border-radius: 999px !important;
+          }
+
+          .st-key-home_header_search [data-testid="stButton"] > button {
+            background: #f3f4f6 !important;
+            border: 1px solid #d4dbe4 !important;
+            border-radius: 0.7rem !important;
+            box-shadow: none !important;
+            color: #5b6472 !important;
+            font-size: 0.95rem !important;
+            font-weight: 700 !important;
+            min-height: 2.65rem !important;
+            padding: 0 !important;
+          }
+
+          .st-key-home_header_search [data-testid="stButton"] > button:hover {
+            background: #e8ecf1 !important;
+            border-color: #c8d0da !important;
+            color: #344054 !important;
+          }
+
+          .st-key-home_header_search [data-testid="stButton"] > button:focus,
+          .st-key-home_header_search [data-testid="stButton"] > button:focus-visible {
+            border-color: #b8c3d0 !important;
+            box-shadow: none !important;
+            outline: none !important;
+          }
+
           /* Nicer headers */
           h1, h2, h3 { letter-spacing: -0.2px; }
 
@@ -173,16 +244,97 @@ def _inject_shell_css() -> None:
         unsafe_allow_html=True,
     )
 
+def _activate_top_level_tab(label: str) -> None:
+    components.html(
+        f"""
+        <script>
+          const label = {json.dumps(label)};
+          let tries = 0;
+          const timer = window.setInterval(() => {{
+            tries += 1;
+            try {{
+              const tabs = Array.from(window.parent.document.querySelectorAll('button[role=\"tab\"]'));
+              const target = tabs.find((btn) => ((btn.innerText || '').trim() === label));
+              if (target) {{
+                target.click();
+                window.clearInterval(timer);
+              }}
+            }} catch (err) {{
+              console.warn('header tab activation failed', err);
+            }}
+            if (tries >= 12) {{
+              window.clearInterval(timer);
+            }}
+          }}, 150);
+        </script>
+        """,
+        height=0,
+        scrolling=False,
+    )
+
+
+def _submit_header_search() -> None:
+    selected_ids = [int(x) for x in st.session_state.get(SEARCH_SELECTED_IDS_KEY, []) if str(x).isdigit()]
+    if selected_ids:
+        st.session_state[SEARCH_ACTIVATE_KEY] = True
+
+
 def _render_header() -> tuple:
     _inject_shell_css()
 
-    with st.container():
-        # Logo (optional; app runs fine even if the file is missing)
-        if _LOGO_PATH.exists():
-            st.image(str(_LOGO_PATH), width=200)
+    conn = get_db()
+    companies_df, year_options = get_header_search_context(conn)
+    current_year_range = str(st.session_state.get(SEARCH_YEAR_RANGE_KEY, DEFAULT_YEAR_RANGE) or DEFAULT_YEAR_RANGE)
+    if current_year_range not in year_options:
+        year_options = [current_year_range, *[opt for opt in year_options if opt != current_year_range]]
+    if SEARCH_YEAR_RANGE_KEY not in st.session_state:
+        st.session_state[SEARCH_YEAR_RANGE_KEY] = current_year_range
 
-        tab_home, tab_key_data, tab_equity_research = st.tabs(["Home", "Key Data", "Equity Research"])
-        return tab_home, tab_key_data, tab_equity_research
+    with st.container():
+        logo_col, controls_col = st.columns([1.1, 5.2], vertical_alignment="center")
+        with logo_col:
+            if _LOGO_PATH.exists():
+                st.image(str(_LOGO_PATH), width=200)
+        with controls_col:
+            company_label_map = {
+                int(row["id"]): f"{row['name']} ({row['ticker']})"
+                for _, row in companies_df.iterrows()
+            }
+            if SEARCH_SELECTED_IDS_KEY not in st.session_state:
+                st.session_state[SEARCH_SELECTED_IDS_KEY] = []
+            with st.container(key="home_header_search"):
+                search_col, year_col, button_col = st.columns([4.8, 2.1, 0.7], vertical_alignment="center")
+                with search_col:
+                    st.multiselect(
+                        'Company Search',
+                        options=list(company_label_map.keys()),
+                        format_func=lambda company_id: company_label_map.get(company_id, str(company_id)),
+                        key=SEARCH_SELECTED_IDS_KEY,
+                        label_visibility='collapsed',
+                        placeholder='Company or stock symbol...',
+                        help='Type part of a company name or ticker to see suggestions. You can select multiple companies.',
+                    )
+                with year_col:
+                    st.selectbox(
+                        'Year range',
+                        options=year_options,
+                        key=SEARCH_YEAR_RANGE_KEY,
+                        label_visibility='collapsed',
+                    )
+                with button_col:
+                    if st.button('Go', key='header_search_submit', use_container_width=True):
+                        _submit_header_search()
+
+        tab_home, tab_search_aggregate, tab_key_data, tab_equity_research = st.tabs([
+            'Home',
+            SEARCH_TAB_LABEL,
+            'Key Data',
+            'Equity Research',
+        ])
+        if st.session_state.get(SEARCH_ACTIVATE_KEY):
+            _activate_top_level_tab(SEARCH_TAB_LABEL)
+            st.session_state[SEARCH_ACTIVATE_KEY] = False
+        return tab_home, tab_search_aggregate, tab_key_data, tab_equity_research
 
 def _render_hero_carousel(image_paths: List[Path], slide_meta: List[Dict] | None = None) -> None:
     """
@@ -958,13 +1110,16 @@ def _render_footer() -> None:
     # Intentionally empty for now (layout placeholder).
     st.markdown("", unsafe_allow_html=True)
 
-tab_home, tab_key_data, tab_equity_research = _render_header()
+tab_home, tab_search_aggregate, tab_key_data, tab_equity_research = _render_header()
 
 with tab_home:
     _render_home_body()
 
 with tab_key_data:
     _render_key_data_body()
+
+with tab_search_aggregate:
+    render_search_aggregate_tab()
 
 with tab_equity_research:
     _render_equity_research_body()
