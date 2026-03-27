@@ -25,6 +25,15 @@ class IndexAnnualPriceMovement(Base):
 class IndustryBetas(Base):
     __table__ = db_models.industry_betas
 
+class DcfValuationSettings(Base):
+    __table__ = db_models.dcf_valuation_settings
+
+class DcfIndustryValuationSettings(Base):
+    __table__ = db_models.dcf_industry_valuation_settings
+
+class DcfCompanyValuationSettings(Base):
+    __table__ = db_models.dcf_company_valuation_settings
+
 class MarginalCorporateTaxRates(Base):
     __table__ = db_models.marginal_corporate_tax_rates
 
@@ -55,6 +64,12 @@ class CashAndCashEquivalentsAnnual(Base):
 
 class CashAndCashEquivalentsTtm(Base):
     __table__ = db_models.cash_and_cash_equivalents_ttm
+
+class SharesOutstandingBasicAnnual(Base):
+    __table__ = db_models.shares_outstanding_basic_annual
+
+class SharesOutstandingBasicTtm(Base):
+    __table__ = db_models.shares_outstanding_basic_ttm
 
 class CompanyGroupMembers(Base):
     __table__ = db_models.company_group_members
@@ -139,6 +154,12 @@ class LongTermInvestmentsTtm(Base):
 
 class MarketCapitalizationAnnual(Base):
     __table__ = db_models.market_capitalization_annual
+
+class LastClosePriceAnnual(Base):
+    __table__ = db_models.last_close_price_annual
+
+class LastClosePriceTtm(Base):
+    __table__ = db_models.last_close_price_ttm
 
 class NetDebtIssuedPaidAnnual(Base):
     __table__ = db_models.net_debt_issued_paid_annual

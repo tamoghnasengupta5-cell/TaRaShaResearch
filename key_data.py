@@ -330,6 +330,26 @@ def _render_pl_key_data() -> None:
             """, conn, params=(company_id,)
         )
 
+    def get_annual_ebitda_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
+        return read_df(
+            """
+            SELECT fiscal_year AS year, ebitda
+            FROM ebitda_annual
+            WHERE company_id = ?
+            ORDER BY year
+            """, conn, params=(company_id,)
+        )
+
+    def get_annual_shares_outstanding_basic_series(conn: sqlite3.Connection, company_id: int) -> pd.DataFrame:
+        return read_df(
+            """
+            SELECT fiscal_year AS year, shares_outstanding_basic
+            FROM shares_outstanding_basic_annual
+            WHERE company_id = ?
+            ORDER BY year
+            """, conn, params=(company_id,)
+        )
+
     def build_metric(
         ann_df: pd.DataFrame,
         value_col: str,
@@ -407,9 +427,6 @@ def _render_pl_key_data() -> None:
         rev_by_year = {int(y): (None if pd.isna(v) else float(v)) for y, v in zip(df_rev["year"], df_rev["revenue"])}
         growth_by_year = {int(y): (None if pd.isna(g) else float(g)) for y, g in zip(df_rev["year"], df_rev["yoy_growth"])}
 
-        # Preserve existing column behavior: year columns are driven by Revenue years
-        year_set.update(rev_by_year.keys())
-
         # Additional keys
         pretax_by_year, pretax_growth_by_year, pretax_med_g, pretax_std_g = build_metric(
             get_annual_pretax_income_series(conn, cid),
@@ -428,6 +445,20 @@ def _render_pl_key_data() -> None:
         nopat_by_year, nopat_growth_by_year, nopat_med_g, nopat_std_g = build_metric(
             get_annual_nopat_series(conn, cid),
             "nopat",
+            yr_start,
+            yr_end,
+            sample,
+        )
+        ebitda_by_year, ebitda_growth_by_year, ebitda_med_g, ebitda_std_g = build_metric(
+            get_annual_ebitda_series(conn, cid),
+            "ebitda",
+            yr_start,
+            yr_end,
+            sample,
+        )
+        shares_basic_by_year, shares_basic_growth_by_year, shares_basic_med_g, shares_basic_std_g = build_metric(
+            get_annual_shares_outstanding_basic_series(conn, cid),
+            "shares_outstanding_basic",
             yr_start,
             yr_end,
             sample,
@@ -490,6 +521,14 @@ def _render_pl_key_data() -> None:
                         stdev_sample=sample,
                     )
 
+        year_set.update(rev_by_year.keys())
+        year_set.update(pretax_by_year.keys())
+        year_set.update(net_by_year.keys())
+        year_set.update(nopat_by_year.keys())
+        year_set.update(ebitda_by_year.keys())
+        year_set.update(shares_basic_by_year.keys())
+        year_set.update(opm_by_year.keys())
+
         per_company.append(
             {
                 "name": str(name),
@@ -513,6 +552,14 @@ def _render_pl_key_data() -> None:
                 "nopat_growth_by_year": nopat_growth_by_year,
                 "nopat_median_growth": nopat_med_g,
                 "nopat_stdev_growth": nopat_std_g,
+                "ebitda_by_year": ebitda_by_year,
+                "ebitda_growth_by_year": ebitda_growth_by_year,
+                "ebitda_median_growth": ebitda_med_g,
+                "ebitda_stdev_growth": ebitda_std_g,
+                "shares_basic_by_year": shares_basic_by_year,
+                "shares_basic_growth_by_year": shares_basic_growth_by_year,
+                "shares_basic_median_growth": shares_basic_med_g,
+                "shares_basic_stdev_growth": shares_basic_std_g,
                 "opm_by_year": opm_by_year,
                 "opm_growth_by_year": opm_growth_by_year,
                 "opm_median": opm_median,
@@ -652,6 +699,62 @@ def _render_pl_key_data() -> None:
             gv = item["nopat_growth_by_year"].get(y)
             nog[y] = "" if gv is None else fmt_pct_from_decimal(gv)
         rows.append(nog)
+
+        # EBITDA
+        e = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "EBITDA",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            e[y] = fmt_money(item["ebitda_by_year"].get(y), item["country"])
+        rows.append(e)
+
+        eg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item["ebitda_median_growth"]),
+            "Standard Deviation": fmt_pct_from_decimal(item["ebitda_stdev_growth"]),
+        }
+        for y in year_cols:
+            gv = item["ebitda_growth_by_year"].get(y)
+            eg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(eg)
+
+        # Shares Outstanding (Basic)
+        sb = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Shares Outstanding (Basic)",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            sb[y] = fmt_money(item["shares_basic_by_year"].get(y), item["country"])
+        rows.append(sb)
+
+        sbg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item["shares_basic_median_growth"]),
+            "Standard Deviation": fmt_pct_from_decimal(item["shares_basic_stdev_growth"]),
+        }
+        for y in year_cols:
+            gv = item["shares_basic_growth_by_year"].get(y)
+            sbg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(sbg)
 
         # Operating Margin
         values_are_fraction = bool(item.get("opm_values_are_fraction", True))
@@ -899,11 +1002,11 @@ def _render_bs_key_data() -> None:
             params=(company_id,),
         )
 
-    def get_annual_short_term_investments_series(conn_in: sqlite3.Connection, company_id: int) -> pd.DataFrame:
+    def get_annual_total_current_assets_series_local(conn_in: sqlite3.Connection, company_id: int) -> pd.DataFrame:
         return read_df(
             """
-            SELECT fiscal_year AS year, short_term_investments
-            FROM short_term_investments_annual
+            SELECT fiscal_year AS year, total_current_assets
+            FROM total_current_assets_annual
             WHERE company_id = ?
             ORDER BY fiscal_year
             """,
@@ -911,27 +1014,29 @@ def _render_bs_key_data() -> None:
             params=(company_id,),
         )
 
-    def build_cash_and_equivalents_series(
-        ann_cash_df: pd.DataFrame,
-        ann_sti_df: pd.DataFrame,
-    ) -> pd.DataFrame:
-        """Derive Cash and Equivalents = Cash and Cash Equivalents - Short-Term Investments."""
-        if ann_cash_df is None or ann_cash_df.empty:
-            return pd.DataFrame(columns=["year", "cash_and_equivalents"])
-        cash_df = ann_cash_df[["year", "cash_and_cash_equivalents"]].copy()
-        if ann_sti_df is None or ann_sti_df.empty:
-            cash_df["cash_and_equivalents"] = cash_df["cash_and_cash_equivalents"].astype(float)
-            return cash_df[["year", "cash_and_equivalents"]]
-        merged = cash_df.merge(
-            ann_sti_df[["year", "short_term_investments"]],
-            on="year",
-            how="left",
+    def get_annual_total_current_liabilities_series_local(conn_in: sqlite3.Connection, company_id: int) -> pd.DataFrame:
+        return read_df(
+            """
+            SELECT fiscal_year AS year, total_current_liabilities
+            FROM total_current_liabilities_annual
+            WHERE company_id = ?
+            ORDER BY fiscal_year
+            """,
+            conn_in,
+            params=(company_id,),
         )
-        merged["short_term_investments"] = merged["short_term_investments"].fillna(0.0)
-        merged["cash_and_equivalents"] = (
-            merged["cash_and_cash_equivalents"].astype(float) - merged["short_term_investments"].astype(float)
+
+    def get_annual_current_debt_series_local(conn_in: sqlite3.Connection, company_id: int) -> pd.DataFrame:
+        return read_df(
+            """
+            SELECT fiscal_year AS year, current_debt
+            FROM current_debt_annual
+            WHERE company_id = ?
+            ORDER BY fiscal_year
+            """,
+            conn_in,
+            params=(company_id,),
         )
-        return merged[["year", "cash_and_equivalents"]]
 
     def any_available_years(conn_in: sqlite3.Connection, company_id: int) -> List[int]:
         years: List[int] = []
@@ -945,6 +1050,9 @@ def _render_bs_key_data() -> None:
             get_annual_interest_load_series(conn_in, company_id),
             get_annual_total_debt_series(conn_in, company_id),
             get_annual_cash_series(conn_in, company_id),
+            get_annual_total_current_assets_series_local(conn_in, company_id),
+            get_annual_total_current_liabilities_series_local(conn_in, company_id),
+            get_annual_current_debt_series_local(conn_in, company_id),
         ]:
             if df is not None and not df.empty and "year" in df.columns:
                 years.extend([int(y) for y in df["year"].tolist() if pd.notna(y)])
@@ -988,8 +1096,9 @@ def _render_bs_key_data() -> None:
         ann_il = get_annual_interest_load_series(conn, cid)
         ann_total_debt = get_annual_total_debt_series(conn, cid)
         ann_cash = get_annual_cash_series(conn, cid)
-        ann_sti = get_annual_short_term_investments_series(conn, cid)
-        ann_cash_equivalents = build_cash_and_equivalents_series(ann_cash, ann_sti)
+        ann_tca = get_annual_total_current_assets_series_local(conn, cid)
+        ann_tcl = get_annual_total_current_liabilities_series_local(conn, cid)
+        ann_cd = get_annual_current_debt_series_local(conn, cid)
 
         # Metrics
         acc_by_year, acc_growth_by_year, acc_med_g, acc_std_g = build_metric(
@@ -1021,7 +1130,16 @@ def _render_bs_key_data() -> None:
             ann_total_debt, "total_debt", yr_start, yr_end, stdev_sample=sample
         )
         cash_by_year, cash_growth_by_year, cash_med_g, cash_std_g = build_metric(
-            ann_cash_equivalents, "cash_and_equivalents", yr_start, yr_end, stdev_sample=sample
+            ann_cash, "cash_and_cash_equivalents", yr_start, yr_end, stdev_sample=sample
+        )
+        tca_by_year, tca_growth_by_year, tca_med_g, tca_std_g = build_metric(
+            ann_tca, "total_current_assets", yr_start, yr_end, stdev_sample=sample
+        )
+        tcl_by_year, tcl_growth_by_year, tcl_med_g, tcl_std_g = build_metric(
+            ann_tcl, "total_current_liabilities", yr_start, yr_end, stdev_sample=sample
+        )
+        cd_by_year, cd_growth_by_year, cd_med_g, cd_std_g = build_metric(
+            ann_cd, "current_debt", yr_start, yr_end, stdev_sample=sample
         )
 
         # Track years across any metric present
@@ -1035,6 +1153,9 @@ def _render_bs_key_data() -> None:
             il_by_year,
             td_by_year,
             cash_by_year,
+            tca_by_year,
+            tcl_by_year,
+            cd_by_year,
         ]:
             year_set.update(d.keys())
 
@@ -1081,6 +1202,18 @@ def _render_bs_key_data() -> None:
                 "cash_growth_by_year": cash_growth_by_year,
                 "cash_median_growth": cash_med_g,
                 "cash_stdev_growth": cash_std_g,
+                "tca_by_year": tca_by_year,
+                "tca_growth_by_year": tca_growth_by_year,
+                "tca_median_growth": tca_med_g,
+                "tca_stdev_growth": tca_std_g,
+                "tcl_by_year": tcl_by_year,
+                "tcl_growth_by_year": tcl_growth_by_year,
+                "tcl_median_growth": tcl_med_g,
+                "tcl_stdev_growth": tcl_std_g,
+                "cd_by_year": cd_by_year,
+                "cd_growth_by_year": cd_growth_by_year,
+                "cd_median_growth": cd_med_g,
+                "cd_stdev_growth": cd_std_g,
             }
         )
 
@@ -1347,13 +1480,13 @@ def _render_bs_key_data() -> None:
             tdg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
         rows.append(tdg)
 
-        # Cash
+        # Cash & Cash Equivalents
         csh = {
             "Company": item["name"],
             "Ticker": item["ticker"],
             "Country": item["country_disp"],
             "Units": item["unit_label"],
-            "Key": "Cash",
+            "Key": "Cash & Cash Equivalents",
             "Median": "",
             "Standard Deviation": "",
         }
@@ -1374,6 +1507,90 @@ def _render_bs_key_data() -> None:
             gv = item["cash_growth_by_year"].get(y)
             cshg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
         rows.append(cshg)
+
+        # Total Current Assets
+        tca = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Total Current Assets",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            tca[y] = fmt_money(item["tca_by_year"].get(y), item["country"])
+        rows.append(tca)
+
+        tcag = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item["tca_median_growth"]),
+            "Standard Deviation": fmt_pct_from_decimal(item["tca_stdev_growth"]),
+        }
+        for y in year_cols:
+            gv = item["tca_growth_by_year"].get(y)
+            tcag[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(tcag)
+
+        # Total Current Liabilities
+        tcl = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Total Current Liabilities",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            tcl[y] = fmt_money(item["tcl_by_year"].get(y), item["country"])
+        rows.append(tcl)
+
+        tclg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item["tcl_median_growth"]),
+            "Standard Deviation": fmt_pct_from_decimal(item["tcl_stdev_growth"]),
+        }
+        for y in year_cols:
+            gv = item["tcl_growth_by_year"].get(y)
+            tclg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(tclg)
+
+        # Current Debt
+        cd = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Current Debt",
+            "Median": "",
+            "Standard Deviation": "",
+        }
+        for y in year_cols:
+            cd[y] = fmt_money(item["cd_by_year"].get(y), item["country"])
+        rows.append(cd)
+
+        cdg = {
+            "Company": item["name"],
+            "Ticker": item["ticker"],
+            "Country": item["country_disp"],
+            "Units": item["unit_label"],
+            "Key": "Growth%",
+            "Median": fmt_pct_from_decimal(item["cd_median_growth"]),
+            "Standard Deviation": fmt_pct_from_decimal(item["cd_stdev_growth"]),
+        }
+        for y in year_cols:
+            gv = item["cd_growth_by_year"].get(y)
+            cdg[y] = "" if gv is None else fmt_pct_from_decimal(gv)
+        rows.append(cdg)
 
     ordered_cols = ["Company", "Ticker", "Country", "Units", "Key"] + year_cols + ["Median", "Standard Deviation"]
     disp = pd.DataFrame(rows)
