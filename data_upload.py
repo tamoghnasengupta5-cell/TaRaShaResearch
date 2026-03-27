@@ -531,6 +531,21 @@ def ingest_financials_bytes(
     except Exception:
         pass
 
+    # Extract Last Close Price (annual + latest TTM) from Ratios
+    annual_last_close_price = extract_annual_last_close_price_series(bytes_data)
+    as_of_last_close_price, ttm_last_close_price = extract_latest_ttm_last_close_price(bytes_data)
+    try:
+        ttm_lcp_year = int(str(as_of_last_close_price)[:4])
+        prev_year = ttm_lcp_year - 1
+        annual_last_close_price = {
+            int(y): float(v)
+            for y, v in annual_last_close_price.items()
+            if int(y) <= int(prev_year)
+        }
+        annual_last_close_price[int(ttm_lcp_year)] = float(ttm_last_close_price)
+    except Exception:
+        pass
+
     # Extract Return on Invested Capital (ROIC)% (annual + latest TTM) from Ratios
     annual_roic_direct_upload = extract_annual_roic_direct_upload_series(bytes_data)
     as_of_roic, ttm_roic = extract_latest_ttm_roic_direct_upload(bytes_data)
@@ -551,6 +566,15 @@ def ingest_financials_bytes(
         annual_roic_direct_upload[int(ttm_roic_year)] = _to_pct_points(ttm_roic)
     except Exception:
         annual_roic_direct_upload = {int(y): _to_pct_points(v) for y, v in annual_roic_direct_upload.items()}
+
+    # Extract Shares Outstanding (Basic) (annual + TTM) from Income
+    annual_shares_outstanding_basic = extract_annual_shares_outstanding_basic_series(bytes_data)
+    as_of_shares_outstanding_basic, ttm_shares_outstanding_basic = extract_latest_ttm_shares_outstanding_basic(bytes_data)
+    try:
+        ttm_sob_year = int(str(as_of_shares_outstanding_basic)[:4])
+        annual_shares_outstanding_basic[ttm_sob_year] = float(ttm_shares_outstanding_basic)
+    except Exception:
+        pass
 
     # Extract Current Debt (annual + TTM) from Balance Sheet
     annual_current_debt = extract_annual_current_debt_series(bytes_data)
@@ -830,6 +854,8 @@ def ingest_financials_bytes(
     upsert_ttm_total_debt(conn, cid, as_of_total_debt, ttm_total_debt)
 
     upsert_annual_market_capitalization(conn, cid, annual_market_capitalization)
+    upsert_annual_last_close_price(conn, cid, annual_last_close_price)
+    upsert_ttm_last_close_price(conn, cid, as_of_last_close_price, ttm_last_close_price)
 
     if annual_roic_direct_upload:
         upsert_annual_roic_direct_upload(conn, cid, annual_roic_direct_upload)
@@ -857,6 +883,9 @@ def ingest_financials_bytes(
 
     upsert_annual_cash_and_cash_equivalents(conn, cid, annual_cash_and_cash_equivalents)
     upsert_ttm_cash_and_cash_equivalents(conn, cid, as_of_cash_and_cash_equivalents, ttm_cash_and_cash_equivalents)
+
+    upsert_annual_shares_outstanding_basic(conn, cid, annual_shares_outstanding_basic)
+    upsert_ttm_shares_outstanding_basic(conn, cid, as_of_shares_outstanding_basic, ttm_shares_outstanding_basic)
 
     upsert_annual_long_term_investments(conn, cid, annual_long_term_investments)
     upsert_ttm_long_term_investments(conn, cid, as_of_long_term_investments, ttm_long_term_investments)
@@ -1329,6 +1358,21 @@ def render_data_upload_tab():
                     except Exception:
                         pass
 
+                    # Extract Last Close Price (annual + latest TTM) from Ratios
+                    annual_last_close_price = extract_annual_last_close_price_series(bytes_data)
+                    as_of_last_close_price, ttm_last_close_price = extract_latest_ttm_last_close_price(bytes_data)
+                    try:
+                        ttm_lcp_year = int(str(as_of_last_close_price)[:4])
+                        prev_year = ttm_lcp_year - 1
+                        annual_last_close_price = {
+                            int(y): float(v)
+                            for y, v in annual_last_close_price.items()
+                            if int(y) <= int(prev_year)
+                        }
+                        annual_last_close_price[int(ttm_lcp_year)] = float(ttm_last_close_price)
+                    except Exception:
+                        pass
+
                     # Extract Return on Invested Capital (ROIC)% (annual + latest TTM) from Ratios
                     annual_roic_direct_upload = extract_annual_roic_direct_upload_series(bytes_data)
                     as_of_roic, ttm_roic = extract_latest_ttm_roic_direct_upload(bytes_data)
@@ -1350,6 +1394,15 @@ def render_data_upload_tab():
                         annual_roic_direct_upload[int(ttm_roic_year)] = _to_pct_points(ttm_roic)
                     except Exception:
                         annual_roic_direct_upload = {int(y): _to_pct_points(v) for y, v in annual_roic_direct_upload.items()}
+
+                    # Extract Shares Outstanding (Basic) (annual + TTM) from Income
+                    annual_shares_outstanding_basic = extract_annual_shares_outstanding_basic_series(bytes_data)
+                    as_of_shares_outstanding_basic, ttm_shares_outstanding_basic = extract_latest_ttm_shares_outstanding_basic(bytes_data)
+                    try:
+                        ttm_sob_year = int(str(as_of_shares_outstanding_basic)[:4])
+                        annual_shares_outstanding_basic[ttm_sob_year] = float(ttm_shares_outstanding_basic)
+                    except Exception:
+                        pass
 
                     # Extract Current Debt (annual + TTM) from Balance Sheet
                     annual_current_debt = extract_annual_current_debt_series(bytes_data)
@@ -1649,6 +1702,8 @@ def render_data_upload_tab():
                     upsert_ttm_total_debt(conn, cid, as_of_total_debt, ttm_total_debt)
 
                     upsert_annual_market_capitalization(conn, cid, annual_market_capitalization)
+                    upsert_annual_last_close_price(conn, cid, annual_last_close_price)
+                    upsert_ttm_last_close_price(conn, cid, as_of_last_close_price, ttm_last_close_price)
 
 
                     if annual_roic_direct_upload:
@@ -1705,6 +1760,9 @@ def render_data_upload_tab():
 
                     upsert_annual_cash_and_cash_equivalents(conn, cid, annual_cash_and_cash_equivalents)
                     upsert_ttm_cash_and_cash_equivalents(conn, cid, as_of_cash_and_cash_equivalents, ttm_cash_and_cash_equivalents)
+
+                    upsert_annual_shares_outstanding_basic(conn, cid, annual_shares_outstanding_basic)
+                    upsert_ttm_shares_outstanding_basic(conn, cid, as_of_shares_outstanding_basic, ttm_shares_outstanding_basic)
 
                     upsert_annual_long_term_investments(conn, cid, annual_long_term_investments)
                     upsert_ttm_long_term_investments(conn, cid, as_of_long_term_investments, ttm_long_term_investments)

@@ -335,6 +335,22 @@ market_capitalization_annual = Table(
     Column("market_capitalization", Float, nullable=False),
 )
 
+last_close_price_annual = Table(
+    "last_close_price_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("last_close_price", Float, nullable=False),
+)
+
+last_close_price_ttm = Table(
+    "last_close_price_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("last_close_price", Float, nullable=False),
+)
+
 roic_direct_upload_annual = Table(
     "roic_direct_upload_annual",
     metadata,
@@ -397,6 +413,22 @@ cash_and_cash_equivalents_ttm = Table(
     Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
     Column("as_of", Text, nullable=False),
     Column("cash_and_cash_equivalents", Float, nullable=False),
+)
+
+shares_outstanding_basic_annual = Table(
+    "shares_outstanding_basic_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("shares_outstanding_basic", Float, nullable=False),
+)
+
+shares_outstanding_basic_ttm = Table(
+    "shares_outstanding_basic_ttm",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("as_of", Text, nullable=False),
+    Column("shares_outstanding_basic", Float, nullable=False),
 )
 
 total_current_assets_annual = Table(
@@ -858,6 +890,63 @@ industry_betas = Table(
     Column("cash_adjusted_beta", Float, nullable=False),
     Column("updated_at", Text),
     UniqueConstraint("user_industry_bucket", "mapped_sector", name="uq_industry_betas_bucket_sector"),
+)
+
+dcf_valuation_settings = Table(
+    "dcf_valuation_settings",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("historical_years", Integer, nullable=False),
+    Column("terminal_growth_usa", Float, nullable=False),
+    Column("terminal_growth_india", Float, nullable=False),
+    Column("terminal_growth_china", Float, nullable=False),
+    Column("terminal_growth_japan", Float, nullable=False),
+    Column("future_revenue_growth", Float, nullable=False),
+    Column("starting_projected_revenue_growth_cap", Float, nullable=False, server_default="25.0"),
+    Column("ebidta_margin_growth", Float, nullable=False),
+    Column("da_percent_growth", Float, nullable=False),
+    Column("capex_percent_growth", Float, nullable=False),
+    Column("working_capital_days_growth", Float, nullable=False),
+    Column("wacc_direction", Float, nullable=False),
+    Column("updated_at", Text),
+)
+
+dcf_industry_valuation_settings = Table(
+    "dcf_industry_valuation_settings",
+    metadata,
+    Column("group_id", Integer, ForeignKey("company_groups.id", ondelete="CASCADE"), primary_key=True),
+    Column("historical_years", Integer, nullable=False),
+    Column("terminal_growth_usa", Float, nullable=False),
+    Column("terminal_growth_india", Float, nullable=False),
+    Column("terminal_growth_china", Float, nullable=False),
+    Column("terminal_growth_japan", Float, nullable=False),
+    Column("future_revenue_growth", Float, nullable=False),
+    Column("starting_projected_revenue_growth_cap", Float, nullable=False, server_default="25.0"),
+    Column("ebidta_margin_growth", Float, nullable=False),
+    Column("da_percent_growth", Float, nullable=False),
+    Column("capex_percent_growth", Float, nullable=False),
+    Column("working_capital_days_growth", Float, nullable=False),
+    Column("wacc_direction", Float, nullable=False),
+    Column("updated_at", Text),
+)
+
+dcf_company_valuation_settings = Table(
+    "dcf_company_valuation_settings",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("historical_years", Integer, nullable=False),
+    Column("terminal_growth_usa", Float, nullable=False),
+    Column("terminal_growth_india", Float, nullable=False),
+    Column("terminal_growth_china", Float, nullable=False),
+    Column("terminal_growth_japan", Float, nullable=False),
+    Column("future_revenue_growth", Float, nullable=False),
+    Column("starting_projected_revenue_growth_cap", Float, nullable=False, server_default="25.0"),
+    Column("ebidta_margin_growth", Float, nullable=False),
+    Column("da_percent_growth", Float, nullable=False),
+    Column("capex_percent_growth", Float, nullable=False),
+    Column("working_capital_days_growth", Float, nullable=False),
+    Column("wacc_direction", Float, nullable=False),
+    Column("updated_at", Text),
 )
 
 growth_weight_factors = Table(

@@ -143,6 +143,20 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['company_id'], ['companies.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('company_id')
     )
+    op.create_table('shares_outstanding_basic_annual',
+    sa.Column('company_id', sa.Integer(), nullable=False),
+    sa.Column('fiscal_year', sa.Integer(), nullable=False),
+    sa.Column('shares_outstanding_basic', sa.Float(), nullable=False),
+    sa.ForeignKeyConstraint(['company_id'], ['companies.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('company_id', 'fiscal_year')
+    )
+    op.create_table('shares_outstanding_basic_ttm',
+    sa.Column('company_id', sa.Integer(), nullable=False),
+    sa.Column('as_of', sa.Text(), nullable=False),
+    sa.Column('shares_outstanding_basic', sa.Float(), nullable=False),
+    sa.ForeignKeyConstraint(['company_id'], ['companies.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('company_id')
+    )
     op.create_table('company_group_members',
     sa.Column('group_id', sa.Integer(), nullable=False),
     sa.Column('company_id', sa.Integer(), nullable=False),
@@ -310,6 +324,20 @@ def upgrade() -> None:
     sa.Column('market_capitalization', sa.Float(), nullable=False),
     sa.ForeignKeyConstraint(['company_id'], ['companies.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('company_id', 'fiscal_year')
+    )
+    op.create_table('last_close_price_annual',
+    sa.Column('company_id', sa.Integer(), nullable=False),
+    sa.Column('fiscal_year', sa.Integer(), nullable=False),
+    sa.Column('last_close_price', sa.Float(), nullable=False),
+    sa.ForeignKeyConstraint(['company_id'], ['companies.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('company_id', 'fiscal_year')
+    )
+    op.create_table('last_close_price_ttm',
+    sa.Column('company_id', sa.Integer(), nullable=False),
+    sa.Column('as_of', sa.Text(), nullable=False),
+    sa.Column('last_close_price', sa.Float(), nullable=False),
+    sa.ForeignKeyConstraint(['company_id'], ['companies.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('company_id')
     )
     op.create_table('net_debt_issued_paid_annual',
     sa.Column('company_id', sa.Integer(), nullable=False),
@@ -820,6 +848,8 @@ def downgrade() -> None:
     op.drop_table('shareholders_equity_annual')
     op.drop_table('roic_wacc_spread_annual')
     op.drop_table('roic_direct_upload_annual')
+    op.drop_table('last_close_price_ttm')
+    op.drop_table('last_close_price_annual')
     op.drop_table('roe_annual')
     op.drop_table('roce_annual')
     op.drop_table('revenues_ttm')
@@ -867,6 +897,8 @@ def downgrade() -> None:
     op.drop_table('comprehensive_income_ttm')
     op.drop_table('comprehensive_income_annual')
     op.drop_table('company_group_members')
+    op.drop_table('shares_outstanding_basic_ttm')
+    op.drop_table('shares_outstanding_basic_annual')
     op.drop_table('cash_and_cash_equivalents_ttm')
     op.drop_table('cash_and_cash_equivalents_annual')
     op.drop_table('capital_expenditures_annual')

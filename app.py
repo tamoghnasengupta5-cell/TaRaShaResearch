@@ -16,6 +16,7 @@ from cash_flow_spread import render_cash_flow_and_spread_tab
 from combined_dashboard import render_combined_dashboard_tab
 from core import get_db
 from data_upload import render_data_upload_tab
+from dcf_valuation import render_dcf_valuations_tab
 from pl_metrics import render_pl_metrics_tab
 from key_data import render_key_data_tab
 from search_aggregate import (
@@ -325,16 +326,17 @@ def _render_header() -> tuple:
                     if st.button('Go', key='header_search_submit', use_container_width=True):
                         _submit_header_search()
 
-        tab_home, tab_search_aggregate, tab_key_data, tab_equity_research = st.tabs([
+        tab_home, tab_search_aggregate, tab_key_data, tab_equity_research, tab_valuations = st.tabs([
             'Home',
             SEARCH_TAB_LABEL,
             'Key Data',
             'Equity Research',
+            'Valuations',
         ])
         if st.session_state.get(SEARCH_ACTIVATE_KEY):
             _activate_top_level_tab(SEARCH_TAB_LABEL)
             st.session_state[SEARCH_ACTIVATE_KEY] = False
-        return tab_home, tab_search_aggregate, tab_key_data, tab_equity_research
+        return tab_home, tab_search_aggregate, tab_key_data, tab_equity_research, tab_valuations
 
 def _render_hero_carousel(image_paths: List[Path], slide_meta: List[Dict] | None = None) -> None:
     """
@@ -1110,7 +1112,7 @@ def _render_footer() -> None:
     # Intentionally empty for now (layout placeholder).
     st.markdown("", unsafe_allow_html=True)
 
-tab_home, tab_search_aggregate, tab_key_data, tab_equity_research = _render_header()
+tab_home, tab_search_aggregate, tab_key_data, tab_equity_research, tab_valuations = _render_header()
 
 with tab_home:
     _render_home_body()
@@ -1123,5 +1125,8 @@ with tab_search_aggregate:
 
 with tab_equity_research:
     _render_equity_research_body()
+
+with tab_valuations:
+    render_dcf_valuations_tab()
 
 _render_footer()

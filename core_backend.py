@@ -26,6 +26,9 @@ from db_orm import (
     ImpliedEquityRiskPremiumUsa,
     MarginalCorporateTaxRates,
     IndustryBetas,
+    DcfValuationSettings,
+    DcfIndustryValuationSettings,
+    DcfCompanyValuationSettings,
 )
 from db_orm import (
     RevenuesAnnual, RevenuesTtm,
@@ -46,6 +49,7 @@ from db_orm import (
     TotalLongTermLiabilitiesAnnual, TotalLongTermLiabilitiesTtm,
     TotalDebtAnnual, TotalDebtTtm,
     MarketCapitalizationAnnual,
+    LastClosePriceAnnual, LastClosePriceTtm,
     RoicDirectUploadAnnual,
     DebtEquityAnnual,
     LeveredBetaAnnual,
@@ -55,6 +59,7 @@ from db_orm import (
     AccountsPayableAnnual, AccountsPayableTtm,
     CurrentDebtAnnual, CurrentDebtTtm,
     CashAndCashEquivalentsAnnual, CashAndCashEquivalentsTtm,
+    SharesOutstandingBasicAnnual, SharesOutstandingBasicTtm,
     ShortTermInvestmentsAnnual, ShortTermInvestmentsTtm,
     LongTermInvestmentsAnnual, LongTermInvestmentsTtm,
     NetPpeAnnual, NetPpeTtm,
@@ -233,6 +238,36 @@ def _ensure_companies_country_column(conn) -> None:
         # Backfill any blanks/nulls
         execute(conn, "UPDATE companies SET country = 'USA' WHERE country IS NULL OR TRIM(country) = ''")
         conn.commit()
+    except Exception:
+        return
+
+
+def _ensure_dcf_settings_growth_cap_column(conn) -> None:
+    """Backwards-compatible schema migration: ensure DCF settings tables have the revenue-growth cap column."""
+    tables = [
+        "dcf_valuation_settings",
+        "dcf_industry_valuation_settings",
+        "dcf_company_valuation_settings",
+    ]
+    try:
+        inspector = inspect(conn.get_bind())
+        for table_name in tables:
+            cols = [c["name"] for c in inspector.get_columns(table_name)]
+            if "starting_projected_revenue_growth_cap" not in cols:
+                execute(
+                    conn,
+                    f"ALTER TABLE {table_name} ADD COLUMN starting_projected_revenue_growth_cap FLOAT NOT NULL DEFAULT 25.0",
+                )
+                conn.commit()
+            execute(
+                conn,
+                f"""
+                UPDATE {table_name}
+                SET starting_projected_revenue_growth_cap = 25.0
+                WHERE starting_projected_revenue_growth_cap IS NULL
+                """,
+            )
+            conn.commit()
     except Exception:
         return
 
@@ -796,6 +831,609 @@ def replace_industry_betas(
     conn.commit()
 
 
+def get_dcf_valuation_settings(conn) -> pd.DataFrame:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        rows = (
+            session.query(DcfValuationSettings)
+            .filter(DcfValuationSettings.id == 1)
+            .all()
+        )
+        if not rows:
+            return pd.DataFrame()
+        row = rows[0]
+        return pd.DataFrame(
+            [
+                {
+                    "id": int(row.id),
+                    "historical_years": int(row.historical_years),
+                    "terminal_growth_usa": float(row.terminal_growth_usa),
+                    "terminal_growth_india": float(row.terminal_growth_india),
+                    "terminal_growth_china": float(row.terminal_growth_china),
+                    "terminal_growth_japan": float(row.terminal_growth_japan),
+                    "future_revenue_growth": float(row.future_revenue_growth),
+                    "starting_projected_revenue_growth_cap": float(row.starting_projected_revenue_growth_cap),
+                    "ebidta_margin_growth": float(row.ebidta_margin_growth),
+                    "da_percent_growth": float(row.da_percent_growth),
+                    "capex_percent_growth": float(row.capex_percent_growth),
+                    "working_capital_days_growth": float(row.working_capital_days_growth),
+                    "wacc_direction": float(row.wacc_direction),
+                    "updated_at": row.updated_at,
+                }
+            ]
+        )
+    return _read_df(
+        """
+        SELECT
+            id,
+            historical_years,
+            terminal_growth_usa,
+            terminal_growth_india,
+            terminal_growth_china,
+            terminal_growth_japan,
+            future_revenue_growth,
+            starting_projected_revenue_growth_cap,
+            ebidta_margin_growth,
+            da_percent_growth,
+            capex_percent_growth,
+            working_capital_days_growth,
+            wacc_direction,
+            updated_at
+        FROM dcf_valuation_settings
+        WHERE id = 1
+        """,
+        conn,
+    )
+
+
+def upsert_dcf_valuation_settings(
+    conn,
+    historical_years: int,
+    terminal_growth_usa: float,
+    terminal_growth_india: float,
+    terminal_growth_china: float,
+    terminal_growth_japan: float,
+    future_revenue_growth: float,
+    starting_projected_revenue_growth_cap: float,
+    ebidta_margin_growth: float,
+    da_percent_growth: float,
+    capex_percent_growth: float,
+    working_capital_days_growth: float,
+    wacc_direction: float,
+    updated_at: str,
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        obj = session.get(DcfValuationSettings, 1)
+        if obj is None:
+            obj = DcfValuationSettings(
+                id=1,
+                historical_years=int(historical_years),
+                terminal_growth_usa=float(terminal_growth_usa),
+                terminal_growth_india=float(terminal_growth_india),
+                terminal_growth_china=float(terminal_growth_china),
+                terminal_growth_japan=float(terminal_growth_japan),
+                future_revenue_growth=float(future_revenue_growth),
+                starting_projected_revenue_growth_cap=float(starting_projected_revenue_growth_cap),
+                ebidta_margin_growth=float(ebidta_margin_growth),
+                da_percent_growth=float(da_percent_growth),
+                capex_percent_growth=float(capex_percent_growth),
+                working_capital_days_growth=float(working_capital_days_growth),
+                wacc_direction=float(wacc_direction),
+                updated_at=updated_at,
+            )
+            session.add(obj)
+        else:
+            obj.historical_years = int(historical_years)
+            obj.terminal_growth_usa = float(terminal_growth_usa)
+            obj.terminal_growth_india = float(terminal_growth_india)
+            obj.terminal_growth_china = float(terminal_growth_china)
+            obj.terminal_growth_japan = float(terminal_growth_japan)
+            obj.future_revenue_growth = float(future_revenue_growth)
+            obj.starting_projected_revenue_growth_cap = float(starting_projected_revenue_growth_cap)
+            obj.ebidta_margin_growth = float(ebidta_margin_growth)
+            obj.da_percent_growth = float(da_percent_growth)
+            obj.capex_percent_growth = float(capex_percent_growth)
+            obj.working_capital_days_growth = float(working_capital_days_growth)
+            obj.wacc_direction = float(wacc_direction)
+            obj.updated_at = updated_at
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    cur.execute(
+        """
+        UPDATE dcf_valuation_settings
+        SET
+            historical_years = ?,
+            terminal_growth_usa = ?,
+            terminal_growth_india = ?,
+            terminal_growth_china = ?,
+            terminal_growth_japan = ?,
+            future_revenue_growth = ?,
+            starting_projected_revenue_growth_cap = ?,
+            ebidta_margin_growth = ?,
+            da_percent_growth = ?,
+            capex_percent_growth = ?,
+            working_capital_days_growth = ?,
+            wacc_direction = ?,
+            updated_at = ?
+        WHERE id = 1
+        """,
+        (
+            int(historical_years),
+            float(terminal_growth_usa),
+            float(terminal_growth_india),
+            float(terminal_growth_china),
+            float(terminal_growth_japan),
+            float(future_revenue_growth),
+            float(starting_projected_revenue_growth_cap),
+            float(ebidta_margin_growth),
+            float(da_percent_growth),
+            float(capex_percent_growth),
+            float(working_capital_days_growth),
+            float(wacc_direction),
+            updated_at,
+        ),
+    )
+    if cur.rowcount == 0:
+        cur.execute(
+            """
+            INSERT INTO dcf_valuation_settings(
+                id,
+                historical_years,
+                terminal_growth_usa,
+                terminal_growth_india,
+                terminal_growth_china,
+                terminal_growth_japan,
+                future_revenue_growth,
+                starting_projected_revenue_growth_cap,
+                ebidta_margin_growth,
+                da_percent_growth,
+                capex_percent_growth,
+                working_capital_days_growth,
+                wacc_direction,
+                updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                1,
+                int(historical_years),
+                float(terminal_growth_usa),
+                float(terminal_growth_india),
+                float(terminal_growth_china),
+                float(terminal_growth_japan),
+                float(future_revenue_growth),
+                float(starting_projected_revenue_growth_cap),
+                float(ebidta_margin_growth),
+                float(da_percent_growth),
+                float(capex_percent_growth),
+                float(working_capital_days_growth),
+                float(wacc_direction),
+                updated_at,
+            ),
+    )
+    conn.commit()
+
+
+def get_dcf_industry_valuation_settings(conn, group_ids: Optional[List[int]] = None) -> pd.DataFrame:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        query = session.query(DcfIndustryValuationSettings)
+        if group_ids:
+            query = query.filter(DcfIndustryValuationSettings.group_id.in_([int(x) for x in group_ids]))
+        rows = query.all()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(
+            [
+                {
+                    "group_id": int(row.group_id),
+                    "historical_years": int(row.historical_years),
+                    "terminal_growth_usa": float(row.terminal_growth_usa),
+                    "terminal_growth_india": float(row.terminal_growth_india),
+                    "terminal_growth_china": float(row.terminal_growth_china),
+                    "terminal_growth_japan": float(row.terminal_growth_japan),
+                    "future_revenue_growth": float(row.future_revenue_growth),
+                    "starting_projected_revenue_growth_cap": float(row.starting_projected_revenue_growth_cap),
+                    "ebidta_margin_growth": float(row.ebidta_margin_growth),
+                    "da_percent_growth": float(row.da_percent_growth),
+                    "capex_percent_growth": float(row.capex_percent_growth),
+                    "working_capital_days_growth": float(row.working_capital_days_growth),
+                    "wacc_direction": float(row.wacc_direction),
+                    "updated_at": row.updated_at,
+                }
+                for row in rows
+            ]
+        )
+    sql = """
+        SELECT
+            group_id,
+            historical_years,
+            terminal_growth_usa,
+            terminal_growth_india,
+            terminal_growth_china,
+            terminal_growth_japan,
+            future_revenue_growth,
+            starting_projected_revenue_growth_cap,
+            ebidta_margin_growth,
+            da_percent_growth,
+            capex_percent_growth,
+            working_capital_days_growth,
+            wacc_direction,
+            updated_at
+        FROM dcf_industry_valuation_settings
+    """
+    params = None
+    if group_ids:
+        placeholders = ",".join(["?"] * len(group_ids))
+        sql += f" WHERE group_id IN ({placeholders})"
+        params = tuple(int(x) for x in group_ids)
+    return _read_df(sql, conn, params=params)
+
+
+def upsert_dcf_industry_valuation_settings(
+    conn,
+    rows: List[Tuple[int, int, float, float, float, float, float, float, float, float, float, float, float, str]],
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for row in rows:
+            (
+                group_id,
+                historical_years,
+                terminal_growth_usa,
+                terminal_growth_india,
+                terminal_growth_china,
+                terminal_growth_japan,
+                future_revenue_growth,
+                starting_projected_revenue_growth_cap,
+                ebidta_margin_growth,
+                da_percent_growth,
+                capex_percent_growth,
+                working_capital_days_growth,
+                wacc_direction,
+                updated_at,
+            ) = row
+            obj = session.get(DcfIndustryValuationSettings, int(group_id))
+            if obj is None:
+                obj = DcfIndustryValuationSettings(
+                    group_id=int(group_id),
+                    historical_years=int(historical_years),
+                    terminal_growth_usa=float(terminal_growth_usa),
+                    terminal_growth_india=float(terminal_growth_india),
+                    terminal_growth_china=float(terminal_growth_china),
+                    terminal_growth_japan=float(terminal_growth_japan),
+                    future_revenue_growth=float(future_revenue_growth),
+                    starting_projected_revenue_growth_cap=float(starting_projected_revenue_growth_cap),
+                    ebidta_margin_growth=float(ebidta_margin_growth),
+                    da_percent_growth=float(da_percent_growth),
+                    capex_percent_growth=float(capex_percent_growth),
+                    working_capital_days_growth=float(working_capital_days_growth),
+                    wacc_direction=float(wacc_direction),
+                    updated_at=updated_at,
+                )
+                session.add(obj)
+            else:
+                obj.historical_years = int(historical_years)
+                obj.terminal_growth_usa = float(terminal_growth_usa)
+                obj.terminal_growth_india = float(terminal_growth_india)
+                obj.terminal_growth_china = float(terminal_growth_china)
+                obj.terminal_growth_japan = float(terminal_growth_japan)
+                obj.future_revenue_growth = float(future_revenue_growth)
+                obj.starting_projected_revenue_growth_cap = float(starting_projected_revenue_growth_cap)
+                obj.ebidta_margin_growth = float(ebidta_margin_growth)
+                obj.da_percent_growth = float(da_percent_growth)
+                obj.capex_percent_growth = float(capex_percent_growth)
+                obj.working_capital_days_growth = float(working_capital_days_growth)
+                obj.wacc_direction = float(wacc_direction)
+                obj.updated_at = updated_at
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for row in rows:
+        (
+            group_id,
+            historical_years,
+            terminal_growth_usa,
+            terminal_growth_india,
+            terminal_growth_china,
+            terminal_growth_japan,
+            future_revenue_growth,
+            starting_projected_revenue_growth_cap,
+            ebidta_margin_growth,
+            da_percent_growth,
+            capex_percent_growth,
+            working_capital_days_growth,
+            wacc_direction,
+            updated_at,
+        ) = row
+        cur.execute(
+            """
+            UPDATE dcf_industry_valuation_settings
+            SET
+                historical_years = ?,
+                terminal_growth_usa = ?,
+                terminal_growth_india = ?,
+                terminal_growth_china = ?,
+                terminal_growth_japan = ?,
+                future_revenue_growth = ?,
+                starting_projected_revenue_growth_cap = ?,
+                ebidta_margin_growth = ?,
+                da_percent_growth = ?,
+                capex_percent_growth = ?,
+                working_capital_days_growth = ?,
+                wacc_direction = ?,
+                updated_at = ?
+            WHERE group_id = ?
+            """,
+            (
+                int(historical_years),
+                float(terminal_growth_usa),
+                float(terminal_growth_india),
+                float(terminal_growth_china),
+                float(terminal_growth_japan),
+                float(future_revenue_growth),
+                float(starting_projected_revenue_growth_cap),
+                float(ebidta_margin_growth),
+                float(da_percent_growth),
+                float(capex_percent_growth),
+                float(working_capital_days_growth),
+                float(wacc_direction),
+                updated_at,
+                int(group_id),
+            ),
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                INSERT INTO dcf_industry_valuation_settings(
+                    group_id,
+                    historical_years,
+                    terminal_growth_usa,
+                    terminal_growth_india,
+                    terminal_growth_china,
+                    terminal_growth_japan,
+                    future_revenue_growth,
+                    starting_projected_revenue_growth_cap,
+                    ebidta_margin_growth,
+                    da_percent_growth,
+                    capex_percent_growth,
+                    working_capital_days_growth,
+                    wacc_direction,
+                    updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(group_id),
+                    int(historical_years),
+                    float(terminal_growth_usa),
+                    float(terminal_growth_india),
+                    float(terminal_growth_china),
+                    float(terminal_growth_japan),
+                    float(future_revenue_growth),
+                    float(starting_projected_revenue_growth_cap),
+                    float(ebidta_margin_growth),
+                    float(da_percent_growth),
+                    float(capex_percent_growth),
+                    float(working_capital_days_growth),
+                    float(wacc_direction),
+                    updated_at,
+                ),
+            )
+    conn.commit()
+
+
+def get_dcf_company_valuation_settings(conn, company_ids: Optional[List[int]] = None) -> pd.DataFrame:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        query = session.query(DcfCompanyValuationSettings)
+        if company_ids:
+            query = query.filter(DcfCompanyValuationSettings.company_id.in_([int(x) for x in company_ids]))
+        rows = query.all()
+        if not rows:
+            return pd.DataFrame()
+        return pd.DataFrame(
+            [
+                {
+                    "company_id": int(row.company_id),
+                    "historical_years": int(row.historical_years),
+                    "terminal_growth_usa": float(row.terminal_growth_usa),
+                    "terminal_growth_india": float(row.terminal_growth_india),
+                    "terminal_growth_china": float(row.terminal_growth_china),
+                    "terminal_growth_japan": float(row.terminal_growth_japan),
+                    "future_revenue_growth": float(row.future_revenue_growth),
+                    "starting_projected_revenue_growth_cap": float(row.starting_projected_revenue_growth_cap),
+                    "ebidta_margin_growth": float(row.ebidta_margin_growth),
+                    "da_percent_growth": float(row.da_percent_growth),
+                    "capex_percent_growth": float(row.capex_percent_growth),
+                    "working_capital_days_growth": float(row.working_capital_days_growth),
+                    "wacc_direction": float(row.wacc_direction),
+                    "updated_at": row.updated_at,
+                }
+                for row in rows
+            ]
+        )
+    sql = """
+        SELECT
+            company_id,
+            historical_years,
+            terminal_growth_usa,
+            terminal_growth_india,
+            terminal_growth_china,
+            terminal_growth_japan,
+            future_revenue_growth,
+            starting_projected_revenue_growth_cap,
+            ebidta_margin_growth,
+            da_percent_growth,
+            capex_percent_growth,
+            working_capital_days_growth,
+            wacc_direction,
+            updated_at
+        FROM dcf_company_valuation_settings
+    """
+    params = None
+    if company_ids:
+        placeholders = ",".join(["?"] * len(company_ids))
+        sql += f" WHERE company_id IN ({placeholders})"
+        params = tuple(int(x) for x in company_ids)
+    return _read_df(sql, conn, params=params)
+
+
+def upsert_dcf_company_valuation_settings(
+    conn,
+    rows: List[Tuple[int, int, float, float, float, float, float, float, float, float, float, float, float, str]],
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for row in rows:
+            (
+                company_id,
+                historical_years,
+                terminal_growth_usa,
+                terminal_growth_india,
+                terminal_growth_china,
+                terminal_growth_japan,
+                future_revenue_growth,
+                starting_projected_revenue_growth_cap,
+                ebidta_margin_growth,
+                da_percent_growth,
+                capex_percent_growth,
+                working_capital_days_growth,
+                wacc_direction,
+                updated_at,
+            ) = row
+            obj = session.get(DcfCompanyValuationSettings, int(company_id))
+            if obj is None:
+                obj = DcfCompanyValuationSettings(
+                    company_id=int(company_id),
+                    historical_years=int(historical_years),
+                    terminal_growth_usa=float(terminal_growth_usa),
+                    terminal_growth_india=float(terminal_growth_india),
+                    terminal_growth_china=float(terminal_growth_china),
+                    terminal_growth_japan=float(terminal_growth_japan),
+                    future_revenue_growth=float(future_revenue_growth),
+                    starting_projected_revenue_growth_cap=float(starting_projected_revenue_growth_cap),
+                    ebidta_margin_growth=float(ebidta_margin_growth),
+                    da_percent_growth=float(da_percent_growth),
+                    capex_percent_growth=float(capex_percent_growth),
+                    working_capital_days_growth=float(working_capital_days_growth),
+                    wacc_direction=float(wacc_direction),
+                    updated_at=updated_at,
+                )
+                session.add(obj)
+            else:
+                obj.historical_years = int(historical_years)
+                obj.terminal_growth_usa = float(terminal_growth_usa)
+                obj.terminal_growth_india = float(terminal_growth_india)
+                obj.terminal_growth_china = float(terminal_growth_china)
+                obj.terminal_growth_japan = float(terminal_growth_japan)
+                obj.future_revenue_growth = float(future_revenue_growth)
+                obj.starting_projected_revenue_growth_cap = float(starting_projected_revenue_growth_cap)
+                obj.ebidta_margin_growth = float(ebidta_margin_growth)
+                obj.da_percent_growth = float(da_percent_growth)
+                obj.capex_percent_growth = float(capex_percent_growth)
+                obj.working_capital_days_growth = float(working_capital_days_growth)
+                obj.wacc_direction = float(wacc_direction)
+                obj.updated_at = updated_at
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for row in rows:
+        (
+            company_id,
+            historical_years,
+            terminal_growth_usa,
+            terminal_growth_india,
+            terminal_growth_china,
+            terminal_growth_japan,
+            future_revenue_growth,
+            starting_projected_revenue_growth_cap,
+            ebidta_margin_growth,
+            da_percent_growth,
+            capex_percent_growth,
+            working_capital_days_growth,
+            wacc_direction,
+            updated_at,
+        ) = row
+        cur.execute(
+            """
+            UPDATE dcf_company_valuation_settings
+            SET
+                historical_years = ?,
+                terminal_growth_usa = ?,
+                terminal_growth_india = ?,
+                terminal_growth_china = ?,
+                terminal_growth_japan = ?,
+                future_revenue_growth = ?,
+                starting_projected_revenue_growth_cap = ?,
+                ebidta_margin_growth = ?,
+                da_percent_growth = ?,
+                capex_percent_growth = ?,
+                working_capital_days_growth = ?,
+                wacc_direction = ?,
+                updated_at = ?
+            WHERE company_id = ?
+            """,
+            (
+                int(historical_years),
+                float(terminal_growth_usa),
+                float(terminal_growth_india),
+                float(terminal_growth_china),
+                float(terminal_growth_japan),
+                float(future_revenue_growth),
+                float(starting_projected_revenue_growth_cap),
+                float(ebidta_margin_growth),
+                float(da_percent_growth),
+                float(capex_percent_growth),
+                float(working_capital_days_growth),
+                float(wacc_direction),
+                updated_at,
+                int(company_id),
+            ),
+        )
+        if cur.rowcount == 0:
+            cur.execute(
+                """
+                INSERT INTO dcf_company_valuation_settings(
+                    company_id,
+                    historical_years,
+                    terminal_growth_usa,
+                    terminal_growth_india,
+                    terminal_growth_china,
+                    terminal_growth_japan,
+                    future_revenue_growth,
+                    starting_projected_revenue_growth_cap,
+                    ebidta_margin_growth,
+                    da_percent_growth,
+                    capex_percent_growth,
+                    working_capital_days_growth,
+                    wacc_direction,
+                    updated_at
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(company_id),
+                    int(historical_years),
+                    float(terminal_growth_usa),
+                    float(terminal_growth_india),
+                    float(terminal_growth_china),
+                    float(terminal_growth_japan),
+                    float(future_revenue_growth),
+                    float(starting_projected_revenue_growth_cap),
+                    float(ebidta_margin_growth),
+                    float(da_percent_growth),
+                    float(capex_percent_growth),
+                    float(working_capital_days_growth),
+                    float(wacc_direction),
+                    updated_at,
+                ),
+            )
+    conn.commit()
+
+
 def replace_country_risk_premium(
     conn,
     rows: List[Tuple[int, float, float, float, float, float, float, str]],
@@ -874,6 +1512,7 @@ def init_db(conn) -> None:
 
     # Backwards-compatible schema migration
     _ensure_companies_country_column(conn)
+    _ensure_dcf_settings_growth_cap_column(conn)
     conn = DbCompat(conn)
 
     # Seed default rows if these tables are empty
@@ -1126,6 +1765,60 @@ def init_db(conn) -> None:
         cur.executemany(
             "INSERT INTO industry_betas(user_industry_bucket, mapped_sector, unlevered_beta, cash_adjusted_beta, updated_at) VALUES(?, ?, ?, ?, ?)",
             [(b, s, ub, cb, ts_ib) for (b, s, ub, cb) in industry_beta_defaults],
+        )
+
+    cur.execute("SELECT COUNT(*) FROM dcf_valuation_settings")
+    row = cur.fetchone()
+    cnt_dcf_settings = int(row[0]) if row and row[0] is not None else 0
+    if cnt_dcf_settings == 0:
+        latest_rfr_row = cur.execute(
+            """
+            SELECT usa_rf, india_rf, china_rf, japan_rf
+            FROM risk_free_rates
+            ORDER BY year DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        if latest_rfr_row is None:
+            latest_rfr_row = (0.0, 0.0, 0.0, 0.0)
+        ts_dcf = datetime.utcnow().isoformat()
+        cur.executemany(
+            """
+            INSERT INTO dcf_valuation_settings(
+                id,
+                historical_years,
+                terminal_growth_usa,
+                terminal_growth_india,
+                terminal_growth_china,
+                terminal_growth_japan,
+                future_revenue_growth,
+                starting_projected_revenue_growth_cap,
+                ebidta_margin_growth,
+                da_percent_growth,
+                capex_percent_growth,
+                working_capital_days_growth,
+                wacc_direction,
+                updated_at
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    1,
+                    7,
+                    float(latest_rfr_row[0]),
+                    float(latest_rfr_row[1]),
+                    float(latest_rfr_row[2]),
+                    float(latest_rfr_row[3]),
+                    0.0,
+                    25.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    0.0,
+                    ts_dcf,
+                )
+            ],
         )
 
     # Refresh/backfill Cost of Equity (derived) using current Levered Beta + US RFR + US ERP
@@ -1449,6 +2142,74 @@ def extract_latest_ttm_market_capitalization(file_bytes: bytes) -> Tuple[str, fl
         "Market Capitalization (in millions)",
     ]
     return extract_latest_ttm_ratios_by_rowlabel(file_bytes, "Market Capitalization", fallbacks=fallbacks)
+
+
+def extract_annual_last_close_price_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = ["Last Close", "Close Price", "Closing Price"]
+    try:
+        df = _read_sheet(file_bytes, "Ratios-Annual")
+    except Exception:
+        return {}
+
+    row = None
+    try:
+        row = _find_row(df, ["Last Close Price"] + fallbacks)
+    except ValueError:
+        row = None
+
+    series: Dict[int, float] = {}
+    for col in df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if row is None:
+            series[year] = 0.0
+            continue
+        val = row[col]
+        if pd.notna(val):
+            try:
+                series[year] = float(val)
+                continue
+            except Exception:
+                pass
+        series[year] = 0.0
+    return dict(sorted(series.items(), key=lambda kv: kv[0]))
+
+
+def extract_latest_ttm_last_close_price(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = ["Last Close", "Close Price", "Closing Price"]
+    try:
+        annual_df = _read_sheet(file_bytes, "Ratios-Annual")
+    except Exception:
+        annual_df = None
+
+    if annual_df is not None:
+        try:
+            row = _find_row(annual_df, ["Last Close Price"] + fallbacks)
+            if "TTM" in annual_df.columns:
+                val = row["TTM"]
+                if pd.notna(val):
+                    return "TTM", float(val)
+        except ValueError:
+            pass
+        except Exception:
+            return "TTM", 0.0
+
+    try:
+        return extract_latest_ttm_ratios_by_rowlabel(file_bytes, "Last Close Price", fallbacks=fallbacks)
+    except Exception:
+        pass
+
+    for sheet_name in ("Ratios-TTM", "Ratios-Annual"):
+        try:
+            as_of = _extract_latest_ttm_column_label(file_bytes, sheet_name)
+            return as_of, 0.0
+        except Exception:
+            continue
+    return "TTM", 0.0
 
 
 def extract_annual_roic_direct_upload_series(file_bytes: bytes) -> Dict[int, float]:
@@ -2295,6 +3056,22 @@ def extract_latest_ttm_research_and_development_expense(file_bytes: bytes) -> Tu
     except Exception:
         return as_of, min_rd
 
+def extract_annual_shares_outstanding_basic_series(file_bytes: bytes) -> Dict[int, float]:
+    fallbacks = [
+        "Shares Outstanding Basic",
+        "Basic Shares Outstanding",
+        "Weighted Average Basic Shares Outstanding",
+    ]
+    return extract_annual_series_by_rowlabel(file_bytes, "Shares Outstanding (Basic)", fallbacks=fallbacks)
+
+def extract_latest_ttm_shares_outstanding_basic(file_bytes: bytes) -> Tuple[str, float]:
+    fallbacks = [
+        "Shares Outstanding Basic",
+        "Basic Shares Outstanding",
+        "Weighted Average Basic Shares Outstanding",
+    ]
+    return extract_latest_ttm_by_rowlabel(file_bytes, "Shares Outstanding (Basic)", fallbacks=fallbacks)
+
 def extract_annual_capital_expenditures_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = [
         "Capital Expenditures",
@@ -2795,8 +3572,14 @@ def _extract_current_debt_defaults(
     *,
     default_value: float = 0.0001,
 ) -> Tuple[Dict[int, float], Tuple[str, float]]:
-    """Return annual + latest TTM Current Debt as short-term debt plus current LTD portion."""
+    """Return annual + latest TTM Current Debt.
 
+    Prefer a direct Current Debt row when present. If not present, fall back to
+    Short-Term Debt + Current Portion of Long-Term Debt, with each missing/blank
+    component defaulting to ``default_value``.
+    """
+
+    current_debt_targets = ["Current Debt", "Current debt"]
     short_term_targets = ["Short-Term Debt", "Short-term debt", "Short Term Debt"]
     current_portion_targets = [
         "Current Portion of Long-Term Debt",
@@ -2822,6 +3605,7 @@ def _extract_current_debt_defaults(
 
     annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
     annual_df = _normalize_first_column_to_date(annual_df)
+    annual_current_debt_row = _find_optional_row(annual_df, current_debt_targets)
     annual_short_term_row = _find_optional_row(annual_df, short_term_targets)
     annual_current_portion_row = _find_optional_row(annual_df, current_portion_targets)
 
@@ -2833,24 +3617,32 @@ def _extract_current_debt_defaults(
             year = int(str(col)[:4])
         except Exception:
             continue
-        annual_series[year] = _component_value(annual_short_term_row, col) + _component_value(
-            annual_current_portion_row,
-            col,
-        )
+        if annual_current_debt_row is not None:
+            annual_series[year] = _component_value(annual_current_debt_row, col)
+        else:
+            annual_series[year] = _component_value(annual_short_term_row, col) + _component_value(
+                annual_current_portion_row,
+                col,
+            )
 
     ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
     ttm_df = _normalize_first_column_to_date(ttm_df)
     ttm_as_of = _latest_sheet_column_label(ttm_df)
+    ttm_current_debt_row = _find_optional_row(ttm_df, current_debt_targets)
     ttm_short_term_row = _find_optional_row(ttm_df, short_term_targets)
     ttm_current_portion_row = _find_optional_row(ttm_df, current_portion_targets)
 
     if not ttm_as_of:
-        return dict(sorted(annual_series.items())), (ttm_as_of, default_value + default_value)
+        empty_ttm = default_value if ttm_current_debt_row is not None else (default_value + default_value)
+        return dict(sorted(annual_series.items())), (ttm_as_of, empty_ttm)
 
-    ttm_value = _component_value(ttm_short_term_row, ttm_as_of) + _component_value(
-        ttm_current_portion_row,
-        ttm_as_of,
-    )
+    if ttm_current_debt_row is not None:
+        ttm_value = _component_value(ttm_current_debt_row, ttm_as_of)
+    else:
+        ttm_value = _component_value(ttm_short_term_row, ttm_as_of) + _component_value(
+            ttm_current_portion_row,
+            ttm_as_of,
+        )
     return dict(sorted(annual_series.items())), (ttm_as_of, ttm_value)
 
 
@@ -4239,6 +5031,55 @@ def upsert_annual_market_capitalization(
     conn.commit()
 
 
+def upsert_annual_last_close_price(
+    conn: sqlite3.Connection, company_id: int, year_to_last_close_price: Dict[int, float]
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_last_close_price.items():
+            existing = session.query(LastClosePriceAnnual).filter(
+                LastClosePriceAnnual.company_id == company_id,
+                LastClosePriceAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(LastClosePriceAnnual(company_id=company_id, fiscal_year=year, last_close_price=val))
+            else:
+                existing.last_close_price = val
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_last_close_price.items():
+        cur.execute(
+            "INSERT INTO last_close_price_annual(company_id, fiscal_year, last_close_price) "
+            "VALUES(?, ?, ?) "
+            "ON CONFLICT(company_id, fiscal_year) DO UPDATE SET last_close_price=excluded.last_close_price",
+            (company_id, year, val),
+        )
+    conn.commit()
+
+
+def upsert_ttm_last_close_price(conn: sqlite3.Connection, company_id: int, as_of: str, last_close_price: float) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(LastClosePriceTtm).filter(LastClosePriceTtm.company_id == company_id).one_or_none()
+        if existing is None:
+            session.add(LastClosePriceTtm(company_id=company_id, as_of=as_of, last_close_price=last_close_price))
+        else:
+            existing.as_of = as_of
+            existing.last_close_price = last_close_price
+        session.commit()
+        return
+
+    conn.execute(
+        "INSERT INTO last_close_price_ttm(company_id, as_of, last_close_price) "
+        "VALUES(?, ?, ?) "
+        "ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, last_close_price=excluded.last_close_price",
+        (company_id, as_of, last_close_price),
+    )
+    conn.commit()
+
+
 def upsert_annual_roic_direct_upload(
     conn: sqlite3.Connection, company_id: int, year_to_roic_pct: Dict[int, float]
 ) -> None:
@@ -4494,6 +5335,70 @@ def upsert_ttm_cash_and_cash_equivalents(conn: sqlite3.Connection, company_id: i
         "VALUES(?, ?, ?) "
         "ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, cash_and_cash_equivalents=excluded.cash_and_cash_equivalents",
         (company_id, as_of, cash_and_cash_equivalents),
+    )
+    conn.commit()
+
+def upsert_annual_shares_outstanding_basic(
+    conn: sqlite3.Connection, company_id: int, year_to_shares: Dict[int, float]
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for year, val in year_to_shares.items():
+            existing = session.query(SharesOutstandingBasicAnnual).filter(
+                SharesOutstandingBasicAnnual.company_id == company_id,
+                SharesOutstandingBasicAnnual.fiscal_year == year,
+            ).one_or_none()
+            if existing is None:
+                session.add(
+                    SharesOutstandingBasicAnnual(
+                        company_id=company_id,
+                        fiscal_year=year,
+                        shares_outstanding_basic=val,
+                    )
+                )
+            else:
+                existing.shares_outstanding_basic = val
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for year, val in year_to_shares.items():
+        cur.execute(
+            "INSERT INTO shares_outstanding_basic_annual(company_id, fiscal_year, shares_outstanding_basic) "
+            "VALUES(?, ?, ?) "
+            "ON CONFLICT(company_id, fiscal_year) DO UPDATE SET shares_outstanding_basic=excluded.shares_outstanding_basic",
+            (company_id, year, val),
+        )
+    conn.commit()
+
+
+def upsert_ttm_shares_outstanding_basic(
+    conn: sqlite3.Connection, company_id: int, as_of: str, shares_outstanding_basic: float
+) -> None:
+    session = getattr(conn, "session", None)
+    if session is not None:
+        existing = session.query(SharesOutstandingBasicTtm).filter(
+            SharesOutstandingBasicTtm.company_id == company_id
+        ).one_or_none()
+        if existing is None:
+            session.add(
+                SharesOutstandingBasicTtm(
+                    company_id=company_id,
+                    as_of=as_of,
+                    shares_outstanding_basic=shares_outstanding_basic,
+                )
+            )
+        else:
+            existing.as_of = as_of
+            existing.shares_outstanding_basic = shares_outstanding_basic
+        session.commit()
+        return
+
+    conn.execute(
+        "INSERT INTO shares_outstanding_basic_ttm(company_id, as_of, shares_outstanding_basic) "
+        "VALUES(?, ?, ?) "
+        "ON CONFLICT(company_id) DO UPDATE SET as_of=excluded.as_of, shares_outstanding_basic=excluded.shares_outstanding_basic",
+        (company_id, as_of, shares_outstanding_basic),
     )
     conn.commit()
 
