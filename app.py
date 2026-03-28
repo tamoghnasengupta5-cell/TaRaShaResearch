@@ -71,6 +71,26 @@ def _inject_shell_css() -> None:
     st.markdown(
         """
         <style>
+          :root {
+            --tab-border-color: rgba(226, 232, 240, 1);
+            --tab-text-color: rgba(71, 85, 105, 1);
+            --tab-hover-text-color: rgba(15, 23, 42, 1);
+            --tab-hover-bg: rgba(241, 245, 249, 0.6);
+            --tab-selected-text-color: rgba(15, 23, 42, 1);
+            --tab-selected-border-color: rgba(59, 130, 246, 1);
+          }
+
+          @media (prefers-color-scheme: dark) {
+            :root {
+              --tab-border-color: rgba(71, 85, 105, 0.65);
+              --tab-text-color: rgba(203, 213, 225, 0.88);
+              --tab-hover-text-color: rgba(248, 250, 252, 1);
+              --tab-hover-bg: rgba(51, 65, 85, 0.45);
+              --tab-selected-text-color: rgba(248, 250, 252, 1);
+              --tab-selected-border-color: rgba(96, 165, 250, 1);
+            }
+          }
+
           /* Full-bleed layout: remove Streamlit's default max-width + side padding */
           .block-container {
             max-width: 100% !important;
@@ -93,12 +113,12 @@ def _inject_shell_css() -> None:
             gap: 0.25rem;
             padding-left: 10px;
             padding-right: 10px;
-            border-bottom: 1px solid rgba(226, 232, 240, 1);
+            border-bottom: 1px solid var(--tab-border-color);
           }
 
           [data-testid="stTabs"] button[role="tab"] {
             background: transparent !important;
-            color: rgba(71, 85, 105, 1) !important;
+            color: var(--tab-text-color) !important;
             font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Apple Color Emoji", "Segoe UI Emoji" !important;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
@@ -113,13 +133,13 @@ def _inject_shell_css() -> None:
           }
 
           [data-testid="stTabs"] button[role="tab"]:hover {
-            color: rgba(15, 23, 42, 1) !important;
-            background: rgba(241, 245, 249, 0.6) !important;
+            color: var(--tab-hover-text-color) !important;
+            background: var(--tab-hover-bg) !important;
           }
 
           [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
-            color: rgba(15, 23, 42, 1) !important;
-            border-bottom: 2px solid rgba(59, 130, 246, 1) !important;
+            color: var(--tab-selected-text-color) !important;
+            border-bottom: 2px solid var(--tab-selected-border-color) !important;
             background: transparent !important;
           }
 
@@ -227,7 +247,7 @@ def _inject_shell_css() -> None:
               -webkit-overflow-scrolling: touch;
               padding-left: 6px;
               padding-right: 6px;
-              border-bottom: 1px solid rgba(226, 232, 240, 1);
+              border-bottom: 1px solid var(--tab-border-color);
             }
             [data-testid="stTabs"] button[role="tab"] {
               flex: 0 0 auto;
