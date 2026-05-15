@@ -272,6 +272,21 @@ def _ensure_dcf_settings_growth_cap_column(conn) -> None:
         return
 
 
+def _ensure_dcf_company_projection_path_config_column(conn) -> None:
+    """Backwards-compatible schema migration for company-level DCF projection path configs."""
+    try:
+        inspector = inspect(conn.get_bind())
+        cols = [c["name"] for c in inspector.get_columns("dcf_company_valuation_settings")]
+        if "projection_path_config" not in cols:
+            execute(
+                conn,
+                "ALTER TABLE dcf_company_valuation_settings ADD COLUMN projection_path_config TEXT",
+            )
+            conn.commit()
+    except Exception:
+        return
+
+
 def _read_df(sql: str, conn, params=None) -> pd.DataFrame:
     session = getattr(conn, "session", None)
     if session is not None:
@@ -1250,6 +1265,7 @@ def get_dcf_company_valuation_settings(conn, company_ids: Optional[List[int]] = 
                     "capex_percent_growth": float(row.capex_percent_growth),
                     "working_capital_days_growth": float(row.working_capital_days_growth),
                     "wacc_direction": float(row.wacc_direction),
+                    "projection_path_config": row.projection_path_config,
                     "updated_at": row.updated_at,
                 }
                 for row in rows
@@ -1270,6 +1286,7 @@ def get_dcf_company_valuation_settings(conn, company_ids: Optional[List[int]] = 
             capex_percent_growth,
             working_capital_days_growth,
             wacc_direction,
+            projection_path_config,
             updated_at
         FROM dcf_company_valuation_settings
     """
@@ -1283,7 +1300,7 @@ def get_dcf_company_valuation_settings(conn, company_ids: Optional[List[int]] = 
 
 def upsert_dcf_company_valuation_settings(
     conn,
-    rows: List[Tuple[int, int, float, float, float, float, float, float, float, float, float, float, float, str]],
+    rows: List[Tuple],
 ) -> None:
     session = getattr(conn, "session", None)
     if session is not None:
@@ -1303,7 +1320,8 @@ def upsert_dcf_company_valuation_settings(
                 working_capital_days_growth,
                 wacc_direction,
                 updated_at,
-            ) = row
+            ) = row[:14]
+            projection_path_config = row[14] if len(row) > 14 else None
             obj = session.get(DcfCompanyValuationSettings, int(company_id))
             if obj is None:
                 obj = DcfCompanyValuationSettings(
@@ -1320,6 +1338,7 @@ def upsert_dcf_company_valuation_settings(
                     capex_percent_growth=float(capex_percent_growth),
                     working_capital_days_growth=float(working_capital_days_growth),
                     wacc_direction=float(wacc_direction),
+                    projection_path_config=projection_path_config,
                     updated_at=updated_at,
                 )
                 session.add(obj)
@@ -1336,6 +1355,7 @@ def upsert_dcf_company_valuation_settings(
                 obj.capex_percent_growth = float(capex_percent_growth)
                 obj.working_capital_days_growth = float(working_capital_days_growth)
                 obj.wacc_direction = float(wacc_direction)
+                obj.projection_path_config = projection_path_config
                 obj.updated_at = updated_at
         session.commit()
         return
@@ -1357,7 +1377,8 @@ def upsert_dcf_company_valuation_settings(
             working_capital_days_growth,
             wacc_direction,
             updated_at,
-        ) = row
+        ) = row[:14]
+        projection_path_config = row[14] if len(row) > 14 else None
         cur.execute(
             """
             UPDATE dcf_company_valuation_settings
@@ -1374,6 +1395,7 @@ def upsert_dcf_company_valuation_settings(
                 capex_percent_growth = ?,
                 working_capital_days_growth = ?,
                 wacc_direction = ?,
+                projection_path_config = ?,
                 updated_at = ?
             WHERE company_id = ?
             """,
@@ -1390,6 +1412,7 @@ def upsert_dcf_company_valuation_settings(
                 float(capex_percent_growth),
                 float(working_capital_days_growth),
                 float(wacc_direction),
+                projection_path_config,
                 updated_at,
                 int(company_id),
             ),
@@ -1411,8 +1434,9 @@ def upsert_dcf_company_valuation_settings(
                     capex_percent_growth,
                     working_capital_days_growth,
                     wacc_direction,
+                    projection_path_config,
                     updated_at
-                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(company_id),
@@ -1428,6 +1452,7 @@ def upsert_dcf_company_valuation_settings(
                     float(capex_percent_growth),
                     float(working_capital_days_growth),
                     float(wacc_direction),
+                    projection_path_config,
                     updated_at,
                 ),
             )
@@ -1513,6 +1538,7 @@ def init_db(conn) -> None:
     # Backwards-compatible schema migration
     _ensure_companies_country_column(conn)
     _ensure_dcf_settings_growth_cap_column(conn)
+    _ensure_dcf_company_projection_path_config_column(conn)
     conn = DbCompat(conn)
 
     # Seed default rows if these tables are empty
@@ -5732,6 +5758,38 @@ def get_annual_accumulated_profit_series(conn: sqlite3.Connection, company_id: i
         conn,
         params=(company_id,),
     )
+
+
+def exclude_recent_zero_accumulated_profit_for_stats(df_in: pd.DataFrame) -> pd.DataFrame:
+    """
+    Drop the latest accumulated-profit row from stats when the latest year is
+    2025/2026 and that latest value is zero.
+    """
+    if (
+        df_in is None
+        or df_in.empty
+        or "year" not in df_in.columns
+        or "accumulated_profit" not in df_in.columns
+    ):
+        return df_in
+
+    df = df_in.copy()
+    df["year"] = pd.to_numeric(df["year"], errors="coerce")
+    df["accumulated_profit"] = pd.to_numeric(df["accumulated_profit"], errors="coerce")
+    years = df["year"].dropna()
+    if years.empty:
+        return df
+
+    latest_year = int(years.max())
+    if latest_year not in (2025, 2026):
+        return df
+
+    latest_mask = df["year"] == latest_year
+    latest_vals = df.loc[latest_mask, "accumulated_profit"].dropna()
+    if latest_vals.empty or not np.isclose(latest_vals.to_numpy(dtype=float), 0.0).all():
+        return df
+
+    return df.loc[~latest_mask].reset_index(drop=True)
 
 
 def upsert_annual_total_equity(conn: sqlite3.Connection, company_id: int, year_to_total: Dict[int, float]) -> None:

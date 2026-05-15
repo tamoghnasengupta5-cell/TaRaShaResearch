@@ -166,6 +166,7 @@ def render_balance_sheet_metrics_tab():
                     compute_and_store_total_equity_and_roe(conn, cid)
 
                     ann_acc = get_annual_accumulated_profit_series(conn, cid)
+                    ann_acc_stats = exclude_recent_zero_accumulated_profit_for_stats(ann_acc)
                     ann_roe = get_annual_roe_series(conn, cid)
                     ann_roce = get_annual_roce_series(conn, cid)
                     ann_ncwc = get_annual_non_cash_working_capital_series(conn, cid)
@@ -202,9 +203,9 @@ def render_balance_sheet_metrics_tab():
 
                         # Accumulated profit growth stats (may be None if no data)
                         med_acc_g, std_acc_g = (None, None)
-                        if not ann_acc.empty:
+                        if not ann_acc_stats.empty:
                             med_acc_g, std_acc_g = compute_growth_stats(
-                                ann_acc,
+                                ann_acc_stats,
                                 yr_start,
                                 yr_end,
                                 stdev_sample=sample_bs,
@@ -499,6 +500,7 @@ def render_balance_sheet_metrics_tab():
                     ticker = row["ticker"]
 
                     ann_acc = get_annual_accumulated_profit_series(conn, cid)
+                    ann_acc_stats = exclude_recent_zero_accumulated_profit_for_stats(ann_acc)
                     ann_roe = get_annual_roe_series(conn, cid)
                     ann_roce = get_annual_roce_series(conn, cid)
                     ann_interest_load = get_annual_interest_load_series(conn, cid)
@@ -523,9 +525,9 @@ def render_balance_sheet_metrics_tab():
 
                         # Accumulated profit growth stats
                         med_acc_g, std_acc_g = (None, None)
-                        if not ann_acc.empty:
+                        if not ann_acc_stats.empty:
                             med_acc_g, std_acc_g = compute_growth_stats(
-                                ann_acc,
+                                ann_acc_stats,
                                 yr_start,
                                 yr_end,
                                 stdev_sample=sample_bs_score,

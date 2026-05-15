@@ -356,6 +356,8 @@ def _render_pl_key_data() -> None:
         yr_start: int,
         yr_end: int,
         stdev_sample: bool,
+        *,
+        stats_df: Optional[pd.DataFrame] = None,
     ) -> Tuple[Dict[int, Optional[float]], Dict[int, Optional[float]], Optional[float], Optional[float]]:
         """Return (values_by_year, yoy_growth_by_year, median_growth, stdev_growth)."""
         if ann_df is None or ann_df.empty:
@@ -955,7 +957,7 @@ def _render_bs_key_data() -> None:
 
         df_m["yoy_growth"] = df_m[value_col].astype(float).pct_change()
         med_g, std_g = compute_growth_stats(
-            ann_df,
+            (stats_df if stats_df is not None else ann_df),
             yr_start,
             yr_end,
             stdev_sample=stdev_sample,
@@ -1088,6 +1090,7 @@ def _render_bs_key_data() -> None:
 
         # Pull required annual series
         ann_acc = get_annual_accumulated_profit_series(conn, cid)
+        ann_acc_stats = exclude_recent_zero_accumulated_profit_for_stats(ann_acc)
         ann_roe = get_annual_roe_series(conn, cid)
         ann_roce = get_annual_roce_series(conn, cid)
         ann_ncwc = get_annual_non_cash_working_capital_series(conn, cid)
@@ -1102,7 +1105,12 @@ def _render_bs_key_data() -> None:
 
         # Metrics
         acc_by_year, acc_growth_by_year, acc_med_g, acc_std_g = build_metric(
-            ann_acc, "accumulated_profit", yr_start, yr_end, stdev_sample=sample
+            ann_acc,
+            "accumulated_profit",
+            yr_start,
+            yr_end,
+            stdev_sample=sample,
+            stats_df=ann_acc_stats,
         )
         roe_by_year, roe_growth_by_year, _, _ = build_metric(
             ann_roe, "roe", yr_start, yr_end, stdev_sample=sample

@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Tuple
 import streamlit as st
 
 from core import *  # noqa: F401,F403
+from ui_theme import DASHBOARD_COLUMN_LABELS, dashboard_section, display_table_frame, render_dashboard_table
 
 
 
@@ -352,6 +353,7 @@ def render_combined_dashboard_tab() -> None:
                 compute_and_store_total_equity_and_roe(conn, cid)
 
                 ann_acc = get_annual_accumulated_profit_series(conn, cid)
+                ann_acc_stats = exclude_recent_zero_accumulated_profit_for_stats(ann_acc)
                 ann_roe = get_annual_roe_series(conn, cid)
                 ann_roce = get_annual_roce_series(conn, cid)
                 ann_interest_load = get_annual_interest_load_series(conn, cid)
@@ -370,9 +372,9 @@ def render_combined_dashboard_tab() -> None:
                     # Accumulated Profit growth stats
                     med_acc_g: Optional[float] = None
                     std_acc_g: Optional[float] = None
-                    if not ann_acc.empty:
+                    if not ann_acc_stats.empty:
                         med_acc_g, std_acc_g = compute_growth_stats(
-                            ann_acc,
+                            ann_acc_stats,
                             yr_start_bs,
                             yr_end_bs,
                             stdev_sample=sample_overall,
@@ -878,12 +880,24 @@ def render_combined_dashboard_tab() -> None:
             except Exception:
                 return "-"
 
-        styler = df_sorted.style
-        if existing_score_cols:
-            styler = styler.format(fmt_score_val, subset=existing_score_cols)
+        display_df = display_table_frame(df_sorted)
+        display_score_cols = [DASHBOARD_COLUMN_LABELS.get(c, c) for c in existing_score_cols]
+        overall_help = {
+            DASHBOARD_COLUMN_LABELS.get(c, c): c
+            for c in df_sorted.columns
+            if DASHBOARD_COLUMN_LABELS.get(c, c) != c
+        }
+
+        styler = display_df.style
+        if display_score_cols:
+            styler = styler.format(fmt_score_val, subset=display_score_cols)
 
         # Colour rules for the fixed-window CAGR columns.
-        cagr_cols = [c for c in ["2020-2025 CAGR", "2015-2020 CAGR", "2010-2015 CAGR"] if c in df_sorted.columns]
+        cagr_cols = [
+            DASHBOARD_COLUMN_LABELS.get(c, c)
+            for c in ["2020-2025 CAGR", "2015-2020 CAGR", "2010-2015 CAGR"]
+            if DASHBOARD_COLUMN_LABELS.get(c, c) in display_df.columns
+        ]
 
         def style_cagr(val: Optional[float]) -> str:
             if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -894,18 +908,22 @@ def render_combined_dashboard_tab() -> None:
                 return ""
             # > 15%: green background, white text
             if v > 15.0:
-                return "background-color: green; color: white;"
-            # Between 15% and 0% (inclusive of 0%): white background, red text
+                return "background-color: #DCFCE7; color: #166534; font-weight: 650;"
+            # Between 15% and 0% (inclusive of 0%): neutral background, amber text
             if v >= 0.0:
-                return "background-color: white; color: red;"
-            # Below 0%: red background, white text
-            return "background-color: red; color: white;"
+                return "background-color: #FEF3C7; color: #92400E; font-weight: 600;"
+            # Below 0%: soft red background
+            return "background-color: #FEE2E2; color: #991B1B; font-weight: 650;"
 
         if cagr_cols:
             styler = styler.applymap(style_cagr, subset=pd.IndexSlice[:, cagr_cols])
 
         # Colour rules for the 'Above 15% Year%' column.
-        pct_year_cols = [c for c in ["Above 15% Year%"] if c in df_sorted.columns]
+        pct_year_cols = [
+            DASHBOARD_COLUMN_LABELS.get(c, c)
+            for c in ["Above 15% Year%"]
+            if DASHBOARD_COLUMN_LABELS.get(c, c) in display_df.columns
+        ]
 
         def style_above_15_year(val: Optional[float]) -> str:
             if val is None or (isinstance(val, float) and pd.isna(val)):
@@ -916,18 +934,25 @@ def render_combined_dashboard_tab() -> None:
                 return ""
             # > 60%: green background, white text
             if v > 60.0:
-                return "background-color: green; color: white;"
-            # Between 60% and 40% (inclusive of 40%): white background, red text
+                return "background-color: #DCFCE7; color: #166534; font-weight: 650;"
+            # Between 60% and 40% (inclusive of 40%): neutral background, amber text
             if v >= 40.0:
-                return "background-color: white; color: red;"
-            # Below 40%: red background, white text
-            return "background-color: red; color: white;"
+                return "background-color: #FEF3C7; color: #92400E; font-weight: 600;"
+            # Below 40%: soft red background
+            return "background-color: #FEE2E2; color: #991B1B; font-weight: 650;"
 
         if pct_year_cols:
             styler = styler.applymap(style_above_15_year, subset=pd.IndexSlice[:, pct_year_cols])
 
-        st.subheader("Overall Score Dashboard - Combined P&L and Balance Sheet Scores")
-        st.dataframe(styler, use_container_width=True)
+        dashboard_section(
+            "Overall Score Dashboard",
+            "Combined P&L, balance-sheet, and FCFF/spread scores with compact display labels.",
+        )
+        render_dashboard_table(
+            styler,
+            help_map=overall_help,
+            key="combined_overall_score_dashboard_table",
+        )
         progress_bar.progress(100, text="Overall score computation complete.")
 
 
@@ -980,12 +1005,27 @@ def render_combined_dashboard_tab() -> None:
                 except Exception:
                     return "-"
 
-            styler_break = df_breakup.style
-            if numeric_cols:
-                styler_break = styler_break.format(fmt_break_val, subset=numeric_cols)
+            display_breakup_df = display_table_frame(df_breakup)
+            breakup_help = {
+                DASHBOARD_COLUMN_LABELS.get(c, c): c
+                for c in df_breakup.columns
+                if DASHBOARD_COLUMN_LABELS.get(c, c) != c
+            }
+            display_numeric_cols = [DASHBOARD_COLUMN_LABELS.get(c, c) for c in numeric_cols]
 
-            st.subheader("Overall Score Dashboard Breakup")
-            st.dataframe(styler_break, use_container_width=True)
+            styler_break = display_breakup_df.style
+            if display_numeric_cols:
+                styler_break = styler_break.format(fmt_break_val, subset=display_numeric_cols)
+
+            dashboard_section(
+                "Overall Score Dashboard Breakup",
+                "Source metrics behind the combined score, using the same compact table treatment.",
+            )
+            render_dashboard_table(
+                styler_break,
+                help_map=breakup_help,
+                key="combined_overall_score_breakup_table",
+            )
 
 
 

@@ -946,6 +946,7 @@ dcf_company_valuation_settings = Table(
     Column("capex_percent_growth", Float, nullable=False),
     Column("working_capital_days_growth", Float, nullable=False),
     Column("wacc_direction", Float, nullable=False),
+    Column("projection_path_config", Text),
     Column("updated_at", Text),
 )
 
