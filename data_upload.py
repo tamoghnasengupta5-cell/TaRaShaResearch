@@ -125,6 +125,151 @@ def _render_bulk_status(placeholder, company_label: str, status: str, percent: s
     placeholder.markdown(html, unsafe_allow_html=True)
 
 
+def _get_bulk_financial_files(folder: Path) -> list[Path]:
+    return sorted(
+        [
+            p for p in folder.iterdir()
+            if p.is_file() and p.name.lower().endswith("-financials.xlsx")
+        ],
+        key=lambda p: p.name.lower(),
+    )
+
+
+def _write_bulk_batch_log(
+    bulk_dir: Path,
+    batch_number: int,
+    batch_start: int,
+    batch_end: int,
+    total_files: int,
+    log_lines: list[str],
+) -> Path:
+    log_dir = bulk_dir / "Upload_logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = log_dir / f"bulk_upload_batch_{batch_number:03d}_{timestamp}.log"
+    header = "Ticker\tCompany\tStatus\tPercent\tFile\tMessage"
+    metadata = [
+        f"# Batch {batch_number}",
+        f"# Companies {batch_start}-{batch_end} of {total_files}",
+    ]
+    log_path.write_text("\n".join([*metadata, header, *log_lines]), encoding="utf-8")
+    return log_path
+
+
+def _run_bulk_upload_batch(
+    bulk_dir: Path,
+    manifest_map: dict[str, dict[str, str]],
+    financial_files: list[Path],
+    start_index: int,
+    batch_size: int,
+    conn,
+) -> dict[str, object]:
+    end_index = min(start_index + batch_size, len(financial_files))
+    batch_files = financial_files[start_index:end_index]
+    errors: list[str] = []
+    log_lines: list[str] = []
+    success_count = 0
+    failure_count = 0
+
+    st.markdown("### Upload progress")
+    for offset, file_path in enumerate(batch_files, start=1):
+        absolute_index = start_index + offset
+        ticker_raw = file_path.name[:-len("-financials.xlsx")]
+        ticker = ticker_raw.strip().upper()
+        manifest_row = manifest_map.get(ticker)
+        company_label = manifest_row["company_name"] if manifest_row else ticker
+
+        st.caption(
+            f"Batch item {offset}/{len(batch_files)} | "
+            f"Overall company {absolute_index}/{len(financial_files)}"
+        )
+        status_placeholder = st.empty()
+        progress = st.progress(0)
+        _render_bulk_status(status_placeholder, company_label, "In progress", "0%", "#d4a106")
+
+        try:
+            if manifest_row is None:
+                raise ValueError("Ticker not found in manifest.")
+            if manifest_row["country"] not in {
+                "USA",
+                "INDIA",
+                "CHINA",
+                "JAPAN",
+                "UK",
+                "UAE",
+            }:
+                raise ValueError(
+                    "Country is not supported (allowed: USA, India, China, Japan, UK, UAE)."
+                )
+            if not _bucket_has_unlevered_beta(conn, manifest_row["industry_bucket"]):
+                raise ValueError(
+                    "Upload blocked: Industry bucket "
+                    f"'{manifest_row['industry_bucket']}' does not have an unlevered beta defined."
+                )
+
+            bytes_data = file_path.read_bytes()
+            result = ingest_financials_bytes(
+                bytes_data,
+                manifest_row["company_name"],
+                ticker,
+                conn,
+                country=manifest_row["country"],
+            )
+
+            bucket_id = get_company_group_id(conn, manifest_row["industry_bucket"], create=True)
+            if bucket_id is None:
+                raise ValueError("Failed to create or find industry bucket.")
+            add_company_group_members(conn, bucket_id, [result["company_id"]])
+            _compute_bucket_dependent_metrics(conn, result["company_id"])
+
+            progress.progress(100)
+            _render_bulk_status(status_placeholder, company_label, "Success", "100%", "#1f7a1f")
+            warning_msg = " | ".join(result.get("warnings", []))
+            success_count += 1
+            log_lines.append(
+                f"{ticker}\t{company_label}\tSUCCESS\t100\t{file_path.name}\t{warning_msg}"
+            )
+        except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            progress.empty()
+            _render_bulk_status(status_placeholder, company_label, "Error", "NA", "#c62828")
+            failure_count += 1
+            errors.append(f"{ticker}: {e}")
+            log_lines.append(
+                f"{ticker}\t{company_label}\tERROR\tNA\t{file_path.name}\t{e}"
+            )
+
+    conn.commit()
+    batch_number = (start_index // batch_size) + 1
+    batch_start = start_index + 1
+    log_path = _write_bulk_batch_log(
+        bulk_dir,
+        batch_number=batch_number,
+        batch_start=batch_start,
+        batch_end=end_index,
+        total_files=len(financial_files),
+        log_lines=log_lines,
+    )
+    has_more = end_index < len(financial_files)
+    return {
+        "batch_number": batch_number,
+        "batch_start": batch_start,
+        "batch_end": end_index,
+        "errors": errors,
+        "log_lines": log_lines,
+        "log_path": log_path,
+        "next_index": end_index,
+        "has_more": has_more,
+        "batch_size": len(batch_files),
+        "total_files": len(financial_files),
+        "success_count": success_count,
+        "failure_count": failure_count,
+    }
+
+
 def ingest_financials_bytes(
     bytes_data: bytes,
     company: str,
@@ -1820,112 +1965,149 @@ def render_data_upload_tab():
             st.code(str(bulk_dir))
             st.write("Manifest file requirements (Excel .xlsx columns):")
             st.code("Ticker\nCompany Name\nIndustry Bucket\nCountry")
+            batch_size = 20
+            batch_state_key = "bulk_upload_batch_state"
+            batch_state = st.session_state.get(batch_state_key)
+            conn = get_db()
+
+            def _initialize_bulk_batches() -> dict[str, object]:
+                manifest_path = _find_manifest_file(bulk_dir)
+                manifest_df = _normalize_manifest_df(_load_manifest_df(manifest_path))
+                manifest_map = {
+                    row["ticker"]: {
+                        "company_name": row["company_name"],
+                        "industry_bucket": row["industry_bucket"],
+                        "country": row["country"],
+                    }
+                    for _, row in manifest_df.iterrows()
+                }
+                financial_files = _get_bulk_financial_files(bulk_dir)
+                if not financial_files:
+                    raise ValueError("No financial spreadsheets found in the bulk upload folder.")
+                total_batches = math.ceil(len(financial_files) / batch_size)
+                return {
+                    "manifest_map": manifest_map,
+                    "financial_files": [str(path) for path in financial_files],
+                    "next_index": 0,
+                    "batch_size": batch_size,
+                    "total_batches": total_batches,
+                    "history": [],
+                    "awaiting_confirmation": False,
+                    "completed": False,
+                    "success_count": 0,
+                    "failure_count": 0,
+                }
+
+            def _render_bulk_batch_history(history: list[dict[str, object]]) -> None:
+                if not history:
+                    return
+                st.markdown("### Completed batches")
+                for entry in history:
+                    summary = (
+                        f"Batch {entry['batch_number']}: companies {entry['batch_start']}-{entry['batch_end']} "
+                        f"of {entry['total_files']}"
+                    )
+                    if entry["errors"]:
+                        st.warning(summary)
+                        st.write("Errors in this batch:")
+                        for msg in entry["errors"]:
+                            st.write(f"- {msg}")
+                    else:
+                        st.success(summary)
+                    st.write(f"Log file: {entry['log_path']}")
+
+            def _render_bulk_summary(state: dict[str, object]) -> None:
+                total_files = len(state["financial_files"])
+                completed = state["success_count"] + state["failure_count"]
+                current_batch = min((state["next_index"] // state["batch_size"]) + 1, state["total_batches"])
+                if state.get("completed"):
+                    current_batch = state["total_batches"]
+
+                st.markdown("### Overall progress")
+                st.write(f"Successful: {state['success_count']} / {total_files}")
+                st.write(f"Failed: {state['failure_count']} / {total_files}")
+                st.write(f"Batch: {current_batch} / {state['total_batches']}")
+
+                progress_value = 0.0 if total_files == 0 else completed / total_files
+                st.progress(progress_value)
 
             if st.button("Run bulk upload", type="primary"):
                 if not bulk_dir.exists():
                     st.error("Bulk upload folder not found. Create the folder and try again.")
                 else:
                     try:
-                        manifest_path = _find_manifest_file(bulk_dir)
-                        manifest_df = _normalize_manifest_df(_load_manifest_df(manifest_path))
+                        batch_state = _initialize_bulk_batches()
+                        st.session_state[batch_state_key] = batch_state
                     except Exception as e:
                         st.error(f"Manifest error: {e}")
-                    else:
-                        manifest_map = {
-                            row["ticker"]: {
-                                "company_name": row["company_name"],
-                                "industry_bucket": row["industry_bucket"],
-                                "country": row["country"],
-                            }
-                            for _, row in manifest_df.iterrows()
+                        st.session_state.pop(batch_state_key, None)
+
+            batch_state = st.session_state.get(batch_state_key)
+            if batch_state:
+                _render_bulk_summary(batch_state)
+                _render_bulk_batch_history(batch_state.get("history", []))
+                total_files = len(batch_state["financial_files"])
+                total_batches = batch_state["total_batches"]
+
+                if batch_state.get("completed"):
+                    st.success(
+                        f"Bulk upload complete. Processed {total_files} companies across {total_batches} batch(es)."
+                    )
+                elif batch_state.get("awaiting_confirmation"):
+                    next_batch_number = (batch_state["next_index"] // batch_state["batch_size"]) + 1
+                    st.info(
+                        f"Batch {next_batch_number - 1} is committed. "
+                        f"Press `Ok` to start batch {next_batch_number}."
+                    )
+                    if st.button("Ok", key="bulk_upload_next_batch"):
+                        batch_state["awaiting_confirmation"] = False
+                        st.session_state[batch_state_key] = batch_state
+                        st.rerun()
+                else:
+                    financial_files = [Path(p) for p in batch_state["financial_files"]]
+                    batch_result = _run_bulk_upload_batch(
+                        bulk_dir=bulk_dir,
+                        manifest_map=batch_state["manifest_map"],
+                        financial_files=financial_files,
+                        start_index=batch_state["next_index"],
+                        batch_size=batch_state["batch_size"],
+                        conn=conn,
+                    )
+                    batch_state["history"].append(
+                        {
+                            "batch_number": batch_result["batch_number"],
+                            "batch_start": batch_result["batch_start"],
+                            "batch_end": batch_result["batch_end"],
+                            "errors": batch_result["errors"],
+                            "log_path": str(batch_result["log_path"]),
+                            "total_files": batch_result["total_files"],
                         }
+                    )
+                    batch_state["next_index"] = batch_result["next_index"]
+                    batch_state["success_count"] += batch_result["success_count"]
+                    batch_state["failure_count"] += batch_result["failure_count"]
+                    batch_state["completed"] = not batch_result["has_more"]
+                    batch_state["awaiting_confirmation"] = batch_result["has_more"]
+                    st.session_state[batch_state_key] = batch_state
 
-                        financial_files = sorted(
-                            [
-                                p for p in bulk_dir.iterdir()
-                                if p.is_file() and p.name.lower().endswith("-financials.xlsx")
-                            ],
-                            key=lambda p: p.name.lower(),
-                        )
-                        if not financial_files:
-                            st.error("No financial spreadsheets found in the bulk upload folder.")
-                        else:
-                            st.markdown("### Upload progress")
-                            errors: list[str] = []
-                            log_lines: list[str] = []
-                            conn = get_db()
+                    _render_bulk_summary(batch_state)
 
-                            for file_path in financial_files:
-                                ticker_raw = file_path.name[:-len("-financials.xlsx")]
-                                ticker = ticker_raw.strip().upper()
-                                manifest_row = manifest_map.get(ticker)
-                                company_label = manifest_row["company_name"] if manifest_row else ticker
-
-                                status_placeholder = st.empty()
-                                progress = st.progress(0)
-                                _render_bulk_status(status_placeholder, company_label, "In progress", "0%", "#d4a106")
-
-                                try:
-                                    if manifest_row is None:
-                                        raise ValueError("Ticker not found in manifest.")
-                                    if manifest_row["country"] not in {
-                                        "USA",
-                                        "INDIA",
-                                        "CHINA",
-                                        "JAPAN",
-                                        "UK",
-                                        "UAE",
-                                    }:
-                                        raise ValueError(
-                                            "Country is not supported (allowed: USA, India, China, Japan, UK, UAE)."
-                                        )
-                                    if not _bucket_has_unlevered_beta(conn, manifest_row["industry_bucket"]):
-                                        raise ValueError(
-                                            "Upload blocked: Industry bucket "
-                                            f"'{manifest_row['industry_bucket']}' does not have an unlevered beta defined."
-                                        )
-
-                                    bytes_data = file_path.read_bytes()
-                                    result = ingest_financials_bytes(
-                                        bytes_data,
-                                        manifest_row["company_name"],
-                                        ticker,
-                                        conn,
-                                        country=manifest_row["country"],
-                                    )
-
-                                    bucket_id = get_company_group_id(conn, manifest_row["industry_bucket"], create=True)
-                                    if bucket_id is None:
-                                        raise ValueError("Failed to create or find industry bucket.")
-                                    add_company_group_members(conn, bucket_id, [result["company_id"]])
-                                    _compute_bucket_dependent_metrics(conn, result["company_id"])
-
-                                    progress.progress(100)
-                                    _render_bulk_status(status_placeholder, company_label, "Success", "100%", "#1f7a1f")
-                                    warning_msg = " | ".join(result.get("warnings", []))
-                                    log_lines.append(
-                                        f"{ticker}\t{company_label}\tSUCCESS\t100\t{file_path.name}\t{warning_msg}"
-                                    )
-                                except Exception as e:
-                                    progress.empty()
-                                    _render_bulk_status(status_placeholder, company_label, "Error", "NA", "#c62828")
-                                    errors.append(f"{ticker}: {e}")
-                                    log_lines.append(
-                                        f"{ticker}\t{company_label}\tERROR\tNA\t{file_path.name}\t{e}"
-                                    )
-
-                            if errors:
-                                st.error("Some uploads failed:")
-                                for msg in errors:
-                                    st.write(f"- {msg}")
-                            if log_lines:
-                                log_dir = bulk_dir / "Upload_logs"
-                                log_dir.mkdir(parents=True, exist_ok=True)
-                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                                log_path = log_dir / f"bulk_upload_{timestamp}.log"
-                                header = "Ticker\tCompany\tStatus\tPercent\tFile\tMessage"
-                                log_path.write_text("\n".join([header, *log_lines]), encoding="utf-8")
-                                st.success(f"Saved upload log to: {log_path}")
+                    if batch_result["errors"]:
+                        st.error("Some uploads failed in this batch:")
+                        for msg in batch_result["errors"]:
+                            st.write(f"- {msg}")
+                    st.success(
+                        f"Batch {batch_result['batch_number']} committed. "
+                        f"Saved upload log to: {batch_result['log_path']}"
+                    )
+                    if batch_result["has_more"]:
+                        st.info("Stop point reached. Review the log, then press `Ok` to continue.")
+                        if st.button("Ok", key=f"bulk_upload_next_batch_after_{batch_result['batch_number']}"):
+                            batch_state["awaiting_confirmation"] = False
+                            st.session_state[batch_state_key] = batch_state
+                            st.rerun()
+                    else:
+                        st.success("All batches are complete.")
 
     with tab_price:
         with st.expander("Price upload", expanded=True):

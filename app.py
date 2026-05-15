@@ -37,10 +37,11 @@ from ttc_efficiency import (
     render_through_the_cycle_combined_score_tab,
     render_through_the_cycle_formula_tab,
 )
+from ui_theme import inject_dashboard_table_css, install_dataframe_defaults
 
 # --- Branding assets (kept local to the repo) ---
 _ASSETS_DIR = Path(__file__).parent / "assets"
-_LOGO_PATH = _ASSETS_DIR / "tarasha_logo.png"
+_LOGO_PATH = _ASSETS_DIR / "tarasha_logo_bright.png"
 _HERO_BANNER_PATH = _ASSETS_DIR / "Hero_Banner.png"
 _HERO_BANNER_2_PATH = _ASSETS_DIR / "Hero_Banner_2_Semiconductors.png"
 _HERO_BANNER_3_PATH = _ASSETS_DIR / "Hero_Banner_3_YoY_Growth.png"
@@ -54,6 +55,7 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="collapsed",
 )
+install_dataframe_defaults()
 
 @st.cache_data(show_spinner=False)
 def _bytes_to_b64(data: bytes) -> str:
@@ -72,6 +74,7 @@ def _inject_shell_css() -> None:
         """
         <style>
           :root {
+            --app-font-family: Aptos, "Segoe UI Variable", "Segoe UI", Inter, Roboto, Arial, sans-serif;
             --tab-border-color: rgba(226, 232, 240, 1);
             --tab-text-color: rgba(71, 85, 105, 1);
             --tab-hover-text-color: rgba(15, 23, 42, 1);
@@ -89,6 +92,123 @@ def _inject_shell_css() -> None:
               --tab-selected-text-color: rgba(248, 250, 252, 1);
               --tab-selected-border-color: rgba(96, 165, 250, 1);
             }
+          }
+
+          html,
+          body,
+          .stApp,
+          .block-container,
+          [data-testid="stAppViewContainer"],
+          [data-testid="stAppViewContainer"] *,
+          [data-testid="stSidebar"] *,
+          [data-testid="stHeader"] *,
+          [data-testid="stToolbar"] * {
+            font-family: var(--app-font-family) !important;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+            text-rendering: optimizeLegibility;
+          }
+
+          .stMarkdown,
+          .stMarkdown *,
+          p,
+          li,
+          label,
+          [data-testid="stText"],
+          [data-testid="stCaptionContainer"],
+          [data-testid="stWidgetLabel"],
+          [data-testid="stMetric"],
+          [data-testid="stDataFrame"],
+          [data-testid="stDataFrame"] *,
+          [data-testid="stTable"],
+          [data-testid="stTable"] *,
+          [data-testid="stDataEditor"],
+          [data-testid="stDataEditor"] *,
+          input,
+          textarea,
+          select,
+          button {
+            font-family: var(--app-font-family) !important;
+          }
+
+          .material-icons,
+          .material-icons-round,
+          .material-icons-rounded,
+          .material-icons-outlined,
+          .material-symbols-rounded,
+          .material-symbols-outlined,
+          .material-symbols-sharp,
+          [data-testid="stIconMaterial"],
+          [class*="material-icons"],
+          [class*="material-symbols"] {
+            font-family: "Material Symbols Rounded", "Material Symbols Outlined", "Material Icons" !important;
+            font-weight: normal !important;
+            font-style: normal !important;
+            font-size: 1.25rem !important;
+            line-height: 1 !important;
+            letter-spacing: normal !important;
+            text-transform: none !important;
+            display: inline-block !important;
+            white-space: nowrap !important;
+            direction: ltr !important;
+            -webkit-font-feature-settings: "liga";
+            -webkit-font-smoothing: antialiased;
+            font-feature-settings: "liga";
+          }
+
+          p,
+          li,
+          [data-testid="stCaptionContainer"],
+          [data-testid="stMarkdownContainer"] p {
+            font-weight: 400;
+            line-height: 1.48;
+          }
+
+          [data-testid="stWidgetLabel"],
+          [data-testid="stWidgetLabel"] *,
+          [data-testid="stExpander"] summary,
+          [data-testid="stExpander"] summary *,
+          [data-baseweb="select"] *,
+          [data-baseweb="input"] *,
+          [data-baseweb="textarea"] *,
+          [data-baseweb="checkbox"] *,
+          [data-baseweb="radio"] * {
+            line-height: normal !important;
+          }
+
+          h1,
+          h2,
+          h3,
+          h4,
+          h5,
+          h6 {
+            font-family: var(--app-font-family) !important;
+            font-weight: 625 !important;
+            letter-spacing: 0 !important;
+            line-height: 1.18 !important;
+          }
+
+          h1 { font-size: clamp(1.75rem, 2.4vw, 2.35rem) !important; }
+          h2 { font-size: clamp(1.38rem, 2.0vw, 1.85rem) !important; }
+          h3 { font-size: clamp(1.12rem, 1.6vw, 1.35rem) !important; }
+
+          [data-testid="stButton"] > button,
+          [data-testid="stDownloadButton"] > button,
+          [data-testid="stFormSubmitButton"] > button,
+          [data-baseweb="select"] input,
+          [data-baseweb="select"] span,
+          [data-baseweb="input"] input,
+          [data-baseweb="textarea"] textarea,
+          [data-baseweb="tag"] * {
+            font-family: var(--app-font-family) !important;
+            font-weight: 500 !important;
+          }
+
+          [data-testid="stDataFrame"],
+          [data-testid="stTable"],
+          [data-testid="stDataEditor"] {
+            font-size: 0.92rem !important;
+            line-height: 1.42 !important;
           }
 
           /* Full-bleed layout: remove Streamlit's default max-width + side padding */
@@ -119,12 +239,12 @@ def _inject_shell_css() -> None:
           [data-testid="stTabs"] button[role="tab"] {
             background: transparent !important;
             color: var(--tab-text-color) !important;
-            font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Arial, "Apple Color Emoji", "Segoe UI Emoji" !important;
+            font-family: var(--app-font-family) !important;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
-            font-weight: 600 !important;
+            font-weight: 525 !important;
             font-size: 0.95rem !important;
-            line-height: 1.15 !important;
+            line-height: 1.22 !important;
             padding: 0.55rem 0.75rem !important;
             border: none !important;
             border-bottom: 2px solid transparent !important;
@@ -139,6 +259,7 @@ def _inject_shell_css() -> None:
 
           [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
             color: var(--tab-selected-text-color) !important;
+            font-weight: 625 !important;
             border-bottom: 2px solid var(--tab-selected-border-color) !important;
             background: transparent !important;
           }
@@ -221,9 +342,6 @@ def _inject_shell_css() -> None:
             outline: none !important;
           }
 
-          /* Nicer headers */
-          h1, h2, h3 { letter-spacing: -0.2px; }
-
           /* Mobile responsiveness (primarily affects the Home shell) */
           @media (max-width: 640px) {
             .block-container {
@@ -265,6 +383,81 @@ def _inject_shell_css() -> None:
         unsafe_allow_html=True,
     )
 
+
+def _inject_tab_click_sound() -> None:
+    components.html(
+        """
+        <script>
+          (() => {
+            const parentWindow = window.parent;
+            const parentDocument = parentWindow.document;
+            if (parentWindow.__tarashaTabClickSoundInitialized) {
+              return;
+            }
+            parentWindow.__tarashaTabClickSoundInitialized = true;
+
+            let audioContext = null;
+
+            function playSoftTick() {
+              try {
+                const AudioCtx = parentWindow.AudioContext || parentWindow.webkitAudioContext;
+                if (!AudioCtx) {
+                  return;
+                }
+                audioContext = audioContext || new AudioCtx();
+                if (audioContext.state === "suspended") {
+                  audioContext.resume();
+                }
+
+                const oscillator = audioContext.createOscillator();
+                const gain = audioContext.createGain();
+                const now = audioContext.currentTime;
+
+                oscillator.type = "sine";
+                oscillator.frequency.setValueAtTime(560, now);
+                oscillator.frequency.exponentialRampToValueAtTime(380, now + 0.045);
+
+                gain.gain.setValueAtTime(0.0001, now);
+                gain.gain.exponentialRampToValueAtTime(0.045, now + 0.008);
+                gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
+
+                oscillator.connect(gain);
+                gain.connect(audioContext.destination);
+                oscillator.start(now);
+                oscillator.stop(now + 0.075);
+              } catch (err) {
+                console.warn("tab click sound failed", err);
+              }
+            }
+
+            function bindTab(tab) {
+              if (!tab || tab.dataset.tarashaSoundBound === "true") {
+                return;
+              }
+              tab.dataset.tarashaSoundBound = "true";
+              tab.addEventListener("click", (event) => {
+                if (!event.isTrusted || tab.getAttribute("aria-selected") === "true") {
+                  return;
+                }
+                playSoftTick();
+              });
+            }
+
+            function bindAllTabs() {
+              parentDocument.querySelectorAll('button[role="tab"]').forEach(bindTab);
+            }
+
+            bindAllTabs();
+            const observer = new MutationObserver(bindAllTabs);
+            observer.observe(parentDocument.body, { childList: true, subtree: true });
+          })();
+        </script>
+        """,
+        height=0,
+        scrolling=False,
+    )
+
+
 def _activate_top_level_tab(label: str) -> None:
     components.html(
         f"""
@@ -302,6 +495,8 @@ def _submit_header_search() -> None:
 
 def _render_header() -> tuple:
     _inject_shell_css()
+    inject_dashboard_table_css()
+    _inject_tab_click_sound()
 
     conn = get_db()
     companies_df, year_options = get_header_search_context(conn)

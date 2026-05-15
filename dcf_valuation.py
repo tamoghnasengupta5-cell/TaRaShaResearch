@@ -2,10 +2,12 @@ from datetime import datetime
 import csv
 import io
 import json
+import re
 from typing import Dict, List, Optional, Tuple
 import urllib.error
 import urllib.request
 
+import altair as alt
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -35,6 +37,7 @@ from ttc_efficiency import (
     _load_weight_maps,
     _merge_ttm_into_annual,
 )
+from ui_theme import dashboard_section, display_table_frame, render_dashboard_table
 
 
 _DCF_BUCKET_KEY = "dcf_selected_bucket_name"
@@ -50,6 +53,7 @@ _DCF_COMPANY_RESULTS_KEY = "dcf_company_results"
 _DCF_COMPANY_RESULTS_META_KEY = "dcf_company_results_meta"
 _DCF_COMPANY_RESULT_SELECT_KEY = "dcf_company_result_selected_id"
 _DCF_COMPANY_EXPANDED_RESULT_KEY = "dcf_company_expanded_result_id"
+_DCF_COMPANY_DETAIL_VIEW_KEY = "dcf_company_detail_view"
 
 _SETTINGS_FIELDS = [
     "historical_years",
@@ -73,6 +77,26 @@ _NSE_HEADERS = {
     "Referer": "https://www.nseindia.com/",
 }
 
+_PROJECTION_PATH_METRICS = [
+    ("future_revenue_growth", "Revenue Growth %"),
+    ("ebidta_margin_growth", "EBITDA Margin Growth %"),
+    ("da_percent_growth", "D&A Percent Growth %"),
+    ("capex_percent_growth", "CAPEX Percent Growth %"),
+    ("working_capital_days_growth", "Working Capital Days Growth %"),
+    ("wacc_direction", "WACC Direction %"),
+]
+
+_PREVIEW_METRIC_FORMATS = {
+    "future_revenue_growth": "money",
+    "ebidta_margin_growth": "percent",
+    "da_percent_growth": "percent",
+    "capex_percent_growth": "percent",
+    "working_capital_days_growth": "days",
+    "wacc_direction": "percent",
+}
+
+_ANCHOR_CONFIG_KEY = "__anchor_config"
+
 
 def _pct_to_decimal(value: Optional[float]) -> Optional[float]:
     if value is None:
@@ -82,6 +106,15 @@ def _pct_to_decimal(value: Optional[float]) -> Optional[float]:
     except Exception:
         return None
     return numeric / 100.0 if abs(numeric) > 1.0 else numeric
+
+
+def _yoy_settings_pct_to_decimal(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value) / 100.0
+    except Exception:
+        return None
 
 
 def _median(values: List[float]) -> Optional[float]:
@@ -199,6 +232,506 @@ def _compute_growth_for_year(series_map: Dict[int, float], year: int) -> Optiona
     return (float(current_value) / float(previous_value)) - 1.0
 
 
+def _get_company_country(conn, company_id: int, company_row: Optional[pd.Series] = None) -> Optional[str]:
+    if company_row is not None and "country" in company_row.index:
+        country = company_row.get("country")
+        if country is not None and not pd.isna(country) and str(country).strip():
+            return str(country).strip()
+
+    df = read_df("SELECT country FROM companies WHERE id = ? LIMIT 1", conn, params=(int(company_id),))
+    if df is None or df.empty:
+        return None
+    country = df.iloc[0].get("country")
+    if country is None or pd.isna(country):
+        return None
+    country_text = str(country).strip()
+    return country_text or None
+
+
+def _parse_projection_path_config(value: object) -> Dict[str, object]:
+    if value is None or pd.isna(value):
+        return {}
+    if isinstance(value, dict):
+        return value
+    text = str(value).strip()
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _default_single_path_config(step_pct: object) -> Dict[str, object]:
+    return {
+        "mode": "single",
+        "annual_step_pct": _safe_float(step_pct) or 0.0,
+        "years": 10,
+    }
+
+
+def _metric_path_config(settings: Dict[str, object], metric_key: str) -> Optional[Dict[str, object]]:
+    path_config = _parse_projection_path_config(settings.get("projection_path_config"))
+    metric_config = path_config.get(metric_key)
+    return metric_config if isinstance(metric_config, dict) else None
+
+
+def _anchor_config_from_settings(settings: Dict[str, object]) -> Dict[str, object]:
+    path_config = _parse_projection_path_config(settings.get("projection_path_config"))
+    anchor_config = path_config.get(_ANCHOR_CONFIG_KEY)
+    return anchor_config if isinstance(anchor_config, dict) else {}
+
+
+def _settings_with_anchor_config(settings: Dict[str, object], anchor_config: Dict[str, object]) -> Dict[str, object]:
+    updated_settings = dict(settings)
+    path_config = _parse_projection_path_config(updated_settings.get("projection_path_config"))
+    path_config[_ANCHOR_CONFIG_KEY] = anchor_config
+    updated_settings["projection_path_config"] = json.dumps(path_config)
+    return updated_settings
+
+
+def _anchor_enabled(settings: Dict[str, object]) -> bool:
+    return bool(_anchor_config_from_settings(settings).get("use_base_historical_year"))
+
+
+def _baseline_overrides_enabled(settings: Dict[str, object]) -> bool:
+    return bool(_anchor_config_from_settings(settings).get("use_baseline_overrides"))
+
+
+def _anchor_year_from_settings(settings: Dict[str, object], default_year: int) -> int:
+    anchor_config = _anchor_config_from_settings(settings)
+    if not anchor_config.get("use_base_historical_year"):
+        return int(default_year)
+    try:
+        return int(anchor_config.get("base_historical_year"))
+    except Exception:
+        return int(default_year)
+
+
+def _series_through_year(series_map: Dict[int, float], anchor_year: int) -> Dict[int, float]:
+    return {int(year): value for year, value in series_map.items() if int(year) <= int(anchor_year)}
+
+
+def _baseline_override_decimal(settings: Dict[str, object], metric_key: str) -> Optional[float]:
+    anchor_config = _anchor_config_from_settings(settings)
+    if not anchor_config.get("use_baseline_overrides"):
+        return None
+    overrides = anchor_config.get("baseline_overrides")
+    if not isinstance(overrides, dict):
+        return None
+    value = _safe_float(overrides.get(metric_key))
+    if value is None:
+        return None
+    if metric_key == "working_capital_days_growth":
+        return float(value)
+    return float(value) / 100.0
+
+
+def _project_assumption_value(
+    base_value: float,
+    projected_year_index: int,
+    metric_key: str,
+    settings: Dict[str, object],
+    legacy_step: float,
+) -> float:
+    metric_config = _metric_path_config(settings, metric_key)
+    idx = max(int(projected_year_index), 1)
+    baseline_override = _baseline_override_decimal(settings, metric_key)
+    if baseline_override is not None and metric_key == "future_revenue_growth" and idx == 1:
+        return float(baseline_override)
+    if not metric_config:
+        apply_count = max(idx - 1, 0)
+        return float(base_value) * ((1.0 + float(legacy_step)) ** apply_count)
+
+    mode = str(metric_config.get("mode") or "single")
+    if mode == "year_by_year":
+        raw_steps = metric_config.get("steps_pct") or []
+        if not isinstance(raw_steps, list):
+            raw_steps = []
+        steps = [_yoy_settings_pct_to_decimal(step) or 0.0 for step in raw_steps[:10]]
+        while len(steps) < 10:
+            steps.append(0.0)
+        if metric_key == "future_revenue_growth":
+            return float(steps[min(idx, 10) - 1])
+        value = float(base_value)
+        for step in steps[: min(idx, 10)]:
+            value *= 1.0 + float(step)
+        return float(value)
+
+    years = metric_config.get("years", 10)
+    try:
+        years_int = min(max(int(years), 1), 10)
+    except Exception:
+        years_int = 10
+    step = _yoy_settings_pct_to_decimal(metric_config.get("annual_step_pct")) or 0.0
+    if metric_key == "future_revenue_growth":
+        return float(step)
+    apply_count = min(idx, years_int)
+    return float(base_value) * ((1.0 + float(step)) ** apply_count)
+
+
+def _projection_path_growth_rate(metric_config: Dict[str, object], projected_year_index: int) -> float:
+    idx = max(int(projected_year_index), 1)
+    mode = str(metric_config.get("mode") or "single")
+    if mode == "year_by_year":
+        raw_steps = metric_config.get("steps_pct") or []
+        if not isinstance(raw_steps, list):
+            raw_steps = []
+        steps = [_yoy_settings_pct_to_decimal(step) or 0.0 for step in raw_steps[:10]]
+        while len(steps) < 10:
+            steps.append(0.0)
+        return float(steps[min(idx, 10) - 1])
+
+    years = metric_config.get("years", 10)
+    try:
+        years_int = min(max(int(years), 1), 10)
+    except Exception:
+        years_int = 10
+    if idx > years_int:
+        return 0.0
+    return float(_yoy_settings_pct_to_decimal(metric_config.get("annual_step_pct")) or 0.0)
+
+
+def _compute_growth_from_values(previous_value: object, current_value: object) -> Optional[float]:
+    previous = _safe_float(previous_value)
+    current = _safe_float(current_value)
+    if current is None or previous in (None, 0):
+        return None
+    return (float(current) / float(previous)) - 1.0
+
+
+def _growths_from_values(values: List[object]) -> List[Optional[float]]:
+    growths: List[Optional[float]] = []
+    previous_value = None
+    for value in values:
+        growths.append(_compute_growth_from_values(previous_value, value))
+        previous_value = value
+    return growths
+
+
+def _median_growth_from_values(values: List[object]) -> Optional[float]:
+    growths = [growth for growth in _growths_from_values(values) if growth is not None and pd.notna(growth)]
+    return _median(growths)
+
+
+def _format_preview_value(value: object, value_format: str, country: Optional[str] = None) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    numeric = _safe_float(value)
+    if numeric is None:
+        return str(value)
+    if value_format == "percent":
+        return f"{numeric * 100:,.2f}%"
+    if value_format == "money":
+        unit_label, scale = _country_money_display(country)
+        return f"{numeric * scale:,.2f} {unit_label}"
+    if value_format == "days":
+        return f"{numeric:,.2f} days"
+    return f"{numeric:,.2f}"
+
+
+def _format_preview_pct(value: object) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    numeric = _safe_float(value)
+    if numeric is None:
+        return str(value)
+    return f"{numeric * 100:,.2f}%"
+
+
+def _build_company_assumption_preview_context(
+    conn,
+    company_row: pd.Series,
+    historical_years: int,
+    starting_projected_revenue_growth_cap: object,
+    settings: Optional[Dict[str, object]] = None,
+) -> Dict[str, object]:
+    company_id = int(company_row["id"])
+    country = _get_company_country(conn, company_id, company_row)
+    series = _build_required_series(conn, company_id)
+    revenue_series = series["revenue"]
+    raw_latest_actual_year, _ = _latest_numeric_value(revenue_series)
+    if raw_latest_actual_year is None:
+        return {"error": "Missing revenue history for the selected company."}
+    anchor_year = _anchor_year_from_settings(settings or {}, int(raw_latest_actual_year))
+    if anchor_year > int(raw_latest_actual_year):
+        anchor_year = int(raw_latest_actual_year)
+    anchor_revenue_series = _series_through_year(revenue_series, anchor_year)
+    latest_actual_year, latest_revenue = _latest_numeric_value(anchor_revenue_series)
+    if latest_actual_year is None or latest_revenue is None:
+        return {"error": "Missing revenue history for the selected company."}
+
+    actual_years = [int(year) for year, _ in _latest_n_values(anchor_revenue_series, historical_years)]
+    if not actual_years:
+        return {"error": "No annual history is available for the selected company."}
+
+    revenue_values = [_safe_float(revenue_series.get(year)) for year in actual_years]
+    ebitda_margin_values = [_compute_series_ratio(series["ebitda"].get(year), revenue_series.get(year)) for year in actual_years]
+    da_pct_values = [_compute_series_ratio(series["da"].get(year), revenue_series.get(year)) for year in actual_years]
+    capex_pct_values = [
+        (
+            abs(float(capex_value)) / float(revenue_value)
+            if capex_value is not None and revenue_value not in (None, 0)
+            else None
+        )
+        for capex_value, revenue_value in [
+            (_safe_float(series["capex"].get(year)), _safe_float(revenue_series.get(year)))
+            for year in actual_years
+        ]
+    ]
+    working_capital_days_values = [
+        (
+            (float(ncwc_value) * 365.0) / float(revenue_value)
+            if ncwc_value is not None and revenue_value not in (None, 0)
+            else None
+        )
+        for ncwc_value, revenue_value in [
+            (_safe_float(series["ncwc"].get(year)), _safe_float(revenue_series.get(year)))
+            for year in actual_years
+        ]
+    ]
+    wacc_values = [_pct_to_decimal(_safe_float(series["wacc"].get(year))) for year in actual_years]
+
+    revenue_growth_sample = _latest_n_growths(anchor_revenue_series, historical_years)
+    base_revenue_growth = _median(revenue_growth_sample)
+    starting_revenue_growth_cap = _pct_to_decimal(starting_projected_revenue_growth_cap)
+    if base_revenue_growth is not None and starting_revenue_growth_cap is not None:
+        base_revenue_growth = min(float(base_revenue_growth), float(starting_revenue_growth_cap))
+
+    metric_values = {
+        "future_revenue_growth": revenue_values,
+        "ebidta_margin_growth": ebitda_margin_values,
+        "da_percent_growth": da_pct_values,
+        "capex_percent_growth": capex_pct_values,
+        "working_capital_days_growth": working_capital_days_values,
+        "wacc_direction": wacc_values,
+    }
+    metric_base_values = {
+        "future_revenue_growth": base_revenue_growth,
+        "ebidta_margin_growth": _median([value for value in ebitda_margin_values if value is not None]),
+        "da_percent_growth": _median([value for value in da_pct_values if value is not None]),
+        "capex_percent_growth": _median([value for value in capex_pct_values if value is not None]),
+        "working_capital_days_growth": _median([value for value in working_capital_days_values if value is not None]),
+        "wacc_direction": _median([value for value in wacc_values if value is not None]),
+    }
+    metric_base_growths = {
+        "future_revenue_growth": base_revenue_growth,
+        "ebidta_margin_growth": _median_growth_from_values(ebitda_margin_values),
+        "da_percent_growth": _median_growth_from_values(da_pct_values),
+        "capex_percent_growth": _median_growth_from_values(capex_pct_values),
+        "working_capital_days_growth": _median_growth_from_values(working_capital_days_values),
+        "wacc_direction": _median_growth_from_values(wacc_values),
+    }
+    baseline_overrides_for_display: Dict[str, float] = {}
+    baseline_anchor_year = None
+    if settings:
+        anchor_config = _anchor_config_from_settings(settings)
+        baseline_anchor_year = anchor_config.get("baseline_anchor_year")
+        for metric_key, _ in _PROJECTION_PATH_METRICS:
+            override_value = _baseline_override_decimal(settings, metric_key)
+            if override_value is None:
+                continue
+            metric_base_values[metric_key] = override_value
+            baseline_overrides_for_display[metric_key] = override_value
+            if metric_key == "future_revenue_growth":
+                metric_base_growths[metric_key] = override_value
+
+    return {
+        "actual_years": actual_years,
+        "country": country,
+        "latest_actual_year": int(latest_actual_year),
+        "projection_start_year": int(latest_actual_year) + 1,
+        "latest_revenue": float(latest_revenue),
+        "metric_values": metric_values,
+        "metric_base_values": metric_base_values,
+        "metric_base_growths": metric_base_growths,
+        "baseline_anchor_year": baseline_anchor_year,
+        "baseline_overrides": baseline_overrides_for_display,
+    }
+
+
+def _settings_with_preview_path_config(
+    initial_values: Dict[str, object],
+    metric_key: str,
+    metric_config: Dict[str, object],
+) -> Dict[str, object]:
+    settings = dict(initial_values)
+    path_config = _parse_projection_path_config(settings.get("projection_path_config"))
+    path_config[metric_key] = metric_config
+    settings["projection_path_config"] = json.dumps(path_config)
+    settings[metric_key] = _path_config_legacy_step(metric_config)
+    return settings
+
+
+def _build_assumption_preview_rows(
+    preview_context: Dict[str, object],
+    initial_values: Dict[str, object],
+    metric_key: str,
+    metric_config: Dict[str, object],
+) -> pd.DataFrame:
+    actual_years = list(preview_context.get("actual_years", []))
+    metric_values = dict(preview_context.get("metric_values", {}))
+    actual_values = list(metric_values.get(metric_key, []))
+    actual_growths = _growths_from_values(actual_values)
+    projection_start_year = preview_context.get("projection_start_year")
+
+    rows: List[Dict[str, object]] = []
+    order = 0
+    for year, growth, value in zip(actual_years, actual_growths, actual_values):
+        rows.append(
+            {
+                "Period": "Historical",
+                "Year/FY": str(year),
+                "Growth %": growth,
+                "Actual / Projected Value": value,
+                "__order": order,
+            }
+        )
+        order += 1
+
+    metric_base_values = dict(preview_context.get("metric_base_values", {}))
+    base_value = _safe_float(metric_base_values.get(metric_key))
+    if base_value is None:
+        return pd.DataFrame(rows)
+
+    preview_settings = _settings_with_preview_path_config(initial_values, metric_key, metric_config)
+    legacy_step = _yoy_settings_pct_to_decimal(preview_settings.get(metric_key)) or 0.0
+
+    if metric_key == "future_revenue_growth":
+        previous_revenue = _safe_float(preview_context.get("latest_revenue"))
+        for idx in range(1, 11):
+            projected_growth = _project_assumption_value(float(base_value), idx, metric_key, preview_settings, legacy_step)
+            projected_revenue = None
+            if previous_revenue is not None:
+                projected_revenue = float(previous_revenue) * (1.0 + float(projected_growth))
+                previous_revenue = projected_revenue
+            rows.append(
+                {
+                    "Period": "Projected",
+                    "Year/FY": f"FY{idx} ({int(projection_start_year) + idx - 1})" if projection_start_year else f"FY{idx}",
+                    "Growth %": projected_growth,
+                    "Actual / Projected Value": projected_revenue,
+                    "__order": order,
+                }
+            )
+            order += 1
+        return pd.DataFrame(rows)
+
+    previous_value = actual_values[-1] if actual_values else None
+    for idx in range(1, 11):
+        projected_value = _project_assumption_value(float(base_value), idx, metric_key, preview_settings, legacy_step)
+        projected_growth = _projection_path_growth_rate(metric_config, idx)
+        rows.append(
+            {
+                "Period": "Projected",
+                "Year/FY": f"FY{idx} ({int(projection_start_year) + idx - 1})" if projection_start_year else f"FY{idx}",
+                "Growth %": projected_growth,
+                "Actual / Projected Value": projected_value,
+                "__order": order,
+            }
+        )
+        previous_value = projected_value
+        order += 1
+    return pd.DataFrame(rows)
+
+
+def _render_assumption_base_snapshot(preview_context: Optional[Dict[str, object]]) -> None:
+    if not preview_context:
+        return
+    if preview_context.get("error"):
+        st.info(str(preview_context["error"]))
+        return
+
+    metric_base_growths = dict(preview_context.get("metric_base_growths", {}))
+    metric_base_values = dict(preview_context.get("metric_base_values", {}))
+    baseline_overrides = dict(preview_context.get("baseline_overrides", {}))
+    baseline_anchor_year = preview_context.get("baseline_anchor_year")
+    country = preview_context.get("country")
+    rows: List[Dict[str, str]] = []
+    for metric_key, label in _PROJECTION_PATH_METRICS:
+        value_format = _PREVIEW_METRIC_FORMATS.get(metric_key, "number")
+        base_value = preview_context.get("latest_revenue") if metric_key == "future_revenue_growth" else metric_base_values.get(metric_key)
+        base_source = str(preview_context.get("latest_actual_year", "")) if metric_key == "future_revenue_growth" else "Historical median"
+        if metric_key in baseline_overrides:
+            base_source = f"Override: {baseline_anchor_year or ''}".strip()
+        rows.append(
+            {
+                "Assumption Parameter": label,
+                "Starting Growth %": _format_preview_pct(metric_base_growths.get(metric_key)),
+                "Starting Actual Value": _format_preview_value(base_value, value_format, country),
+                "Base Source": base_source,
+            }
+        )
+
+    st.markdown("**Base Assumption Snapshot**")
+    st.caption("Preview source is the first selected company, matching the company used to prefill the form.")
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def _render_assumption_path_preview(
+    preview_context: Optional[Dict[str, object]],
+    initial_values: Dict[str, object],
+    metric_key: str,
+    label: str,
+    metric_config: Dict[str, object],
+) -> None:
+    if not preview_context or preview_context.get("error"):
+        return
+
+    preview_df = _build_assumption_preview_rows(preview_context, initial_values, metric_key, metric_config)
+    if preview_df.empty:
+        st.info(f"No historical preview data is available for {label}.")
+        return
+
+    st.markdown(f"**{label} Preview**")
+    chart_df = preview_df.dropna(subset=["Growth %"]).copy()
+    if not chart_df.empty:
+        historical_chart_df = chart_df[chart_df["Period"] == "Historical"]
+        projected_chart_df = chart_df[chart_df["Period"] == "Projected"]
+        if not historical_chart_df.empty and not projected_chart_df.empty:
+            bridge_row = historical_chart_df.sort_values("__order").iloc[-1].copy()
+            bridge_row["Period"] = "Projected"
+            chart_df = pd.concat([chart_df, pd.DataFrame([bridge_row])], ignore_index=True)
+
+        chart_df["Growth %"] = chart_df["Growth %"].astype(float) * 100.0
+        chart = (
+            alt.Chart(chart_df)
+            .mark_line(point=True, strokeWidth=3)
+            .encode(
+                x=alt.X("Year/FY:N", sort=alt.SortField(field="__order", order="ascending"), title="Year / Forecast Year"),
+                y=alt.Y("Growth %:Q", title="Growth %"),
+                color=alt.Color(
+                    "Period:N",
+                    scale=alt.Scale(domain=["Historical", "Projected"], range=["#2563EB", "#16A34A"]),
+                    legend=alt.Legend(title="Series"),
+                ),
+                tooltip=[
+                    alt.Tooltip("Period:N"),
+                    alt.Tooltip("Year/FY:N"),
+                    alt.Tooltip("Growth %:Q", format=",.2f"),
+                ],
+            )
+            .properties(height=260)
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+    value_format = _PREVIEW_METRIC_FORMATS.get(metric_key, "number")
+    country = preview_context.get("country")
+    display_df = pd.DataFrame(
+        [
+            {
+                "Period": row["Period"],
+                "Year/FY": row["Year/FY"],
+                "Growth %": _format_preview_pct(row["Growth %"]),
+                "Actual / Projected Value": _format_preview_value(row["Actual / Projected Value"], value_format, country),
+            }
+            for _, row in preview_df.iterrows()
+        ]
+    )
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+
 def _build_breakdown_table(columns: List[str], rows: List[Tuple[str, str, List[object]]]) -> Dict[str, object]:
     return {
         "columns": [str(column) for column in columns],
@@ -209,7 +742,16 @@ def _build_breakdown_table(columns: List[str], rows: List[Tuple[str, str, List[o
     }
 
 
-def _format_breakdown_value(value: object, value_format: str) -> str:
+def _country_money_display(country: Optional[str]) -> Tuple[str, float]:
+    normalized = str(country or "").strip().lower()
+    if normalized in ("india", "in", "republic of india"):
+        return "INR Cr", 0.1
+    if normalized in ("usa", "us", "united states", "united states of america"):
+        return "USD M", 1.0
+    return "M", 1.0
+
+
+def _format_breakdown_value(value: object, value_format: str, country: Optional[str] = None) -> str:
     if value is None or pd.isna(value):
         return ""
     if value_format == "text":
@@ -221,6 +763,9 @@ def _format_breakdown_value(value: object, value_format: str) -> str:
 
     if value_format == "percent":
         return f"{numeric * 100:,.2f}%"
+    if value_format == "money":
+        _, scale = _country_money_display(country)
+        return f"{numeric * scale:,.2f}"
     if value_format == "decimal4":
         return f"{numeric:,.4f}"
     if value_format == "integer":
@@ -228,7 +773,7 @@ def _format_breakdown_value(value: object, value_format: str) -> str:
     return f"{numeric:,.2f}"
 
 
-def _render_breakdown_table(title: str, table_payload: Optional[Dict[str, object]]) -> None:
+def _render_breakdown_table(title: str, table_payload: Optional[Dict[str, object]], country: Optional[str] = None) -> None:
     if not table_payload:
         return
 
@@ -243,14 +788,506 @@ def _render_breakdown_table(title: str, table_payload: Optional[Dict[str, object
         values = list(row.get("values", []))
         value_format = str(row.get("format", "number"))
         for idx, column in enumerate(columns):
-            record[column] = _format_breakdown_value(values[idx] if idx < len(values) else None, value_format)
+            record[column] = _format_breakdown_value(values[idx] if idx < len(values) else None, value_format, country)
         rendered_rows.append(record)
 
-    st.markdown(f"**{title}**")
-    st.dataframe(pd.DataFrame(rendered_rows), use_container_width=True, hide_index=True)
+    has_money_rows = any(str(row.get("format", "number")) == "money" for row in rows)
+    if has_money_rows:
+        unit_label, _ = _country_money_display(country)
+        dashboard_section(f"{title} ({unit_label})")
+    else:
+        dashboard_section(title)
+    render_dashboard_table(
+        pd.DataFrame(rendered_rows),
+        key=f"dcf_breakdown_{re.sub(r'[^a-z0-9]+', '_', title.lower()).strip('_')}",
+    )
+
+
+def _payload_metric_series(table_payload: Optional[Dict[str, object]], metric_name: str) -> Tuple[List[str], List[object]]:
+    if not table_payload:
+        return [], []
+    columns = [str(column) for column in table_payload.get("columns", [])]
+    for row in table_payload.get("rows", []):
+        if str(row.get("metric", "")) == metric_name:
+            return columns, list(row.get("values", []))
+    return [], []
+
+
+def _split_actual_projected_points(columns: List[str], values: List[object]) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
+    actual_points: List[Tuple[str, float]] = []
+    projected_points: List[Tuple[str, float]] = []
+    for idx, column in enumerate(columns):
+        value = values[idx] if idx < len(values) else None
+        numeric = _safe_float(value)
+        if numeric is None:
+            continue
+        if str(column).startswith("FY"):
+            projected_points.append((str(column), float(numeric)))
+        else:
+            actual_points.append((str(column), float(numeric)))
+    return actual_points, projected_points
+
+
+def _extract_year_from_label(label: str) -> Optional[int]:
+    match = re.search(r"(?:FY)?(\d{4})", str(label))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _period_label(points: List[Tuple[str, float]]) -> str:
+    if not points:
+        return "N/A"
+    return str(points[0][0]) if len(points) == 1 else f"{points[0][0]}-{points[-1][0]}"
+
+
+def _period_years(points: List[Tuple[str, float]]) -> Optional[int]:
+    if len(points) < 2:
+        return None
+    start_year = _extract_year_from_label(points[0][0])
+    end_year = _extract_year_from_label(points[-1][0])
+    if start_year is not None and end_year is not None and end_year > start_year:
+        return int(end_year - start_year)
+    fallback_years = len(points) - 1
+    return fallback_years if fallback_years > 0 else None
+
+
+def _positive_endpoint_points(points: List[Tuple[str, float]]) -> List[Tuple[str, float]]:
+    return [(label, value) for label, value in points if value is not None and pd.notna(value) and float(value) > 0.0]
+
+
+def _cagr_from_points(points: List[Tuple[str, float]], *, positive_only: bool = True) -> Optional[float]:
+    candidate_points = _positive_endpoint_points(points) if positive_only else points
+    if len(candidate_points) < 2:
+        return None
+    start_value = float(candidate_points[0][1])
+    end_value = float(candidate_points[-1][1])
+    years = _period_years(candidate_points)
+    if years is None or years <= 0 or start_value <= 0.0 or end_value <= 0.0:
+        return None
+    return (end_value / start_value) ** (1.0 / float(years)) - 1.0
+
+
+def _multiplier_from_points(points: List[Tuple[str, float]], *, positive_only: bool = False) -> Optional[float]:
+    candidate_points = _positive_endpoint_points(points) if positive_only else [(label, value) for label, value in points if value is not None and pd.notna(value)]
+    if len(candidate_points) < 2:
+        return None
+    start_value = float(candidate_points[0][1])
+    end_value = float(candidate_points[-1][1])
+    if start_value == 0.0:
+        return None
+    return end_value / start_value
+
+
+def _median_from_points(points: List[Tuple[str, float]]) -> Optional[float]:
+    values = [float(value) for _, value in points if value is not None and pd.notna(value)]
+    return _median(values)
+
+
+def _assumption_row_value(detail_payload: Dict[str, object], metric_prefix: str) -> Optional[float]:
+    for row in detail_payload.get("assumptions_rows") or []:
+        metric = str(row.get("metric", ""))
+        if metric.startswith(metric_prefix):
+            return _safe_float(row.get("value"))
+    return None
+
+
+def _format_insight_value(value: object, value_format: str) -> str:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return "N/A"
+    if value_format == "percent":
+        return f"{numeric * 100:,.2f}%"
+    if value_format == "multiple":
+        return f"{numeric:,.2f}x"
+    if value_format == "days":
+        return f"{numeric:,.2f} days"
+    return f"{numeric:,.2f}"
+
+
+def _growth_intensity_formula_text() -> str:
+    return (
+        "For each available metric: normalized delta = (Projected - Historical) / max(abs(Historical), floor). "
+        "For D&A %, Capex %, Working Capital Days, and WACC %, the delta is inverted because lower projected values are more valuation-optimistic. "
+        "Each delta is capped between -50% and +100%, converted to a 0-100 score as (capped delta + 50%) / 150%, then combined using weighted averages. "
+        "Weights: Revenue CAGR 20%, Revenue Multiplier 10%, FCFF CAGR 20%, FCFF Multiplier 10%, EBITDA Margin 15%, D&A % 5%, Capex % 5%, Working Capital Days 5%, WACC % 10%. "
+        "N/A metrics are excluded and remaining weights are re-normalized."
+    )
+
+
+def _growth_intensity_classification(score: Optional[float]) -> Tuple[str, str]:
+    if score is None:
+        return "N/A", "#6B7280"
+    if score <= 0.25:
+        return "Low", "#64748B"
+    if score <= 0.50:
+        return "Moderate", "#16A34A"
+    if score <= 0.75:
+        return "High", "#D97706"
+    return "Extremely High", "#DC2626"
+
+
+def _growth_intensity_floor(metric: str) -> float:
+    if "Multiplier" in metric:
+        return 0.25
+    if "Working Capital Days" in metric:
+        return 30.0
+    return 0.01
+
+
+def _growth_intensity_invert(metric: str) -> bool:
+    return metric in {"D&A % of Revenue", "Capex % of Revenue", "Working Capital Days", "WACC %"}
+
+
+def _growth_intensity_weight(metric: str) -> float:
+    return {
+        "Revenue CAGR": 0.20,
+        "Revenue Multiplier": 0.10,
+        "FCFF CAGR": 0.20,
+        "FCFF Multiplier": 0.10,
+        "EBITDA Margin %": 0.15,
+        "D&A % of Revenue": 0.05,
+        "Capex % of Revenue": 0.05,
+        "Working Capital Days": 0.05,
+        "WACC %": 0.10,
+    }.get(metric, 0.0)
+
+
+def _growth_intensity_metric_format(metric: str) -> str:
+    if "Multiplier" in metric:
+        return "multiple"
+    if metric == "Working Capital Days":
+        return "days"
+    return "percent"
+
+
+def _score_growth_intensity_metric(metric: str, historical: object, projected: object) -> Optional[Dict[str, object]]:
+    historical_value = _safe_float(historical)
+    projected_value = _safe_float(projected)
+    if historical_value is None or projected_value is None:
+        return None
+
+    denominator = max(abs(float(historical_value)), _growth_intensity_floor(metric))
+    delta = (float(projected_value) - float(historical_value)) / denominator
+    if _growth_intensity_invert(metric):
+        delta = -delta
+    capped_delta = min(max(float(delta), -0.50), 1.00)
+    metric_score = (capped_delta + 0.50) / 1.50
+    weight = _growth_intensity_weight(metric)
+    if weight <= 0:
+        return None
+    value_format = _growth_intensity_metric_format(metric)
+    return {
+        "Metric": metric,
+        "Historical": historical_value,
+        "Projected": projected_value,
+        "Delta": delta,
+        "Capped Delta": capped_delta,
+        "Metric Score": metric_score,
+        "Weight": weight,
+        "Format": value_format,
+        "Historical Display": _format_insight_value(historical_value, value_format),
+        "Projected Display": _format_insight_value(projected_value, value_format),
+        "Delta Impact": "Positive" if delta > 0.05 else ("Negative" if delta < -0.05 else "Neutral"),
+    }
+
+
+def _build_growth_intensity_summary(
+    growth_rows: List[Dict[str, object]],
+    multiplier_rows: List[Dict[str, object]],
+    median_rows: List[Dict[str, object]],
+) -> Tuple[Optional[float], str, str, List[Dict[str, object]]]:
+    driver_rows: List[Dict[str, object]] = []
+    source_rows = growth_rows + multiplier_rows
+    for row in source_rows:
+        scored = _score_growth_intensity_metric(str(row.get("Metric", "")), row.get("Historical"), row.get("Projected"))
+        if scored:
+            driver_rows.append(scored)
+    for row in median_rows:
+        scored = _score_growth_intensity_metric(str(row.get("Metric", "")), row.get("Historical Median"), row.get("Projected Median"))
+        if scored:
+            driver_rows.append(scored)
+
+    total_weight = sum(float(row["Weight"]) for row in driver_rows)
+    if total_weight <= 0:
+        label, color = _growth_intensity_classification(None)
+        return None, label, color, []
+
+    weighted_score = sum(float(row["Metric Score"]) * float(row["Weight"]) for row in driver_rows) / total_weight
+    for row in driver_rows:
+        row["Normalized Weight"] = float(row["Weight"]) / total_weight
+        row["Score Contribution"] = float(row["Metric Score"]) * float(row["Normalized Weight"])
+    label, color = _growth_intensity_classification(weighted_score)
+    return weighted_score, label, color, driver_rows
+
+
+def _render_growth_intensity_summary(
+    growth_rows: List[Dict[str, object]],
+    multiplier_rows: List[Dict[str, object]],
+    median_rows: List[Dict[str, object]],
+) -> None:
+    score, label, color, driver_rows = _build_growth_intensity_summary(growth_rows, multiplier_rows, median_rows)
+
+    st.markdown("**Embedded Growth Intensity**", help=_growth_intensity_formula_text())
+    score_text = "N/A" if score is None else f"{score * 100:,.0f}%"
+    st.markdown(
+        f"""
+        <div style="border: 1px solid #E5E7EB; border-radius: 12px; padding: 16px; margin-bottom: 12px;">
+            <div style="font-size: 0.9rem; color: #6B7280;">Score</div>
+            <div style="display: flex; align-items: center; gap: 16px;">
+                <div style="font-size: 2rem; font-weight: 700;">{score_text}</div>
+                <div style="background: {color}; color: white; border-radius: 999px; padding: 6px 12px; font-weight: 700;">{label}</div>
+            </div>
+            <div style="height: 10px; background: #E5E7EB; border-radius: 999px; margin-top: 12px; overflow: hidden;">
+                <div style="height: 10px; width: {0 if score is None else min(max(score * 100, 0), 100):.0f}%; background: {color};"></div>
+            </div>
+            <div style="font-size: 0.85rem; color: #6B7280; margin-top: 8px;">
+                Low: 0-25% | Moderate: 26-50% | High: 51-75% | Extremely High: 76-100%
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not driver_rows:
+        st.info("Embedded growth intensity could not be calculated because the required insight metrics are unavailable.")
+        return
+
+    driver_display = pd.DataFrame(
+        [
+            {
+                "Driver": row["Metric"],
+                "Historical": row["Historical Display"],
+                "Projected": row["Projected Display"],
+                "Normalized Delta": _format_insight_value(row["Delta"], "percent"),
+                "Metric Score": f"{float(row['Metric Score']) * 100:,.0f}%",
+                "Weight Used": f"{float(row['Normalized Weight']) * 100:,.0f}%",
+                "Delta Impact": row["Delta Impact"],
+            }
+            for row in sorted(driver_rows, key=lambda item: abs(float(item["Score Contribution"])), reverse=True)
+        ]
+    )
+    st.markdown("**Growth Intensity Drivers**")
+    st.dataframe(driver_display, use_container_width=True, hide_index=True)
+
+    chart_df = pd.DataFrame(
+        [
+            {
+                "Driver": row["Metric"],
+                "Contribution": float(row["Score Contribution"]) * 100.0,
+                "Metric Score": f"{float(row['Metric Score']) * 100:,.0f}%",
+                "Weight Used": f"{float(row['Normalized Weight']) * 100:,.0f}%",
+            }
+            for row in driver_rows
+        ]
+    )
+    if not chart_df.empty:
+        chart = (
+            alt.Chart(chart_df)
+            .mark_bar()
+            .encode(
+                x=alt.X("Driver:N", title=None, axis=alt.Axis(labelAngle=-25)),
+                y=alt.Y("Contribution:Q", title="Score Contribution"),
+                color=alt.Color("Contribution:Q", scale=alt.Scale(scheme="goldred"), legend=None),
+                tooltip=[
+                    alt.Tooltip("Driver:N"),
+                    alt.Tooltip("Contribution:Q", format=",.2f"),
+                    alt.Tooltip("Metric Score:N"),
+                    alt.Tooltip("Weight Used:N"),
+                ],
+            )
+            .properties(height=280)
+        )
+        st.altair_chart(chart, use_container_width=True)
+
+
+def _insight_chart_df(rows: List[Dict[str, object]], historical_col: str, projected_col: str, value_format: str) -> pd.DataFrame:
+    chart_rows: List[Dict[str, object]] = []
+    for row in rows:
+        for series_label, col_name in (("Historical", historical_col), ("Projected", projected_col)):
+            value = _safe_float(row.get(col_name))
+            if value is None:
+                continue
+            row_format = str(row.get("Format", value_format))
+            chart_value = value * 100.0 if row_format == "percent" else value
+            chart_rows.append(
+                {
+                    "Metric": row.get("Metric"),
+                    "Series": series_label,
+                    "Value": chart_value,
+                    "Display": _format_insight_value(value, row_format),
+                }
+            )
+    return pd.DataFrame(chart_rows)
+
+
+def _render_insight_bar_chart(rows: List[Dict[str, object]], historical_col: str, projected_col: str, value_format: str, y_title: str) -> None:
+    chart_df = _insight_chart_df(rows, historical_col, projected_col, value_format)
+    if chart_df.empty:
+        return
+    chart = (
+        alt.Chart(chart_df)
+        .mark_bar()
+        .encode(
+            x=alt.X("Metric:N", title=None, axis=alt.Axis(labelAngle=-20)),
+            xOffset=alt.XOffset("Series:N"),
+            y=alt.Y("Value:Q", title=y_title),
+            color=alt.Color(
+                "Series:N",
+                scale=alt.Scale(domain=["Historical", "Projected"], range=["#2563EB", "#16A34A"]),
+                legend=alt.Legend(title="Series"),
+            ),
+            tooltip=[
+                alt.Tooltip("Metric:N"),
+                alt.Tooltip("Series:N"),
+                alt.Tooltip("Display:N", title="Value"),
+            ],
+        )
+        .properties(height=280)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _valuation_insight_rows(detail_payload: Dict[str, object]) -> Tuple[List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]]]:
+    operating_table = detail_payload.get("operating_table")
+    working_capital_table = detail_payload.get("working_capital_table")
+    discounting_table = detail_payload.get("discounting_table")
+
+    revenue_columns, revenue_values = _payload_metric_series(operating_table, "Revenue")
+    revenue_actual, revenue_projected = _split_actual_projected_points(revenue_columns, revenue_values)
+    fcff_columns, fcff_values = _payload_metric_series(operating_table, "FCFF")
+    fcff_actual, fcff_projected = _split_actual_projected_points(fcff_columns, fcff_values)
+
+    growth_rows = [
+        {
+            "Metric": "Revenue CAGR",
+            "Historical Period": _period_label(revenue_actual),
+            "Historical": _cagr_from_points(revenue_actual, positive_only=True),
+            "Projected Period": _period_label(revenue_projected),
+            "Projected": _cagr_from_points(revenue_projected, positive_only=True),
+        },
+        {
+            "Metric": "FCFF CAGR",
+            "Historical Period": _period_label(_positive_endpoint_points(fcff_actual)),
+            "Historical": _cagr_from_points(fcff_actual, positive_only=True),
+            "Projected Period": _period_label(_positive_endpoint_points(fcff_projected)),
+            "Projected": _cagr_from_points(fcff_projected, positive_only=True),
+        },
+    ]
+    multiplier_rows = [
+        {
+            "Metric": "Revenue Multiplier",
+            "Historical Period": _period_label(revenue_actual),
+            "Historical": _multiplier_from_points(revenue_actual),
+            "Projected Period": _period_label(revenue_projected),
+            "Projected": _multiplier_from_points(revenue_projected),
+        },
+        {
+            "Metric": "FCFF Multiplier",
+            "Historical Period": _period_label(_positive_endpoint_points(fcff_actual)),
+            "Historical": _multiplier_from_points(fcff_actual, positive_only=True),
+            "Projected Period": _period_label(_positive_endpoint_points(fcff_projected)),
+            "Projected": _multiplier_from_points(fcff_projected, positive_only=True),
+        },
+    ]
+
+    median_specs = [
+        ("EBITDA Margin %", operating_table, "EBITDA Margin", "percent"),
+        ("D&A % of Revenue", operating_table, "D&A %", "percent"),
+        ("Capex % of Revenue", operating_table, "Capex %", "percent"),
+        ("Working Capital Days", working_capital_table, "Working Capital Days", "days"),
+    ]
+    median_rows: List[Dict[str, object]] = []
+    for label, table_payload, metric_name, value_format in median_specs:
+        columns, values = _payload_metric_series(table_payload, metric_name)
+        actual_points, projected_points = _split_actual_projected_points(columns, values)
+        median_rows.append(
+            {
+                "Metric": label,
+                "Historical Median": _median_from_points(actual_points),
+                "Projected Median": _median_from_points(projected_points),
+                "Format": value_format,
+            }
+        )
+
+    wacc_columns, wacc_values = _payload_metric_series(discounting_table, "Projected Year WACC")
+    _, wacc_projected = _split_actual_projected_points(wacc_columns, wacc_values)
+    median_rows.append(
+        {
+            "Metric": "WACC %",
+            "Historical Median": _assumption_row_value(detail_payload, "Median WACC"),
+            "Projected Median": _median_from_points(wacc_projected),
+            "Format": "percent",
+        }
+    )
+    return growth_rows, multiplier_rows, median_rows
+
+
+def _render_company_valuation_insights(detail_payload: Dict[str, object]) -> None:
+    if not detail_payload or not detail_payload.get("operating_table"):
+        st.info("Valuation insights are not available for this company in the current run.")
+        return
+
+    company_name = str(detail_payload.get("company_name") or "Selected Company")
+    ticker = str(detail_payload.get("ticker") or "").strip()
+    label = f"{company_name} ({ticker})" if ticker else company_name
+    dashboard_section(f"Valuation Insights: {label}")
+
+    growth_rows, multiplier_rows, median_rows = _valuation_insight_rows(detail_payload)
+    _render_growth_intensity_summary(growth_rows, multiplier_rows, median_rows)
+
+    dashboard_section("Growth Snapshot")
+    growth_display = pd.DataFrame(
+        [
+            {
+                "Metric": row["Metric"],
+                "Historical Period": row["Historical Period"],
+                "Historical": _format_insight_value(row["Historical"], "percent"),
+                "Projected Period": row["Projected Period"],
+                "Projected": _format_insight_value(row["Projected"], "percent"),
+            }
+            for row in growth_rows
+        ]
+    )
+    render_dashboard_table(growth_display, key="dcf_insights_growth_snapshot")
+    _render_insight_bar_chart(growth_rows, "Historical", "Projected", "percent", "CAGR %")
+
+    dashboard_section("Multiplier Snapshot")
+    multiplier_display = pd.DataFrame(
+        [
+            {
+                "Metric": row["Metric"],
+                "Historical Period": row["Historical Period"],
+                "Historical": _format_insight_value(row["Historical"], "multiple"),
+                "Projected Period": row["Projected Period"],
+                "Projected": _format_insight_value(row["Projected"], "multiple"),
+            }
+            for row in multiplier_rows
+        ]
+    )
+    render_dashboard_table(multiplier_display, key="dcf_insights_multiplier_snapshot")
+    _render_insight_bar_chart(multiplier_rows, "Historical", "Projected", "multiple", "Multiplier")
+
+    dashboard_section("Median Assumption Snapshot")
+    median_display = pd.DataFrame(
+        [
+            {
+                "Metric": row["Metric"],
+                "Historical Median": _format_insight_value(row["Historical Median"], str(row.get("Format", "number"))),
+                "Projected Median": _format_insight_value(row["Projected Median"], str(row.get("Format", "number"))),
+            }
+            for row in median_rows
+        ]
+    )
+    render_dashboard_table(median_display, key="dcf_insights_median_snapshot")
+    _render_insight_bar_chart(median_rows, "Historical Median", "Projected Median", "mixed", "Value (% or days)")
 
 
 def _render_company_valuation_detail(detail_payload: Dict[str, object]) -> None:
+    country = detail_payload.get("country")
     summary_rows = detail_payload.get("summary_rows") or []
     assumptions_rows = detail_payload.get("assumptions_rows") or []
 
@@ -258,7 +1295,7 @@ def _render_company_valuation_detail(detail_payload: Dict[str, object]) -> None:
         [
             {
                 "Metric": row.get("metric", ""),
-                "Value": _format_breakdown_value(row.get("value"), str(row.get("format", "text"))),
+                "Value": _format_breakdown_value(row.get("value"), str(row.get("format", "text")), country),
             }
             for row in summary_rows
         ]
@@ -267,7 +1304,7 @@ def _render_company_valuation_detail(detail_payload: Dict[str, object]) -> None:
         [
             {
                 "Input": row.get("metric", ""),
-                "Value": _format_breakdown_value(row.get("value"), str(row.get("format", "text"))),
+                "Value": _format_breakdown_value(row.get("value"), str(row.get("format", "text")), country),
             }
             for row in assumptions_rows
         ]
@@ -275,17 +1312,17 @@ def _render_company_valuation_detail(detail_payload: Dict[str, object]) -> None:
 
     summary_col, assumption_col = st.columns([1, 1])
     with summary_col:
-        st.markdown("**Summary**")
+        dashboard_section("Summary")
         if not summary_df.empty:
-            st.dataframe(summary_df, use_container_width=True, hide_index=True)
+            render_dashboard_table(summary_df, key="dcf_expanded_summary")
     with assumption_col:
-        st.markdown("**Assumptions**")
+        dashboard_section("Assumptions")
         if not assumptions_df.empty:
-            st.dataframe(assumptions_df, use_container_width=True, hide_index=True)
+            render_dashboard_table(assumptions_df, key="dcf_expanded_assumptions")
 
-    _render_breakdown_table("Operating Model", detail_payload.get("operating_table"))
-    _render_breakdown_table("Working Capital Bridge", detail_payload.get("working_capital_table"))
-    _render_breakdown_table("Discounting and Equity Value", detail_payload.get("discounting_table"))
+    _render_breakdown_table("Operating Model", detail_payload.get("operating_table"), country)
+    _render_breakdown_table("Working Capital Bridge", detail_payload.get("working_capital_table"), country)
+    _render_breakdown_table("Discounting and Equity Value", detail_payload.get("discounting_table"), country)
 
 
 def _summarize_price_source(results_df: pd.DataFrame) -> Dict[str, int]:
@@ -568,7 +1605,7 @@ def _compute_dcf_projection(
     country = company_row.get("country")
     series = _build_required_series(conn, company_id)
     revenue_series = series["revenue"]
-    latest_actual_year, latest_revenue = _latest_numeric_value(revenue_series)
+    raw_latest_actual_year, raw_latest_revenue = _latest_numeric_value(revenue_series)
 
     detail_payload: Dict[str, object] = {
         "company_id": company_id,
@@ -606,19 +1643,27 @@ def _compute_dcf_projection(
         detail_payload["validation"] = message
         return base_row
 
-    if latest_actual_year is None or latest_revenue is None:
+    if raw_latest_actual_year is None or raw_latest_revenue is None:
         return _fail("Missing metric: Revenue")
+
+    latest_actual_year = _anchor_year_from_settings(settings, int(raw_latest_actual_year))
+    if int(latest_actual_year) > int(raw_latest_actual_year):
+        latest_actual_year = int(raw_latest_actual_year)
+    anchored_revenue_series = _series_through_year(revenue_series, int(latest_actual_year))
+    latest_actual_year, latest_revenue = _latest_numeric_value(anchored_revenue_series)
+    if latest_actual_year is None or latest_revenue is None:
+        return _fail("Missing metric: Revenue for selected historical anchor")
 
     explicit_final_year = int(terminal_year) - 1
     if explicit_final_year <= int(latest_actual_year):
         return _fail(f"Terminal year {terminal_year} must be later than latest actual year {latest_actual_year}.")
 
     historical_years = int(settings.get("historical_years", 7) or 7)
-    revenue_growth_sample = _latest_n_growths(revenue_series, historical_years)
+    revenue_growth_sample = _latest_n_growths(anchored_revenue_series, historical_years)
     if not revenue_growth_sample:
         return _fail("Missing metric: Revenue growth history")
 
-    recent_revenue_values = _latest_n_values(revenue_series, historical_years)
+    recent_revenue_values = _latest_n_values(anchored_revenue_series, historical_years)
     actual_years = [int(year) for year, _ in recent_revenue_values]
     ebitda_margin_sample = [
         float(ebitda) / float(revenue)
@@ -721,16 +1766,38 @@ def _compute_dcf_projection(
     if None in (revenue_growth, ebitda_margin, da_pct, capex_pct, working_capital_days, wacc):
         return _fail("Missing metric: Required historical DCF inputs")
 
-    revenue_growth_step = _pct_to_decimal(settings.get("future_revenue_growth")) or 0.0
+    revenue_growth_step = _yoy_settings_pct_to_decimal(settings.get("future_revenue_growth")) or 0.0
     starting_revenue_growth_cap = _pct_to_decimal(settings.get("starting_projected_revenue_growth_cap"))
-    ebitda_margin_step = _pct_to_decimal(settings.get("ebidta_margin_growth")) or 0.0
-    da_pct_step = _pct_to_decimal(settings.get("da_percent_growth")) or 0.0
-    capex_pct_step = _pct_to_decimal(settings.get("capex_percent_growth")) or 0.0
-    working_capital_step = _pct_to_decimal(settings.get("working_capital_days_growth")) or 0.0
-    wacc_step = _pct_to_decimal(settings.get("wacc_direction")) or 0.0
+    ebitda_margin_step = _yoy_settings_pct_to_decimal(settings.get("ebidta_margin_growth")) or 0.0
+    da_pct_step = _yoy_settings_pct_to_decimal(settings.get("da_percent_growth")) or 0.0
+    capex_pct_step = _yoy_settings_pct_to_decimal(settings.get("capex_percent_growth")) or 0.0
+    working_capital_step = _yoy_settings_pct_to_decimal(settings.get("working_capital_days_growth")) or 0.0
+    wacc_step = _yoy_settings_pct_to_decimal(settings.get("wacc_direction")) or 0.0
 
     if starting_revenue_growth_cap is not None:
         revenue_growth = min(float(revenue_growth), float(starting_revenue_growth_cap))
+    base_revenue_growth = float(revenue_growth)
+    base_ebitda_margin = float(ebitda_margin)
+    base_da_pct = float(da_pct)
+    base_capex_pct = float(capex_pct)
+    base_working_capital_days = float(working_capital_days)
+    base_wacc = float(wacc)
+    base_overrides = {
+        metric_key: _baseline_override_decimal(settings, metric_key)
+        for metric_key, _ in _PROJECTION_PATH_METRICS
+    }
+    if base_overrides["future_revenue_growth"] is not None:
+        base_revenue_growth = float(base_overrides["future_revenue_growth"])
+    if base_overrides["ebidta_margin_growth"] is not None:
+        base_ebitda_margin = float(base_overrides["ebidta_margin_growth"])
+    if base_overrides["da_percent_growth"] is not None:
+        base_da_pct = float(base_overrides["da_percent_growth"])
+    if base_overrides["capex_percent_growth"] is not None:
+        base_capex_pct = float(base_overrides["capex_percent_growth"])
+    if base_overrides["working_capital_days_growth"] is not None:
+        base_working_capital_days = float(base_overrides["working_capital_days_growth"])
+    if base_overrides["wacc_direction"] is not None:
+        base_wacc = float(base_overrides["wacc_direction"])
 
     projected_fcff: List[float] = []
     projected_waccs: List[float] = []
@@ -755,13 +1822,18 @@ def _compute_dcf_projection(
 
     projection_years = [int(year) for year in range(int(latest_actual_year) + 1, explicit_final_year + 1)]
     for idx, year in enumerate(projection_years, start=1):
-        if idx > 1:
-            revenue_growth = float(revenue_growth) * (1.0 + float(revenue_growth_step))
-            ebitda_margin = float(ebitda_margin) * (1.0 + float(ebitda_margin_step))
-            da_pct = float(da_pct) * (1.0 + float(da_pct_step))
-            capex_pct = float(capex_pct) * (1.0 + float(capex_pct_step))
-            working_capital_days = float(working_capital_days) * (1.0 + float(working_capital_step))
-            wacc = float(wacc) * (1.0 + float(wacc_step))
+        revenue_growth = _project_assumption_value(base_revenue_growth, idx, "future_revenue_growth", settings, revenue_growth_step)
+        ebitda_margin = _project_assumption_value(base_ebitda_margin, idx, "ebidta_margin_growth", settings, ebitda_margin_step)
+        da_pct = _project_assumption_value(base_da_pct, idx, "da_percent_growth", settings, da_pct_step)
+        capex_pct = _project_assumption_value(base_capex_pct, idx, "capex_percent_growth", settings, capex_pct_step)
+        working_capital_days = _project_assumption_value(
+            base_working_capital_days,
+            idx,
+            "working_capital_days_growth",
+            settings,
+            working_capital_step,
+        )
+        wacc = _project_assumption_value(base_wacc, idx, "wacc_direction", settings, wacc_step)
 
         revenue = float(prev_revenue) * (1.0 + float(revenue_growth))
         ebitda = float(revenue) * float(ebitda_margin)
@@ -925,6 +1997,8 @@ def _compute_dcf_projection(
     ]
     detail_payload["assumptions_rows"] = [
         {"metric": "Historical Years Used", "value": historical_years, "format": "integer"},
+        {"metric": "Historical Anchor Year", "value": str(int(latest_actual_year)), "format": "text"},
+        {"metric": "Projection FY1 Year", "value": str(int(latest_actual_year) + 1), "format": "text"},
         {"metric": "Revenue Growth Descend/Ascend", "value": revenue_growth_step, "format": "percent"},
         {"metric": "Starting Projected Revenue Growth Cap", "value": starting_revenue_growth_cap, "format": "percent"},
         {"metric": "EBITDA Margin Descend/Ascend", "value": ebitda_margin_step, "format": "percent"},
@@ -950,32 +2024,32 @@ def _compute_dcf_projection(
     detail_payload["operating_table"] = _build_breakdown_table(
         actual_columns + projected_columns,
         [
-            ("Revenue", "number", actual_revenue_values + projected_revenues),
+            ("Revenue", "money", actual_revenue_values + projected_revenues),
             ("Growth", "percent", actual_growth_values + projected_growths),
-            ("EBITDA", "number", actual_ebitda_values + projected_ebitdas),
+            ("EBITDA", "money", actual_ebitda_values + projected_ebitdas),
             ("EBITDA Margin", "percent", actual_ebitda_margin_values + projected_ebitda_margins),
-            ("D&A", "number", actual_da_values + projected_da_values),
+            ("D&A", "money", actual_da_values + projected_da_values),
             ("D&A %", "percent", actual_da_pct_values + projected_da_pcts),
-            ("EBIT", "number", actual_ebit_values + projected_ebits),
+            ("EBIT", "money", actual_ebit_values + projected_ebits),
             ("Tax Rate", "percent", actual_tax_rate_values + ([float(tax_rate)] * len(projection_years))),
-            ("NOPAT", "number", actual_nopat_values + projected_nopats),
-            ("CAPEX", "number", actual_capex_outflows + projected_capex_signeds),
+            ("NOPAT", "money", actual_nopat_values + projected_nopats),
+            ("CAPEX", "money", actual_capex_outflows + projected_capex_signeds),
             ("Capex %", "percent", actual_capex_pct_values + projected_capex_pcts),
-            ("FCFF", "number", actual_fcff_values + projected_fcff),
+            ("FCFF", "money", actual_fcff_values + projected_fcff),
         ],
     )
     detail_payload["working_capital_table"] = _build_breakdown_table(
         actual_columns + projected_columns,
         [
-            ("Total Current Assets", "number", actual_total_current_assets + ([None] * len(projection_years))),
-            ("Cash & Cash Equivalents", "number", actual_cash_values + ([None] * len(projection_years))),
-            ("Net Current Assets", "number", actual_net_current_assets + ([None] * len(projection_years))),
-            ("Total Current Liabilities", "number", actual_total_current_liabilities + ([None] * len(projection_years))),
-            ("Current Debt", "number", actual_current_debt + ([None] * len(projection_years))),
-            ("Net Current Liabilities", "number", actual_net_current_liabilities + ([None] * len(projection_years))),
-            ("Non-Cash Working Capital", "number", actual_ncwc_values + projected_ncwcs),
+            ("Total Current Assets", "money", actual_total_current_assets + ([None] * len(projection_years))),
+            ("Cash & Cash Equivalents", "money", actual_cash_values + ([None] * len(projection_years))),
+            ("Net Current Assets", "money", actual_net_current_assets + ([None] * len(projection_years))),
+            ("Total Current Liabilities", "money", actual_total_current_liabilities + ([None] * len(projection_years))),
+            ("Current Debt", "money", actual_current_debt + ([None] * len(projection_years))),
+            ("Net Current Liabilities", "money", actual_net_current_liabilities + ([None] * len(projection_years))),
+            ("Non-Cash Working Capital", "money", actual_ncwc_values + projected_ncwcs),
             ("Working Capital Days", "number", actual_wc_days_values + projected_wc_days_values),
-            ("Change in NCWC", "number", actual_change_ncwcs + projected_change_ncwcs),
+            ("Change in NCWC", "money", actual_change_ncwcs + projected_change_ncwcs),
         ],
     )
     detail_payload["discounting_table"] = _build_breakdown_table(
@@ -984,14 +2058,14 @@ def _compute_dcf_projection(
             ("Future Year", "integer", list(range(1, len(projection_years) + 1)) + [None]),
             ("Projected Year WACC", "percent", projected_waccs + [None]),
             ("Discount Factor", "decimal4", discount_factors + [None]),
-            ("FCFF", "number", projected_fcff + [fcff_terminal_year]),
-            ("PV of FCFF", "number", pv_fcff_values + [None]),
-            ("Terminal Value", "number", ([None] * len(projection_years)) + [terminal_value]),
-            ("PV of Terminal Value", "number", ([None] * len(projection_years)) + [pv_terminal_value]),
-            ("Enterprise Value", "number", ([None] * len(projection_years)) + [enterprise_value]),
-            ("Less: Debt", "number", ([None] * len(projection_years)) + [-(float(latest_debt or 0.0))]),
-            ("Plus: Cash & Cash Equivalents", "number", ([None] * len(projection_years)) + [float(latest_cash or 0.0)]),
-            ("Equity Value", "number", ([None] * len(projection_years)) + [equity_value]),
+            ("FCFF", "money", projected_fcff + [fcff_terminal_year]),
+            ("PV of FCFF", "money", pv_fcff_values + [None]),
+            ("Terminal Value", "money", ([None] * len(projection_years)) + [terminal_value]),
+            ("PV of Terminal Value", "money", ([None] * len(projection_years)) + [pv_terminal_value]),
+            ("Enterprise Value", "money", ([None] * len(projection_years)) + [enterprise_value]),
+            ("Less: Debt", "money", ([None] * len(projection_years)) + [-(float(latest_debt or 0.0))]),
+            ("Plus: Cash & Cash Equivalents", "money", ([None] * len(projection_years)) + [float(latest_cash or 0.0)]),
+            ("Equity Value", "money", ([None] * len(projection_years)) + [equity_value]),
             ("Total Shares Outstanding", "number", ([None] * len(projection_years)) + [latest_shares]),
             (
                 "Price per Share",
@@ -1191,28 +2265,29 @@ def _render_dcf_results(display_df: pd.DataFrame, *, caption_text: str, download
         f"{price_source_counts.get('Unavailable', 0)} unavailable."
     )
 
-    styled_df = visible_df.style.map(_style_price_source, subset=["Price Source"]) if "Price Source" in visible_df.columns else visible_df
-    st.dataframe(
+    display_visible_df = display_table_frame(visible_df)
+    styled_df = (
+        display_visible_df.style.map(_style_price_source, subset=["Price Source"])
+        if "Price Source" in display_visible_df.columns
+        else display_visible_df
+    )
+    render_dashboard_table(
         styled_df,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Total Scaled Volatility-Adjusted Score": st.column_config.NumberColumn(format="%.2f"),
-            "Total Debt-Adjusted Scaled Volatility-Adjusted Score": st.column_config.NumberColumn(format="%.2f"),
-            "Overall Score (0-400)": st.column_config.NumberColumn(format="%.2f"),
-            "Current Market Price": st.column_config.NumberColumn(format="%.2f"),
-            "Price Source": st.column_config.TextColumn(
-                help="Live means fetched during this run. DB fallback means the stored market price from the database was used."
-            ),
-            "Quote As Of": st.column_config.TextColumn(
-                help="Timestamp or period associated with the market price shown for this row."
-            ),
-            "Price Source Detail": st.column_config.TextColumn(
-                help="Additional detail explaining why this market price source was used."
-            ),
-            "Intrinsic Value": st.column_config.NumberColumn(format="%.2f"),
-            "Difference %": st.column_config.NumberColumn(format="%.2f%%"),
+        help_map={
+            "Total Scaled Score": "Total Scaled Volatility-Adjusted Score",
+            "Debt-Adj. Total Score": "Total Debt-Adjusted Scaled Volatility-Adjusted Score",
+            "Overall Score": "Overall Score (0-400)",
+            "Market Price": "Current Market Price",
+            "Price Source": "Live means fetched during this run. DB fallback means the stored market price from the database was used.",
+            "Quote Date": "Timestamp or period associated with the market price shown for this row.",
+            "Price Detail": "Additional detail explaining why this market price source was used.",
+            "Intrinsic Value": "Intrinsic Value",
+            "Upside / Downside": "Difference %",
         },
+        column_config={
+            "Upside / Downside": st.column_config.NumberColumn(format="%.2f%%"),
+        },
+        key=f"{download_key}_table",
     )
 
     export_csv = visible_df.to_csv(index=False).encode("utf-8")
@@ -1297,7 +2372,10 @@ def _row_to_settings_dict(row) -> Dict[str, float]:
     defaults = {
         "starting_projected_revenue_growth_cap": 25.0,
     }
-    return {field: row.get(field, defaults.get(field)) for field in _SETTINGS_FIELDS}
+    settings = {field: row.get(field, defaults.get(field)) for field in _SETTINGS_FIELDS}
+    if "projection_path_config" in row:
+        settings["projection_path_config"] = row.get("projection_path_config")
+    return settings
 
 
 def _get_general_settings_dict(conn) -> Dict[str, float]:
@@ -1335,14 +2413,308 @@ def _get_general_settings_dict(conn) -> Dict[str, float]:
     }
 
 
-def _render_settings_form(initial_values: Dict[str, float], save_label: str, form_key: str) -> Optional[Dict[str, float]]:
-    with st.form(form_key):
+def _projection_path_defaults(initial_values: Dict[str, object]) -> Dict[str, Dict[str, object]]:
+    saved_config = _parse_projection_path_config(initial_values.get("projection_path_config"))
+    defaults: Dict[str, Dict[str, object]] = {}
+    for metric_key, _ in _PROJECTION_PATH_METRICS:
+        metric_config = saved_config.get(metric_key)
+        if isinstance(metric_config, dict):
+            defaults[metric_key] = metric_config
+        else:
+            defaults[metric_key] = _default_single_path_config(initial_values.get(metric_key))
+    return defaults
+
+
+def _path_config_legacy_step(config: Dict[str, object]) -> float:
+    if str(config.get("mode") or "single") == "year_by_year":
+        steps = config.get("steps_pct") or []
+        if isinstance(steps, list) and steps:
+            return _safe_float(steps[0]) or 0.0
+        return 0.0
+    return _safe_float(config.get("annual_step_pct")) or 0.0
+
+
+def _company_revenue_years(conn, company_row: Optional[pd.Series]) -> List[int]:
+    if conn is None or company_row is None:
+        return []
+    try:
+        company_id = int(company_row["id"])
+    except Exception:
+        return []
+    series = _build_required_series(conn, company_id).get("revenue", {})
+    return [int(year) for year, _ in _latest_n_values(series, 100)]
+
+
+def _calculated_baseline_display_rows(preview_context: Optional[Dict[str, object]]) -> Dict[str, str]:
+    if not preview_context or preview_context.get("error"):
+        return {}
+    metric_base_values = dict(preview_context.get("metric_base_values", {}))
+    country = preview_context.get("country")
+    rows: Dict[str, str] = {}
+    for metric_key, _ in _PROJECTION_PATH_METRICS:
+        value_format = _PREVIEW_METRIC_FORMATS.get(metric_key, "number")
+        base_value = preview_context.get("latest_revenue") if metric_key == "future_revenue_growth" else metric_base_values.get(metric_key)
+        if metric_key == "future_revenue_growth":
+            base_value = dict(preview_context.get("metric_base_growths", {})).get(metric_key)
+            rows[metric_key] = _format_preview_pct(base_value)
+        else:
+            rows[metric_key] = _format_preview_value(base_value, value_format, country)
+    return rows
+
+
+def _render_projection_anchor_controls(
+    initial_values: Dict[str, object],
+    form_key: str,
+    *,
+    preview_conn=None,
+    preview_company_row: Optional[pd.Series] = None,
+    historical_years: int,
+    starting_projected_revenue_growth_cap: float,
+) -> Dict[str, object]:
+    saved_config = _anchor_config_from_settings(initial_values)
+    available_years = _company_revenue_years(preview_conn, preview_company_row)
+    if not available_years:
+        return {
+            "use_base_historical_year": False,
+            "base_historical_year": None,
+            "use_baseline_overrides": False,
+            "baseline_anchor_year": None,
+            "baseline_overrides": {},
+        }
+
+    latest_year = max(available_years)
+    saved_anchor_year = saved_config.get("base_historical_year")
+    try:
+        saved_anchor_year = int(saved_anchor_year)
+    except Exception:
+        saved_anchor_year = latest_year
+    if saved_anchor_year not in available_years:
+        saved_anchor_year = latest_year
+
+    st.markdown("---")
+    st.markdown("**Projection Anchor Settings**")
+    use_anchor = st.checkbox(
+        "Use a specific base historical year anchor",
+        value=bool(saved_config.get("use_base_historical_year")),
+        key=f"{form_key}_use_base_historical_year",
+        help="When enabled, historical calculations stop at the selected year and FY1 begins in the following year.",
+    )
+    anchor_year = latest_year
+    if use_anchor:
+        anchor_year = st.selectbox(
+            "Base historical year anchor",
+            options=available_years,
+            index=available_years.index(int(saved_anchor_year)),
+            key=f"{form_key}_base_historical_year",
+            help="Projection FY1 starts in the year immediately after this anchor.",
+        )
+        st.caption(f"Historical calculations stop at {anchor_year}. FY1 represents {int(anchor_year) + 1}.")
+
+    try:
+        baseline_anchor_default = int(saved_config.get("baseline_anchor_year") or (int(anchor_year) + 1))
+    except Exception:
+        baseline_anchor_default = int(anchor_year) + 1
+    baseline_year_options = sorted(set(available_years + [int(anchor_year) + 1, baseline_anchor_default]))
+    use_baseline_overrides = st.checkbox(
+        "Override base actual historical baseline values",
+        value=bool(saved_config.get("use_baseline_overrides")),
+        key=f"{form_key}_use_baseline_overrides",
+        help="When enabled, all six assumption baseline overrides are required and saved together.",
+    )
+
+    baseline_anchor_year = baseline_anchor_default
+    overrides: Dict[str, float] = {}
+    if use_baseline_overrides:
+        baseline_anchor_year = st.selectbox(
+            "Base actual historical baseline anchor",
+            options=baseline_year_options,
+            index=baseline_year_options.index(baseline_anchor_default),
+            key=f"{form_key}_baseline_anchor_year",
+            help="This labels the baseline year whose assumption values are being overridden.",
+        )
+
+        calculated_settings = _settings_with_anchor_config(
+            initial_values,
+            {
+                "use_base_historical_year": bool(use_anchor),
+                "base_historical_year": int(anchor_year) if use_anchor else None,
+                "use_baseline_overrides": False,
+                "baseline_anchor_year": int(baseline_anchor_year),
+                "baseline_overrides": {},
+            },
+        )
+        calculated_context = None
+        if preview_conn is not None and preview_company_row is not None:
+            calculated_context = _build_company_assumption_preview_context(
+                preview_conn,
+                preview_company_row,
+                int(historical_years),
+                float(starting_projected_revenue_growth_cap),
+                calculated_settings,
+            )
+        calculated_display = _calculated_baseline_display_rows(calculated_context)
+        saved_overrides = saved_config.get("baseline_overrides") if isinstance(saved_config.get("baseline_overrides"), dict) else {}
+
+        st.caption("All baseline override inputs are required when this option is enabled.")
+        header_cols = st.columns([2.0, 1.3, 1.2])
+        header_cols[0].markdown("**Assumption Parameter**")
+        header_cols[1].markdown("**Application Calculated Base**")
+        header_cols[2].markdown("**Override Base Value**")
+        for metric_key, label in _PROJECTION_PATH_METRICS:
+            row_cols = st.columns([2.0, 1.3, 1.2])
+            row_cols[0].write(label)
+            row_cols[1].write(calculated_display.get(metric_key, ""))
+            saved_value = _safe_float(saved_overrides.get(metric_key))
+            if saved_value is None:
+                calculated_decimal = None
+                if calculated_context and not calculated_context.get("error"):
+                    if metric_key == "future_revenue_growth":
+                        calculated_decimal = dict(calculated_context.get("metric_base_growths", {})).get(metric_key)
+                    else:
+                        calculated_decimal = dict(calculated_context.get("metric_base_values", {})).get(metric_key)
+                if calculated_decimal is not None:
+                    saved_value = float(calculated_decimal) if metric_key == "working_capital_days_growth" else float(calculated_decimal) * 100.0
+                else:
+                    saved_value = 0.0
+            with row_cols[2]:
+                overrides[metric_key] = float(
+                    st.number_input(
+                        "Override Base Value",
+                        value=float(saved_value),
+                        step=0.10,
+                        format="%.2f",
+                        key=f"{form_key}_{metric_key}_baseline_override",
+                        label_visibility="collapsed",
+                    )
+                )
+
+    return {
+        "use_base_historical_year": bool(use_anchor),
+        "base_historical_year": int(anchor_year) if use_anchor else None,
+        "use_baseline_overrides": bool(use_baseline_overrides),
+        "baseline_anchor_year": int(baseline_anchor_year) if use_baseline_overrides else None,
+        "baseline_overrides": overrides if use_baseline_overrides else {},
+    }
+
+
+def _render_projection_path_controls(
+    initial_values: Dict[str, object],
+    form_key: str,
+    *,
+    preview_context: Optional[Dict[str, object]] = None,
+) -> Dict[str, Dict[str, object]]:
+    configs = _projection_path_defaults(initial_values)
+    rendered_configs: Dict[str, Dict[str, object]] = {}
+
+    st.markdown("**Assumption Path Controls**")
+    st.caption(
+        "Choose one path per assumption. Entered forecast percentages are treated as absolute YoY growth rates, "
+        "not as growth over the prior year's growth rate."
+    )
+
+    for metric_key, label in _PROJECTION_PATH_METRICS:
+        config = configs.get(metric_key, _default_single_path_config(initial_values.get(metric_key)))
+        mode_value = str(config.get("mode") or "single")
+        mode_label = "Year-by-year ascend/descend %" if mode_value == "year_by_year" else "Single annual ascend/descend % for N years"
+
+        with st.expander(label, expanded=(metric_key == "future_revenue_growth")):
+            selected_mode = st.radio(
+                "Mode",
+                options=["Single annual ascend/descend % for N years", "Year-by-year ascend/descend %"],
+                index=1 if mode_label == "Year-by-year ascend/descend %" else 0,
+                horizontal=True,
+                key=f"{form_key}_{metric_key}_mode",
+            )
+
+            if selected_mode == "Year-by-year ascend/descend %":
+                raw_steps = config.get("steps_pct") if mode_value == "year_by_year" else None
+                steps = raw_steps if isinstance(raw_steps, list) else []
+                steps = [(_safe_float(step) or 0.0) for step in steps[:10]]
+                while len(steps) < 10:
+                    steps.append(0.0)
+
+                rendered_steps: List[float] = []
+                for row_start in (0, 5):
+                    cols = st.columns(5)
+                    for offset, col in enumerate(cols):
+                        idx = row_start + offset
+                        with col:
+                            rendered_steps.append(
+                                float(
+                                    st.number_input(
+                                        f"FY{idx + 1}",
+                                        value=float(steps[idx]),
+                                        step=0.10,
+                                        format="%.2f",
+                                        key=f"{form_key}_{metric_key}_fy_{idx + 1}",
+                                    )
+                                )
+                            )
+                rendered_configs[metric_key] = {
+                    "mode": "year_by_year",
+                    "steps_pct": rendered_steps,
+                }
+            else:
+                annual_step = _safe_float(config.get("annual_step_pct")) if mode_value == "single" else None
+                years = config.get("years", 10) if mode_value == "single" else 10
+                try:
+                    years_value = min(max(int(years), 1), 10)
+                except Exception:
+                    years_value = 10
+
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    annual_step_value = st.number_input(
+                        "Annual absolute growth %",
+                        value=float(annual_step or 0.0),
+                        step=0.10,
+                        format="%.2f",
+                        key=f"{form_key}_{metric_key}_single_step",
+                    )
+                with col2:
+                    years_input = st.number_input(
+                        "Apply through future year",
+                        min_value=1,
+                        max_value=10,
+                        value=int(years_value),
+                        step=1,
+                        key=f"{form_key}_{metric_key}_single_years",
+                        help="The entered absolute growth rate applies through this future year; later years hold the resulting assumption value.",
+                    )
+                rendered_configs[metric_key] = {
+                    "mode": "single",
+                    "annual_step_pct": float(annual_step_value),
+                    "years": int(years_input),
+                }
+            _render_assumption_path_preview(
+                preview_context,
+                initial_values,
+                metric_key,
+                label,
+                rendered_configs[metric_key],
+            )
+
+    return rendered_configs
+
+
+def _render_settings_form(
+    initial_values: Dict[str, object],
+    save_label: str,
+    form_key: str,
+    *,
+    company_level_paths: bool = False,
+    preview_conn=None,
+    preview_company_row: Optional[pd.Series] = None,
+) -> Optional[Dict[str, object]]:
+    form_container = st.container() if company_level_paths else st.form(form_key)
+    with form_container:
         historical_years = st.number_input(
             "Number of historical years to consider",
             min_value=3,
             max_value=10,
             value=int(initial_values["historical_years"]),
             step=1,
+            key=f"{form_key}_historical_years",
             help="Controls how many historical annual observations are used when calculating the DCF starting point.",
         )
 
@@ -1350,74 +2722,144 @@ def _render_settings_form(initial_values: Dict[str, float], save_label: str, for
         st.markdown("**Terminal Growth Rate**")
         tg_col1, tg_col2, tg_col3, tg_col4 = st.columns(4)
         with tg_col1:
-            terminal_growth_usa = st.number_input("USA Terminal Growth %", value=float(initial_values["terminal_growth_usa"]), step=0.10, format="%.2f")
+            terminal_growth_usa = st.number_input(
+                "USA Terminal Growth %",
+                value=float(initial_values["terminal_growth_usa"]),
+                step=0.10,
+                format="%.2f",
+                key=f"{form_key}_terminal_growth_usa",
+            )
         with tg_col2:
-            terminal_growth_india = st.number_input("India Terminal Growth %", value=float(initial_values["terminal_growth_india"]), step=0.10, format="%.2f")
+            terminal_growth_india = st.number_input(
+                "India Terminal Growth %",
+                value=float(initial_values["terminal_growth_india"]),
+                step=0.10,
+                format="%.2f",
+                key=f"{form_key}_terminal_growth_india",
+            )
         with tg_col3:
-            terminal_growth_china = st.number_input("China Terminal Growth %", value=float(initial_values["terminal_growth_china"]), step=0.10, format="%.2f")
+            terminal_growth_china = st.number_input(
+                "China Terminal Growth %",
+                value=float(initial_values["terminal_growth_china"]),
+                step=0.10,
+                format="%.2f",
+                key=f"{form_key}_terminal_growth_china",
+            )
         with tg_col4:
-            terminal_growth_japan = st.number_input("Japan Terminal Growth %", value=float(initial_values["terminal_growth_japan"]), step=0.10, format="%.2f")
+            terminal_growth_japan = st.number_input(
+                "Japan Terminal Growth %",
+                value=float(initial_values["terminal_growth_japan"]),
+                step=0.10,
+                format="%.2f",
+                key=f"{form_key}_terminal_growth_japan",
+            )
 
         st.markdown("---")
-        col1, col2 = st.columns(2)
-        with col1:
-            future_revenue_growth = st.number_input(
-                "Future Revenue Growth %",
-                value=float(initial_values["future_revenue_growth"]),
-                step=0.10,
-                format="%.2f",
-                help="This percentage reflects how the median of the historical revenue growth for each company descends or ascends into the future.",
-            )
-            starting_projected_revenue_growth_cap = st.number_input(
-                "Starting Projected Revenue Growth Cap %",
-                value=float(initial_values["starting_projected_revenue_growth_cap"]),
-                step=0.10,
-                format="%.2f",
-                help="Caps the first projected year's revenue growth after the historical median is derived. Later projected years continue from that starting point using Future Revenue Growth %.",
-            )
-            ebidta_margin_growth = st.number_input(
-                "EBIDTA Margin Growth %",
-                value=float(initial_values["ebidta_margin_growth"]),
-                step=0.10,
-                format="%.2f",
-                help="This percentage reflects how the median of the historical EBIDTA Margin for each company descends or ascends into the future.",
-            )
-            da_percent_growth = st.number_input(
-                "D&A Percent Growth %",
-                value=float(initial_values["da_percent_growth"]),
-                step=0.10,
-                format="%.2f",
-                help="This percentage reflects how the median of the historical D&A Percent for each company descends or ascends into the future.",
-            )
-        with col2:
-            capex_percent_growth = st.number_input(
-                "CAPEX Percent Growth %",
-                value=float(initial_values["capex_percent_growth"]),
-                step=0.10,
-                format="%.2f",
-                help="This percentage reflects how the median of the historical CAPEX Percent for each company descends or ascends into the future.",
-            )
-            working_capital_days_growth = st.number_input(
-                "Working Capital Days Growth %",
-                value=float(initial_values["working_capital_days_growth"]),
-                step=0.10,
-                format="%.2f",
-                help="This percentage reflects how the median of the historical Working Capital Days for each company descends or ascends into the future.",
-            )
-            wacc_direction = st.number_input(
-                "WACC direction %",
-                value=float(initial_values["wacc_direction"]),
-                step=0.10,
-                format="%.2f",
-                help="This percentage reflects how the median of the historical WACC for each company descends or ascends into the future.",
-            )
+        starting_projected_revenue_growth_cap = st.number_input(
+            "Starting Projected Revenue Growth Cap %",
+            value=float(initial_values["starting_projected_revenue_growth_cap"]),
+            step=0.10,
+            format="%.2f",
+            key=f"{form_key}_starting_projected_revenue_growth_cap",
+            help="Caps the first projected year's revenue growth after the historical median is derived.",
+        )
 
-        submitted = st.form_submit_button(save_label, type="primary")
+        projection_path_config: Optional[Dict[str, Dict[str, object]]] = None
+        anchor_config: Optional[Dict[str, object]] = None
+        anchored_initial_values = dict(initial_values)
+        if company_level_paths:
+            anchor_config = _render_projection_anchor_controls(
+                initial_values,
+                form_key,
+                preview_conn=preview_conn,
+                preview_company_row=preview_company_row,
+                historical_years=int(historical_years),
+                starting_projected_revenue_growth_cap=float(starting_projected_revenue_growth_cap),
+            )
+            anchored_initial_values = _settings_with_anchor_config(initial_values, anchor_config)
+            preview_context = None
+            if preview_conn is not None and preview_company_row is not None:
+                preview_context = _build_company_assumption_preview_context(
+                    preview_conn,
+                    preview_company_row,
+                    int(historical_years),
+                    float(starting_projected_revenue_growth_cap),
+                    anchored_initial_values,
+                )
+                _render_assumption_base_snapshot(preview_context)
+            projection_path_config = _render_projection_path_controls(
+                anchored_initial_values,
+                form_key,
+                preview_context=preview_context,
+            )
+            future_revenue_growth = _path_config_legacy_step(projection_path_config["future_revenue_growth"])
+            ebidta_margin_growth = _path_config_legacy_step(projection_path_config["ebidta_margin_growth"])
+            da_percent_growth = _path_config_legacy_step(projection_path_config["da_percent_growth"])
+            capex_percent_growth = _path_config_legacy_step(projection_path_config["capex_percent_growth"])
+            working_capital_days_growth = _path_config_legacy_step(projection_path_config["working_capital_days_growth"])
+            wacc_direction = _path_config_legacy_step(projection_path_config["wacc_direction"])
+        else:
+            col1, col2 = st.columns(2)
+            with col1:
+                future_revenue_growth = st.number_input(
+                    "Future Revenue Growth %",
+                    value=float(initial_values["future_revenue_growth"]),
+                    step=0.10,
+                    format="%.2f",
+                    key=f"{form_key}_future_revenue_growth",
+                    help="Applied as a year-over-year percentage adjustment for future projected years.",
+                )
+                ebidta_margin_growth = st.number_input(
+                    "EBIDTA Margin Growth %",
+                    value=float(initial_values["ebidta_margin_growth"]),
+                    step=0.10,
+                    format="%.2f",
+                    key=f"{form_key}_ebidta_margin_growth",
+                    help="Applied as a year-over-year percentage adjustment for future projected years.",
+                )
+                da_percent_growth = st.number_input(
+                    "D&A Percent Growth %",
+                    value=float(initial_values["da_percent_growth"]),
+                    step=0.10,
+                    format="%.2f",
+                    key=f"{form_key}_da_percent_growth",
+                    help="Applied as a year-over-year percentage adjustment for future projected years.",
+                )
+            with col2:
+                capex_percent_growth = st.number_input(
+                    "CAPEX Percent Growth %",
+                    value=float(initial_values["capex_percent_growth"]),
+                    step=0.10,
+                    format="%.2f",
+                    key=f"{form_key}_capex_percent_growth",
+                    help="Applied as a year-over-year percentage adjustment for future projected years.",
+                )
+                working_capital_days_growth = st.number_input(
+                    "Working Capital Days Growth %",
+                    value=float(initial_values["working_capital_days_growth"]),
+                    step=0.10,
+                    format="%.2f",
+                    key=f"{form_key}_working_capital_days_growth",
+                    help="Applied as a year-over-year percentage adjustment for future projected years.",
+                )
+                wacc_direction = st.number_input(
+                    "WACC direction %",
+                    value=float(initial_values["wacc_direction"]),
+                    step=0.10,
+                    format="%.2f",
+                    key=f"{form_key}_wacc_direction",
+                    help="Applied as a year-over-year percentage adjustment for future projected years.",
+                )
+
+        if company_level_paths:
+            submitted = st.button(save_label, type="primary", key=f"{form_key}_submit")
+        else:
+            submitted = st.form_submit_button(save_label, type="primary")
 
     if not submitted:
         return None
 
-    return {
+    result = {
         "historical_years": int(historical_years),
         "terminal_growth_usa": float(terminal_growth_usa),
         "terminal_growth_india": float(terminal_growth_india),
@@ -1431,6 +2873,11 @@ def _render_settings_form(initial_values: Dict[str, float], save_label: str, for
         "working_capital_days_growth": float(working_capital_days_growth),
         "wacc_direction": float(wacc_direction),
     }
+    if projection_path_config is not None:
+        if anchor_config is not None:
+            projection_path_config[_ANCHOR_CONFIG_KEY] = anchor_config
+        result["projection_path_config"] = json.dumps(projection_path_config)
+    return result
 
 
 def _render_industry_tab(conn) -> None:
@@ -1628,6 +3075,7 @@ def _render_company_tab(conn) -> None:
             "terminal_year": int(terminal_year),
         }
         st.session_state[_DCF_COMPANY_EXPANDED_RESULT_KEY] = None
+        st.session_state[_DCF_COMPANY_DETAIL_VIEW_KEY] = "Expanded Valuation"
 
     results_df = st.session_state.get(_DCF_COMPANY_RESULTS_KEY)
     results_meta = st.session_state.get(_DCF_COMPANY_RESULTS_META_KEY, {})
@@ -1673,7 +3121,7 @@ def _render_company_tab(conn) -> None:
         st.session_state[_DCF_COMPANY_RESULT_SELECT_KEY] = stored_selected_result_id
 
     st.caption("Select one company from the output and expand the valuation mechanics below the results table.")
-    selector_col, action_col = st.columns([3, 1])
+    selector_col, action_col = st.columns([3, 2])
     with selector_col:
         selected_result_company_id = st.radio(
             "Company valuation detail",
@@ -1685,8 +3133,15 @@ def _render_company_tab(conn) -> None:
     with action_col:
         st.write("")
         st.write("")
-        if st.button("Expand Valuation", key="dcf_company_expand_detail"):
-            st.session_state[_DCF_COMPANY_EXPANDED_RESULT_KEY] = int(selected_result_company_id)
+        expand_col, insights_col = st.columns(2)
+        with expand_col:
+            if st.button("Expand Valuation", key="dcf_company_expand_detail"):
+                st.session_state[_DCF_COMPANY_EXPANDED_RESULT_KEY] = int(selected_result_company_id)
+                st.session_state[_DCF_COMPANY_DETAIL_VIEW_KEY] = "Expanded Valuation"
+        with insights_col:
+            if st.button("Valuation Insights", key="dcf_company_insights_detail"):
+                st.session_state[_DCF_COMPANY_EXPANDED_RESULT_KEY] = int(selected_result_company_id)
+                st.session_state[_DCF_COMPANY_DETAIL_VIEW_KEY] = "Valuation Insights"
 
     expanded_company_id = st.session_state.get(_DCF_COMPANY_EXPANDED_RESULT_KEY)
     if expanded_company_id not in option_map:
@@ -1709,7 +3164,16 @@ def _render_company_tab(conn) -> None:
         st.info("Detailed valuation mechanics are not available for this company in the current run.")
         return
 
-    _render_company_valuation_detail(detail_payload)
+    detail_view = st.segmented_control(
+        "Detail view",
+        options=["Expanded Valuation", "Valuation Insights"],
+        default=st.session_state.get(_DCF_COMPANY_DETAIL_VIEW_KEY, "Expanded Valuation"),
+        key=_DCF_COMPANY_DETAIL_VIEW_KEY,
+    )
+    if detail_view == "Valuation Insights":
+        _render_company_valuation_insights(detail_payload)
+    else:
+        _render_company_valuation_detail(detail_payload)
 
 
 def _render_general_settings_tab(conn) -> None:
@@ -1923,7 +3387,14 @@ def _render_company_settings_tab(conn) -> None:
     baseline_label = label_map.get(baseline_company_id, str(baseline_company_id))
     st.caption(f"The form is prefilled from '{baseline_label}'. Saving applies the displayed values to all selected companies.")
 
-    values = _render_settings_form(baseline_settings, "Save Company Settings", "dcf_company_settings_form")
+    values = _render_settings_form(
+        baseline_settings,
+        "Save Company Settings",
+        "dcf_company_settings_form",
+        company_level_paths=True,
+        preview_conn=conn,
+        preview_company_row=selected_companies_df[selected_companies_df["id"] == baseline_company_id].iloc[0],
+    )
     if values is None:
         return
 
@@ -1944,6 +3415,7 @@ def _render_company_settings_tab(conn) -> None:
             float(values["working_capital_days_growth"]),
             float(values["wacc_direction"]),
             timestamp,
+            values.get("projection_path_config"),
         )
         for company_id in selected_company_ids
     ]

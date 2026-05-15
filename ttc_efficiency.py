@@ -19,6 +19,7 @@ from core import (
     compute_growth_stats,
     compute_margin_growth_stats,
     compute_margin_stats,
+    exclude_recent_zero_accumulated_profit_for_stats,
     get_db,
     get_annual_accumulated_profit_series,
     get_annual_fcff_series,
@@ -736,15 +737,16 @@ def _compute_value_creation_filter_metrics(
         compute_and_store_total_equity_and_roe(conn, company_id)
 
         ann_acc = get_annual_accumulated_profit_series(conn, company_id)
+        ann_acc_stats = exclude_recent_zero_accumulated_profit_for_stats(ann_acc)
         ann_roe = get_annual_roe_series(conn, company_id)
         ann_roce = get_annual_roce_series(conn, company_id)
         ann_interest_load = get_annual_interest_load_series(conn, company_id)
 
         med_acc_g: Optional[float] = None
         std_acc_g: Optional[float] = None
-        if ann_acc is not None and not ann_acc.empty:
+        if ann_acc_stats is not None and not ann_acc_stats.empty:
             med_acc_g, std_acc_g = compute_growth_stats(
-                ann_acc,
+                ann_acc_stats,
                 yr_start,
                 yr_end,
                 stdev_sample=True,
