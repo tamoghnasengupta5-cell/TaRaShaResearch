@@ -216,9 +216,10 @@ def infer_column_config(
     return config
 
 
-def table_height(df: pd.DataFrame, *, max_height: int = 420, min_height: int = 118, row_height: int = 30) -> int:
+def table_height(df: pd.DataFrame, *, max_height: int = 420, min_height: int = 72, row_height: int = 30) -> int:
     rows = 0 if df is None else int(len(df))
-    return max(min_height, min(max_height, 42 + ((rows + 1) * row_height)))
+    visible_rows = max(rows, 1)
+    return max(min_height, min(max_height, 42 + (visible_rows * row_height)))
 
 
 def render_dashboard_table(

@@ -915,8 +915,18 @@ def render_combined_dashboard_tab() -> None:
             # Below 0%: soft red background
             return "background-color: #FEE2E2; color: #991B1B; font-weight: 650;"
 
+        def apply_elementwise_style(current_styler, style_func, *, subset):
+            """Apply scalar CSS styles across pandas versions."""
+            if hasattr(current_styler, "map"):
+                return current_styler.map(style_func, subset=subset)
+            return current_styler.applymap(style_func, subset=subset)
+
         if cagr_cols:
-            styler = styler.applymap(style_cagr, subset=pd.IndexSlice[:, cagr_cols])
+            styler = apply_elementwise_style(
+                styler,
+                style_cagr,
+                subset=pd.IndexSlice[:, cagr_cols],
+            )
 
         # Colour rules for the 'Above 15% Year%' column.
         pct_year_cols = [
@@ -942,7 +952,11 @@ def render_combined_dashboard_tab() -> None:
             return "background-color: #FEE2E2; color: #991B1B; font-weight: 650;"
 
         if pct_year_cols:
-            styler = styler.applymap(style_above_15_year, subset=pd.IndexSlice[:, pct_year_cols])
+            styler = apply_elementwise_style(
+                styler,
+                style_above_15_year,
+                subset=pd.IndexSlice[:, pct_year_cols],
+            )
 
         dashboard_section(
             "Overall Score Dashboard",

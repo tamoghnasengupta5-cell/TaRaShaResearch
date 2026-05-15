@@ -384,80 +384,6 @@ def _inject_shell_css() -> None:
     )
 
 
-def _inject_tab_click_sound() -> None:
-    components.html(
-        """
-        <script>
-          (() => {
-            const parentWindow = window.parent;
-            const parentDocument = parentWindow.document;
-            if (parentWindow.__tarashaTabClickSoundInitialized) {
-              return;
-            }
-            parentWindow.__tarashaTabClickSoundInitialized = true;
-
-            let audioContext = null;
-
-            function playSoftTick() {
-              try {
-                const AudioCtx = parentWindow.AudioContext || parentWindow.webkitAudioContext;
-                if (!AudioCtx) {
-                  return;
-                }
-                audioContext = audioContext || new AudioCtx();
-                if (audioContext.state === "suspended") {
-                  audioContext.resume();
-                }
-
-                const oscillator = audioContext.createOscillator();
-                const gain = audioContext.createGain();
-                const now = audioContext.currentTime;
-
-                oscillator.type = "sine";
-                oscillator.frequency.setValueAtTime(560, now);
-                oscillator.frequency.exponentialRampToValueAtTime(380, now + 0.045);
-
-                gain.gain.setValueAtTime(0.0001, now);
-                gain.gain.exponentialRampToValueAtTime(0.045, now + 0.008);
-                gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.07);
-
-                oscillator.connect(gain);
-                gain.connect(audioContext.destination);
-                oscillator.start(now);
-                oscillator.stop(now + 0.075);
-              } catch (err) {
-                console.warn("tab click sound failed", err);
-              }
-            }
-
-            function bindTab(tab) {
-              if (!tab || tab.dataset.tarashaSoundBound === "true") {
-                return;
-              }
-              tab.dataset.tarashaSoundBound = "true";
-              tab.addEventListener("click", (event) => {
-                if (!event.isTrusted || tab.getAttribute("aria-selected") === "true") {
-                  return;
-                }
-                playSoftTick();
-              });
-            }
-
-            function bindAllTabs() {
-              parentDocument.querySelectorAll('button[role="tab"]').forEach(bindTab);
-            }
-
-            bindAllTabs();
-            const observer = new MutationObserver(bindAllTabs);
-            observer.observe(parentDocument.body, { childList: true, subtree: true });
-          })();
-        </script>
-        """,
-        height=0,
-        scrolling=False,
-    )
-
-
 def _activate_top_level_tab(label: str) -> None:
     components.html(
         f"""
@@ -496,7 +422,6 @@ def _submit_header_search() -> None:
 def _render_header() -> tuple:
     _inject_shell_css()
     inject_dashboard_table_css()
-    _inject_tab_click_sound()
 
     conn = get_db()
     companies_df, year_options = get_header_search_context(conn)
