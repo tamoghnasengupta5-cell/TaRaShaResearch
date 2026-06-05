@@ -1,6 +1,7 @@
 import streamlit as st
 
 from core import *  # noqa: F401,F403
+from ui_theme import company_label_map
 
 # --- Key Data display helpers (country, units) ---
 # Money values in this module are assumed to be stored in *millions of local currency*.
@@ -163,9 +164,8 @@ def _render_pl_key_data() -> None:
         return
 
     # Base selection: individual companies
-    all_company_options = [
-        f"{row.name} ({row.ticker}) [id={row.id}]" for _, row in companies_df.iterrows()
-    ]
+    labels = company_label_map(companies_df)
+    all_company_options = list(labels.keys())
 
     # Default selection: companies not present in any bucket (same behavior as P&L Metrics)
     try:
@@ -179,7 +179,7 @@ def _render_pl_key_data() -> None:
 
     if bucketed_ids:
         default_company_options = [
-            f"{row.name} ({row.ticker}) [id={row.id}]"
+            int(row.id)
             for _, row in companies_df.iterrows()
             if int(row.id) not in bucketed_ids
         ]
@@ -189,18 +189,19 @@ def _render_pl_key_data() -> None:
     # If a company was just ingested this session, override default to only that company
     last_company_id = st.session_state.get("last_ingested_company_id")
     if last_company_id is not None:
-        selected_label = None
+        selected_company_id = None
         for _, row in companies_df.iterrows():
             if int(row.id) == int(last_company_id):
-                selected_label = f"{row.name} ({row.ticker}) [id={row.id}]"
+                selected_company_id = int(row.id)
                 break
-        if selected_label:
-            default_company_options = [selected_label]
+        if selected_company_id is not None:
+            default_company_options = [selected_company_id]
 
     options = st.multiselect(
         "Companies to analyze",
         options=all_company_options,
         default=default_company_options,
+        format_func=lambda company_id: labels.get(company_id, str(company_id)),
         key="keydata_pl_companies_select",
     )
 
@@ -216,11 +217,7 @@ def _render_pl_key_data() -> None:
         save_bucket = st.button("Save bucket", key="keydata_pl_save_bucket_button")
 
     if save_bucket:
-        sel_company_ids = []
-        for opt in options:
-            m_sel = re.search(r"\[id=(\d+)\]$", opt)
-            if m_sel:
-                sel_company_ids.append(int(m_sel.group(1)))
+        sel_company_ids = [int(company_id) for company_id in options]
 
         if not bucket_name or not bucket_name.strip():
             st.error("Please provide a non-empty bucket name.")
@@ -281,11 +278,7 @@ def _render_pl_key_data() -> None:
         raise ValueError("Could not parse the year range. Use 'Recent - YYYY' or 'YYYY-YYYY'.")
 
     # Determine final set of company ids based on direct selection + buckets
-    selected_company_ids: List[int] = []
-    for opt in options:
-        m = re.search(r"\[id=(\d+)\]$", opt)
-        if m:
-            selected_company_ids.append(int(m.group(1)))
+    selected_company_ids: List[int] = [int(company_id) for company_id in options]
 
     bucket_company_ids: List[int] = []
     if bucket_names_selected:
@@ -810,9 +803,8 @@ def _render_bs_key_data() -> None:
         return
 
     # Base selection: individual companies
-    all_company_options = [
-        f"{row.name} ({row.ticker}) [id={row.id}]" for _, row in companies_df.iterrows()
-    ]
+    labels = company_label_map(companies_df)
+    all_company_options = list(labels.keys())
 
     # Default selection: companies not present in any bucket (same behavior as P&L Metrics)
     try:
@@ -826,7 +818,7 @@ def _render_bs_key_data() -> None:
 
     if bucketed_ids:
         default_company_options = [
-            f"{row.name} ({row.ticker}) [id={row.id}]"
+            int(row.id)
             for _, row in companies_df.iterrows()
             if int(row.id) not in bucketed_ids
         ]
@@ -837,6 +829,7 @@ def _render_bs_key_data() -> None:
         "Select one or more companies",
         options=all_company_options,
         default=default_company_options,
+        format_func=lambda company_id: labels.get(company_id, str(company_id)),
         key="keydata_bs_company_select",
     )
 
@@ -853,11 +846,7 @@ def _render_bs_key_data() -> None:
         save_bucket = st.button("Save bucket", key="keydata_bs_save_bucket_button")
 
     if save_bucket:
-        sel_company_ids = []
-        for opt in options:
-            m_sel = re.search(r"\[id=(\d+)\]$", opt)
-            if m_sel:
-                sel_company_ids.append(int(m_sel.group(1)))
+        sel_company_ids = [int(company_id) for company_id in options]
         bname = (bucket_name or "").strip()
         if not bname:
             st.error("Please provide a bucket name.")
@@ -918,11 +907,7 @@ def _render_bs_key_data() -> None:
         raise ValueError("Could not parse the year range. Use 'Recent - YYYY' or 'YYYY-YYYY'.")
 
     # Determine final set of company ids based on direct selection + buckets
-    selected_company_ids: List[int] = []
-    for opt in options:
-        m = re.search(r"\[id=(\d+)\]$", opt)
-        if m:
-            selected_company_ids.append(int(m.group(1)))
+    selected_company_ids: List[int] = [int(company_id) for company_id in options]
 
     bucket_company_ids: List[int] = []
     if bucket_names_selected:
@@ -1621,9 +1606,8 @@ def _render_cs_spread_key_data() -> None:
         return
 
     # Base selection: individual companies
-    all_company_options = [
-        f"{row.name} ({row.ticker}) [id={row.id}]" for _, row in companies_df.iterrows()
-    ]
+    labels = company_label_map(companies_df)
+    all_company_options = list(labels.keys())
 
     # Default selection: companies not present in any bucket (same behavior as other tabs)
     try:
@@ -1637,7 +1621,7 @@ def _render_cs_spread_key_data() -> None:
 
     if bucketed_ids:
         default_company_options = [
-            f"{row.name} ({row.ticker}) [id={row.id}]"
+            int(row.id)
             for _, row in companies_df.iterrows()
             if int(row.id) not in bucketed_ids
         ]
@@ -1647,18 +1631,19 @@ def _render_cs_spread_key_data() -> None:
     # If a company was just ingested this session, override default to only that company
     last_company_id = st.session_state.get("last_ingested_company_id")
     if last_company_id is not None:
-        selected_label = None
+        selected_company_id = None
         for _, row in companies_df.iterrows():
             if int(row.id) == int(last_company_id):
-                selected_label = f"{row.name} ({row.ticker}) [id={row.id}]"
+                selected_company_id = int(row.id)
                 break
-        if selected_label:
-            default_company_options = [selected_label]
+        if selected_company_id is not None:
+            default_company_options = [selected_company_id]
 
     options = st.multiselect(
         "Companies to analyze",
         options=all_company_options,
         default=default_company_options,
+        format_func=lambda company_id: labels.get(company_id, str(company_id)),
         key="keydata_cs_companies_select",
     )
 
@@ -1674,11 +1659,7 @@ def _render_cs_spread_key_data() -> None:
         save_bucket = st.button("Save bucket", key="keydata_cs_save_bucket_button")
 
     if save_bucket:
-        sel_company_ids = []
-        for opt in options:
-            m_sel = re.search(r"\[id=(\d+)\]$", opt)
-            if m_sel:
-                sel_company_ids.append(int(m_sel.group(1)))
+        sel_company_ids = [int(company_id) for company_id in options]
 
         if not bucket_name or not bucket_name.strip():
             st.error("Please provide a non-empty bucket name.")
@@ -1739,11 +1720,7 @@ def _render_cs_spread_key_data() -> None:
         raise ValueError("Could not parse the year range. Use 'Recent - YYYY' or 'YYYY-YYYY'.")
 
     # Determine final set of company ids based on direct selection + buckets
-    selected_company_ids: List[int] = []
-    for opt in options:
-        m = re.search(r"\[id=(\d+)\]$", opt)
-        if m:
-            selected_company_ids.append(int(m.group(1)))
+    selected_company_ids: List[int] = [int(company_id) for company_id in options]
 
     bucket_company_ids: List[int] = []
     if bucket_names_selected:
@@ -2451,9 +2428,8 @@ def _render_cf_reinvestment_key_data() -> None:
         return
 
     # Base selection: individual companies
-    all_company_options = [
-        f"{row.name} ({row.ticker}) [id={row.id}]" for _, row in companies_df.iterrows()
-    ]
+    labels = company_label_map(companies_df)
+    all_company_options = list(labels.keys())
 
     # Default selection: companies not present in any bucket (same behavior as other Key Data tabs)
     try:
@@ -2467,7 +2443,7 @@ def _render_cf_reinvestment_key_data() -> None:
 
     if bucketed_ids:
         default_company_options = [
-            f"{row.name} ({row.ticker}) [id={row.id}]"
+            int(row.id)
             for _, row in companies_df.iterrows()
             if int(row.id) not in bucketed_ids
         ]
@@ -2477,18 +2453,19 @@ def _render_cf_reinvestment_key_data() -> None:
     # If a company was just ingested this session, override default to only that company
     last_company_id = st.session_state.get("last_ingested_company_id")
     if last_company_id is not None:
-        selected_label = None
+        selected_company_id = None
         for _, row in companies_df.iterrows():
             if int(row.id) == int(last_company_id):
-                selected_label = f"{row.name} ({row.ticker}) [id={row.id}]"
+                selected_company_id = int(row.id)
                 break
-        if selected_label:
-            default_company_options = [selected_label]
+        if selected_company_id is not None:
+            default_company_options = [selected_company_id]
 
     options = st.multiselect(
         "Companies to analyze",
         options=all_company_options,
         default=default_company_options,
+        format_func=lambda company_id: labels.get(company_id, str(company_id)),
         key="keydata_cf_companies_select",
     )
 
@@ -2504,11 +2481,7 @@ def _render_cf_reinvestment_key_data() -> None:
         save_bucket = st.button("Save bucket", key="keydata_cf_save_bucket_button")
 
     if save_bucket:
-        sel_company_ids = []
-        for opt in options:
-            m_sel = re.search(r"\[id=(\d+)\]$", opt)
-            if m_sel:
-                sel_company_ids.append(int(m_sel.group(1)))
+        sel_company_ids = [int(company_id) for company_id in options]
 
         if not bucket_name or not bucket_name.strip():
             st.error("Please provide a non-empty bucket name.")
@@ -2569,11 +2542,7 @@ def _render_cf_reinvestment_key_data() -> None:
         raise ValueError("Could not parse the year range. Use 'Recent - YYYY' or 'YYYY-YYYY'.")
 
     # Determine final set of company ids based on direct selection + buckets
-    selected_company_ids: List[int] = []
-    for opt in options:
-        m = re.search(r"\[id=(\d+)\]$", opt)
-        if m:
-            selected_company_ids.append(int(m.group(1)))
+    selected_company_ids: List[int] = [int(company_id) for company_id in options]
 
     bucket_company_ids: List[int] = []
     if bucket_names_selected:

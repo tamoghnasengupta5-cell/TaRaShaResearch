@@ -1,6 +1,7 @@
 ﻿import streamlit as st
 from core import *  # noqa: F401,F403
 from typing import List
+from ui_theme import company_label_map, format_company_option
 
 
 # Metric tables that store per-company financial data and can be safely cleared
@@ -313,7 +314,7 @@ def render_admin_tab():
         else:
             orphan_display = orphan_df.copy()
             orphan_display["Label"] = orphan_display.apply(
-                lambda r: f"{r['name']} ({r['ticker']}) [id={r['id']}]",
+                lambda r: format_company_option(r["name"], r["ticker"]),
                 axis=1,
             )
             st.dataframe(
@@ -323,10 +324,11 @@ def render_admin_tab():
             )
 
             with st.form("assign_orphans_to_bucket"):
-                orphan_options = orphan_display["Label"].tolist()
-                selected_orphan_labels = st.multiselect(
+                orphan_labels = company_label_map(orphan_df)
+                selected_orphan_ids = st.multiselect(
                     "Select orphan companies to assign to a bucket",
-                    options=orphan_options,
+                    options=list(orphan_labels.keys()),
+                    format_func=lambda company_id: orphan_labels.get(company_id, str(company_id)),
                 )
                 target_bucket_name = st.selectbox(
                     "Assign selected orphan companies to bucket",
@@ -334,17 +336,10 @@ def render_admin_tab():
                 )
                 submitted_assign = st.form_submit_button("Assign")
                 if submitted_assign:
-                    if not selected_orphan_labels:
+                    if not selected_orphan_ids:
                         st.warning("Please select at least one orphan company to assign.")
                     else:
-                        ids = (
-                            orphan_display.loc[
-                                orphan_display["Label"].isin(selected_orphan_labels),
-                                "id",
-                            ]
-                            .astype(int)
-                            .tolist()
-                        )
+                        ids = [int(company_id) for company_id in selected_orphan_ids]
                         if ids:
                             target_gid = get_company_group_id(conn, target_bucket_name, create=False)
                             if target_gid is not None:
@@ -380,8 +375,9 @@ def render_admin_tab():
         else:
             st.markdown("**Companies in this bucket:**")
             members_display = members_df.copy()
-            members_display["Company"] = (
-                members_display["name"] + " (" + members_display["ticker"] + ")"
+            members_display["Company"] = members_display.apply(
+                lambda r: format_company_option(r["name"], r["ticker"]),
+                axis=1,
             )
             st.dataframe(
                 members_display[["Company"]],
@@ -390,23 +386,19 @@ def render_admin_tab():
             )
 
             # Multiselect to remove one or more companies from the bucket
-            labels = []
-            label_to_id = {}
-            for _, row in members_df.iterrows():
-                label = f"{row['name']} ({row['ticker']})"
-                labels.append(label)
-                label_to_id[label] = int(row["id"])
+            labels = company_label_map(members_df)
 
             to_remove = st.multiselect(
                 "Select one or more companies to remove from this bucket",
-                options=labels,
+                options=list(labels.keys()),
+                format_func=lambda company_id: labels.get(company_id, str(company_id)),
             )
 
             if st.button(
                 "Remove selected companies from bucket",
                 disabled=len(to_remove) == 0,
             ):
-                ids_to_delete = [label_to_id[lbl] for lbl in to_remove]
+                ids_to_delete = [int(company_id) for company_id in to_remove]
                 remove_company_group_members(conn, group_id, ids_to_delete)
                 st.success(
                     f"Removed {len(ids_to_delete)} compan"
@@ -522,6 +514,7 @@ def render_admin_tab():
                         float(japan_new),
                         datetime.utcnow().isoformat(),
                     )
+                    refresh_valuation_derived_metrics_all_companies(conn)
                     st.success(f"Saved risk-free rates for {latest_year}.")
                     _rerun()
 
@@ -587,6 +580,7 @@ def render_admin_tab():
                                 float(japan_add),
                                 datetime.utcnow().isoformat(),
                             )
+                            refresh_valuation_derived_metrics_all_companies(conn)
                             st.success(f"Added risk-free rates for {next_year}.")
                             _rerun()
                         except Exception as e:
@@ -781,6 +775,7 @@ def render_admin_tab():
                             float(new_erp),
                             ts,
                         )
+                        refresh_valuation_derived_metrics_all_companies(conn)
                         st.success(f"Saved implied equity risk premium for {latest_year}.")
                         _rerun()
                     except Exception as e:
@@ -803,6 +798,7 @@ def render_admin_tab():
                             float(new_erp),
                             ts,
                         )
+                        refresh_valuation_derived_metrics_all_companies(conn)
                         st.success(
                             f"Froze {latest_year} and opened {next_year} for editing."
                         )
@@ -929,6 +925,7 @@ def render_admin_tab():
                             for _, r in df.iterrows()
                         ]
                         replace_country_risk_premium(conn, rows)
+                        refresh_valuation_derived_metrics_all_companies(conn)
                         st.success("Country risk premium table saved.")
                         _rerun()
 
@@ -1020,6 +1017,7 @@ def render_admin_tab():
 
                         # Rewrite the table to match the editor (supports add/edit/delete)
                         replace_marginal_corporate_tax_rates(conn, rows)
+                        refresh_valuation_derived_metrics_all_companies(conn)
                         st.success("Saved marginal corporate tax rates.")
                         _rerun()
 
@@ -1124,6 +1122,7 @@ def render_admin_tab():
                     for _, r in df.iterrows()
                 ]
                 replace_industry_betas(conn, rows)
+                refresh_valuation_derived_metrics_all_companies(conn, include_levered_beta=True)
                 st.success("Industry beta table saved.")
                 _rerun()
 
@@ -1215,23 +1214,14 @@ def render_admin_tab():
             if members_df.empty:
                 st.info("The selected bucket does not contain any companies.")
             else:
-                company_labels = []
-                label_to_id = {}
-                for _, row in members_df.iterrows():
-                    label = f"{row['name']} ({row['ticker']})"
-                    cid = int(row["id"])
-                    company_labels.append(label)
-                    label_to_id[label] = cid
+                company_labels = company_label_map(members_df)
 
-                selected_company_labels = st.multiselect(
+                selected_company_ids = st.multiselect(
                     "Select one or more companies whose stored metric data should be cleared",
-                    options=company_labels,
+                    options=list(company_labels.keys()),
+                    format_func=lambda company_id: company_labels.get(company_id, str(company_id)),
                     key="cleanup_company_select",
                 )
-
-                selected_company_ids = [
-                    label_to_id[label] for label in selected_company_labels
-                ]
 
                 confirm_single = st.checkbox(
                     "I understand this will permanently delete stored metric data for the selected companies.",

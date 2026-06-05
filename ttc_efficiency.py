@@ -37,6 +37,7 @@ from core import (
     read_df,
     replace_ttc_assumptions_section,
 )
+from ui_theme import company_label_map
 
 _SECTIONS = TTC_SECTIONS
 _FILTER_COLUMNS = [
@@ -1245,19 +1246,14 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
     company_ids: List[int] = []
 
     if mode == "Company":
-        options = [
-            f"{row['name']} ({row['ticker']}) [id={row['id']}]"
-            for _, row in companies_df.iterrows()
-        ]
+        labels = company_label_map(companies_df)
         selected = st.multiselect(
             "Select one or more companies",
-            options=options,
+            options=list(labels.keys()),
+            format_func=lambda company_id: labels.get(company_id, str(company_id)),
             key="ttc_income_statement_companies",
         )
-        for label in selected:
-            m = re.search(r"id=(\d+)\]$", label)
-            if m:
-                company_ids.append(int(m.group(1)))
+        company_ids = [int(company_id) for company_id in selected]
     else:
         groups_df = read_df(
             "SELECT id, name FROM company_groups ORDER BY name",
@@ -1515,19 +1511,14 @@ def render_through_the_cycle_balance_sheet_score_tab() -> None:
     company_ids: List[int] = []
 
     if mode == "Company":
-        options = [
-            f"{row['name']} ({row['ticker']}) [id={row['id']}]"
-            for _, row in companies_df.iterrows()
-        ]
+        labels = company_label_map(companies_df)
         selected = st.multiselect(
             "Select one or more companies",
-            options=options,
+            options=list(labels.keys()),
+            format_func=lambda company_id: labels.get(company_id, str(company_id)),
             key="ttc_balance_sheet_companies",
         )
-        for label in selected:
-            m = re.search(r"id=(\d+)\]$", label)
-            if m:
-                company_ids.append(int(m.group(1)))
+        company_ids = [int(company_id) for company_id in selected]
     else:
         groups_df = read_df(
             "SELECT id, name FROM company_groups ORDER BY name",
@@ -1821,19 +1812,14 @@ def render_through_the_cycle_working_capital_score_tab() -> None:
     company_ids: List[int] = []
 
     if mode == "Company":
-        options = [
-            f"{row['name']} ({row['ticker']}) [id={row['id']}]"
-            for _, row in companies_df.iterrows()
-        ]
+        labels = company_label_map(companies_df)
         selected = st.multiselect(
             "Select one or more companies",
-            options=options,
+            options=list(labels.keys()),
+            format_func=lambda company_id: labels.get(company_id, str(company_id)),
             key="ttc_working_capital_companies",
         )
-        for label in selected:
-            m = re.search(r"id=(\d+)\]$", label)
-            if m:
-                company_ids.append(int(m.group(1)))
+        company_ids = [int(company_id) for company_id in selected]
     else:
         groups_df = read_df(
             "SELECT id, name FROM company_groups ORDER BY name",
@@ -2206,19 +2192,14 @@ def render_through_the_cycle_cash_flow_score_tab() -> None:
     company_ids: List[int] = []
 
     if mode == "Company":
-        options = [
-            f"{row['name']} ({row['ticker']}) [id={row['id']}]"
-            for _, row in companies_df.iterrows()
-        ]
+        labels = company_label_map(companies_df)
         selected = st.multiselect(
             "Select one or more companies",
-            options=options,
+            options=list(labels.keys()),
+            format_func=lambda company_id: labels.get(company_id, str(company_id)),
             key="ttc_cash_flow_companies",
         )
-        for label in selected:
-            m = re.search(r"id=(\d+)\]$", label)
-            if m:
-                company_ids.append(int(m.group(1)))
+        company_ids = [int(company_id) for company_id in selected]
     else:
         groups_df = read_df(
             "SELECT id, name FROM company_groups ORDER BY name",
@@ -2635,19 +2616,14 @@ def render_through_the_cycle_combined_score_tab() -> None:
     company_ids: List[int] = []
 
     if mode == "Company":
-        options = [
-            f"{row['name']} ({row['ticker']}) [id={row['id']}]"
-            for _, row in companies_df.iterrows()
-        ]
+        labels = company_label_map(companies_df)
         selected = st.multiselect(
             "Select one or more companies",
-            options=options,
+            options=list(labels.keys()),
+            format_func=lambda company_id: labels.get(company_id, str(company_id)),
             key="ttc_combined_companies",
         )
-        for label in selected:
-            m = re.search(r"id=(\d+)\]$", label)
-            if m:
-                company_ids.append(int(m.group(1)))
+        company_ids = [int(company_id) for company_id in selected]
     else:
         groups_df = read_df(
             "SELECT id, name FROM company_groups ORDER BY name",

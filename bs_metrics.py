@@ -1,5 +1,6 @@
 import streamlit as st
 from core import *  # noqa: F401,F403
+from ui_theme import company_label_map
 
 def render_balance_sheet_metrics_tab():
     st.title("Balance Sheet Metrics and Dashboard")
@@ -11,9 +12,8 @@ def render_balance_sheet_metrics_tab():
             st.info("No companies in the database yet. Upload a spreadsheet above.")
         else:
             # Base selection: individual companies
-            all_company_options = [
-                f"{row.name} ({row.ticker}) [id={row.id}]" for _, row in companies_df.iterrows()
-            ]
+            labels = company_label_map(companies_df)
+            all_company_options = list(labels.keys())
 
             # Default selection: companies not present in any bucket
             try:
@@ -28,13 +28,11 @@ def render_balance_sheet_metrics_tab():
             except Exception:
                 bucketed_ids = set()
 
-            default_company_options: List[str] = []
+            default_company_options: List[int] = []
             if bucketed_ids:
                 for _, row in companies_df.iterrows():
                     if int(row.id) not in bucketed_ids:
-                        default_company_options.append(
-                            f"{row.name} ({row.ticker}) [id={row.id}]"
-                        )
+                        default_company_options.append(int(row.id))
             else:
                 # If no bucket information yet, fall back to all companies
                 default_company_options = all_company_options
@@ -42,18 +40,19 @@ def render_balance_sheet_metrics_tab():
             # If a company was just ingested this session, override default to only that company
             last_company_id = st.session_state.get("last_ingested_company_id")
             if last_company_id is not None:
-                selected_label = None
+                selected_company_id = None
                 for _, row in companies_df.iterrows():
                     if int(row.id) == int(last_company_id):
-                        selected_label = f"{row.name} ({row.ticker}) [id={row.id}]"
+                        selected_company_id = int(row.id)
                         break
-                if selected_label:
-                    default_company_options = [selected_label]
+                if selected_company_id is not None:
+                    default_company_options = [selected_company_id]
 
             options = st.multiselect(
                 "Companies to analyze (for Balance Sheet metrics)",
                 options=all_company_options,
                 default=default_company_options,
+                format_func=lambda company_id: labels.get(company_id, str(company_id)),
                 key="bs_companies_to_analyze",
             )
 
@@ -69,11 +68,7 @@ def render_balance_sheet_metrics_tab():
                 save_bucket = st.button("Save bucket", key="bs_save_bucket_button")
 
             if save_bucket:
-                sel_company_ids: List[int] = []
-                for opt in options:
-                    m_sel = re.search(r"\[id=(\d+)\]$", opt)
-                    if m_sel:
-                        sel_company_ids.append(int(m_sel.group(1)))
+                sel_company_ids: List[int] = [int(company_id) for company_id in options]
 
                 if not bucket_name or not bucket_name.strip():
                     st.error("Please provide a non-empty bucket name.")
@@ -136,11 +131,7 @@ def render_balance_sheet_metrics_tab():
                 raise ValueError("Could not parse the year range. Use 'Recent - YYYY' or 'YYYY-YYYY'.")
 
             # Determine final set of company ids based on direct selection + buckets
-            selected_company_ids: List[int] = []
-            for opt in options:
-                m = re.search(r"\[id=(\d+)\]$", opt)
-                if m:
-                    selected_company_ids.append(int(m.group(1)))
+            selected_company_ids: List[int] = [int(company_id) for company_id in options]
 
             # Add companies from selected buckets
             if bucket_names_selected:

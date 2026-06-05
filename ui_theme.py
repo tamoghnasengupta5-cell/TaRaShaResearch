@@ -43,6 +43,27 @@ DASHBOARD_COLUMN_LABELS: Dict[str, str] = {
 }
 
 
+def format_company_option(name: object, ticker: object = "") -> str:
+    company_name = str(name or "").strip()
+    ticker_text = str(ticker or "").strip()
+    if company_name and ticker_text:
+        return f"{company_name} {ticker_text}"
+    return company_name or ticker_text
+
+
+def company_label_map(companies_df: pd.DataFrame) -> Dict[int, str]:
+    if companies_df is None or companies_df.empty:
+        return {}
+    labels: Dict[int, str] = {}
+    for _, row in companies_df.iterrows():
+        try:
+            company_id = int(row["id"])
+        except Exception:
+            continue
+        labels[company_id] = format_company_option(row.get("name"), row.get("ticker"))
+    return labels
+
+
 def install_dataframe_defaults() -> None:
     """Apply consistent defaults to Streamlit dataframe calls without changing call sites."""
     if getattr(st, "_tarasha_dataframe_defaults_installed", False):
@@ -72,18 +93,22 @@ def inject_dashboard_table_css() -> None:
         """
         <style>
           :root {
-            --dashboard-border: rgba(148, 163, 184, 0.24);
-            --dashboard-border-strong: rgba(148, 163, 184, 0.34);
-            --dashboard-panel-bg: rgba(15, 23, 42, 0.035);
-            --dashboard-muted: rgba(100, 116, 139, 1);
+            --dashboard-border: var(--app-border, rgba(148, 163, 184, 0.30));
+            --dashboard-border-strong: var(--app-border-strong, rgba(148, 163, 184, 0.46));
+            --dashboard-panel-bg: var(--app-surface, rgba(255, 255, 255, 0.88));
+            --dashboard-panel-bg-strong: var(--app-surface-strong, #ffffff);
+            --dashboard-muted: var(--app-text-secondary, rgba(100, 116, 139, 1));
+            --dashboard-shadow: var(--app-shadow-soft, 0 14px 36px rgba(15, 23, 42, 0.07));
           }
 
           @media (prefers-color-scheme: dark) {
             :root {
-              --dashboard-border: rgba(148, 163, 184, 0.26);
-              --dashboard-border-strong: rgba(148, 163, 184, 0.38);
-              --dashboard-panel-bg: rgba(15, 23, 42, 0.44);
-              --dashboard-muted: rgba(203, 213, 225, 0.72);
+              --dashboard-border: var(--app-border, rgba(100, 116, 139, 0.44));
+              --dashboard-border-strong: var(--app-border-strong, rgba(148, 163, 184, 0.42));
+              --dashboard-panel-bg: var(--app-surface, rgba(17, 24, 39, 0.88));
+              --dashboard-panel-bg-strong: var(--app-surface-strong, #111827);
+              --dashboard-muted: var(--app-text-secondary, rgba(203, 213, 225, 0.82));
+              --dashboard-shadow: var(--app-shadow-soft, 0 16px 40px rgba(0, 0, 0, 0.28));
             }
           }
 
@@ -110,10 +135,10 @@ def inject_dashboard_table_css() -> None:
           [data-testid="stTable"],
           [data-testid="stDataEditor"] {
             border: 1px solid var(--dashboard-border) !important;
-            border-radius: 8px !important;
+            border-radius: 10px !important;
             overflow: hidden !important;
             background: var(--dashboard-panel-bg) !important;
-            box-shadow: none !important;
+            box-shadow: var(--dashboard-shadow) !important;
           }
 
           [data-testid="stDataFrame"] div,
@@ -129,15 +154,20 @@ def inject_dashboard_table_css() -> None:
 
           [data-testid="stMetric"] {
             border: 1px solid var(--dashboard-border);
-            border-radius: 8px;
-            padding: 0.75rem 0.85rem;
+            border-radius: 10px;
+            padding: 0.82rem 0.9rem;
             background: var(--dashboard-panel-bg);
+            box-shadow: var(--dashboard-shadow);
           }
 
           [data-testid="stExpander"] {
             border-color: var(--dashboard-border-strong) !important;
-            border-radius: 8px !important;
+            border-radius: 10px !important;
             overflow: hidden;
+          }
+
+          [data-testid="stExpander"] summary:hover {
+            background: var(--app-hover-bg, rgba(226, 232, 240, 0.48)) !important;
           }
         </style>
         """,

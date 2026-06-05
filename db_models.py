@@ -978,3 +978,11 @@ ttc_assumptions = Table(
     Column("sort_order", Integer, nullable=False),
     UniqueConstraint("section", "sort_order", name="uq_ttc_assumptions_section_order"),
 )
+
+app_backfill_state = Table(
+    "app_backfill_state",
+    metadata,
+    Column("name", Text, primary_key=True),
+    Column("completed_at", Text),
+    Column("source_signature", Text),
+)
