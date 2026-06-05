@@ -1,13 +1,46 @@
 ﻿
+import io
 import re
 from typing import Dict, List, Optional, Tuple
 
 import streamlit as st
 
 from core import *  # noqa: F401,F403
-from ui_theme import DASHBOARD_COLUMN_LABELS, dashboard_section, display_table_frame, render_dashboard_table
+from ui_theme import DASHBOARD_COLUMN_LABELS, company_label_map, dashboard_section, display_table_frame, render_dashboard_table
 
 
+
+
+def _combined_dashboard_excel_bytes(
+    overall_df: pd.DataFrame,
+    breakup_df: Optional[pd.DataFrame] = None,
+) -> bytes:
+    """Build the Combined Dashboard Excel export with one sheet per dashboard."""
+    output = io.BytesIO()
+    sheets: List[Tuple[str, pd.DataFrame]] = [
+        ("Overall Score Dashboard", display_table_frame(overall_df)),
+    ]
+    if breakup_df is not None and not breakup_df.empty:
+        sheets.append(("Overall Score Dashboard Breakup", display_table_frame(breakup_df)))
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        for sheet_name, sheet_df in sheets:
+            sheet_df.to_excel(writer, index=False, sheet_name=sheet_name)
+            worksheet = writer.sheets[sheet_name]
+            worksheet.freeze_panes = "A2"
+            worksheet.auto_filter.ref = worksheet.dimensions
+
+            for column_cells in worksheet.columns:
+                header = str(column_cells[0].value or "")
+                max_len = len(header)
+                for cell in column_cells[1:]:
+                    value = cell.value
+                    if value is None:
+                        continue
+                    max_len = max(max_len, len(str(value)))
+                worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_len + 2, 10), 42)
+
+    return output.getvalue()
 
 
 def _compute_level_stats(
@@ -205,19 +238,14 @@ def render_combined_dashboard_tab() -> None:
         score_company_ids: List[int] = []
 
         if selection_mode == "Company":
-            company_options = [
-                f"{row['name']} ({row['ticker']}) [id={row['id']}]"
-                for _, row in companies_df.iterrows()
-            ]
+            labels = company_label_map(companies_df)
             selected_companies = st.multiselect(
                 "Select one or more companies for Overall Score computation",
-                options=company_options,
+                options=list(labels.keys()),
+                format_func=lambda company_id: labels.get(company_id, str(company_id)),
                 key="combined_score_company_select",
             )
-            for label in selected_companies:
-                m = re.search(r"id=(\d+)\]$", label)
-                if m:
-                    score_company_ids.append(int(m.group(1)))
+            score_company_ids = [int(company_id) for company_id in selected_companies]
         else:
             groups_df = read_df(
                 "SELECT id, name FROM company_groups ORDER BY name",
@@ -974,6 +1002,7 @@ def render_combined_dashboard_tab() -> None:
         # -----------------------------
         # Overall Score Dashboard Breakup
         # -----------------------------
+        export_breakup_df: Optional[pd.DataFrame] = None
         if rows_breakup:
             df_breakup = pd.DataFrame(rows_breakup)
 
@@ -1007,6 +1036,7 @@ def render_combined_dashboard_tab() -> None:
 
             if sort_col_b:
                 df_breakup = df_breakup.sort_values(by=sort_col_b, ascending=False)
+            export_breakup_df = df_breakup
 
             # Format all numeric columns as 2-decimal, leaving Company/Ticker untouched
             numeric_cols = [c for c in breakup_cols_existing if c not in ["Company Name", "Ticker"]]
@@ -1041,5 +1071,13 @@ def render_combined_dashboard_tab() -> None:
                 key="combined_overall_score_breakup_table",
             )
 
-
+        export_year_range = re.sub(r"[^A-Za-z0-9]+", "_", yr_input_overall.strip()).strip("_") or "selected_years"
+        st.download_button(
+            "Download Overall Score Dashboards Excel",
+            data=_combined_dashboard_excel_bytes(df_sorted, export_breakup_df),
+            file_name=f"overall_score_dashboards_{export_year_range}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="combined_overall_score_excel_download",
+            on_click="ignore",
+        )
 

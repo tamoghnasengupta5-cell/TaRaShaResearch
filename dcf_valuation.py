@@ -3,6 +3,7 @@ import csv
 import io
 import json
 import re
+import time
 from typing import Dict, List, Optional, Tuple
 import urllib.error
 import urllib.request
@@ -37,7 +38,9 @@ from ttc_efficiency import (
     _load_weight_maps,
     _merge_ttm_into_annual,
 )
-from ui_theme import dashboard_section, display_table_frame, render_dashboard_table
+from db_config import get_db_url, get_sqlite_path, is_sqlite_url
+from ui_lazy_tabs import lazy_tab_bar
+from ui_theme import company_label_map, dashboard_section, display_table_frame, format_company_option, render_dashboard_table
 
 
 _DCF_BUCKET_KEY = "dcf_selected_bucket_name"
@@ -54,6 +57,11 @@ _DCF_COMPANY_RESULTS_META_KEY = "dcf_company_results_meta"
 _DCF_COMPANY_RESULT_SELECT_KEY = "dcf_company_result_selected_id"
 _DCF_COMPANY_EXPANDED_RESULT_KEY = "dcf_company_expanded_result_id"
 _DCF_COMPANY_DETAIL_VIEW_KEY = "dcf_company_detail_view"
+_DCF_COMPANY_ASSUMPTION_UPLOAD_VISIBLE_KEY = "dcf_company_assumption_upload_visible"
+_VALUATION_DASHBOARD_RESULTS_KEY = "valuation_dashboard_results"
+_VALUATION_DASHBOARD_META_KEY = "valuation_dashboard_results_meta"
+_VALUATION_DASHBOARD_SAVE_MODE_KEY = "valuation_dashboard_save_mode"
+_VALUATION_DASHBOARD_SAVED_TABLE = "valuation_saved_dashboards"
 
 _SETTINGS_FIELDS = [
     "historical_years",
@@ -96,6 +104,27 @@ _PREVIEW_METRIC_FORMATS = {
 }
 
 _ANCHOR_CONFIG_KEY = "__anchor_config"
+_DEFAULT_FORECAST_YEAR_LIMIT = 10
+
+_ASSUMPTION_UPLOAD_COLUMN_ALIASES = {
+    "year": ["year"],
+    "future_revenue_growth": ["revenuegrowth", "revenuegrowthpct", "revenuegrowthpercent", "futurerevenuegrowth"],
+    "ebidta_margin_growth": ["ebitdamargin", "ebitdamarginpct", "ebitdamarginpercent", "ebidtamargin"],
+    "da_percent_growth": ["dapercentofrevenue", "dandapercentofrevenue", "dandaofrevenue", "dapercent", "dandapercent", "dapercentageofrevenue"],
+    "capex_percent_growth": ["capexofrevenue", "capexpercentofrevenue", "capexpercent", "capexpercentageofrevenue"],
+    "working_capital_days_growth": ["workingcapitaldays", "nwcday", "ncwcdays"],
+    "wacc_direction": ["waccpct", "waccpercent", "wacc"],
+}
+
+_ASSUMPTION_UPLOAD_FIELD_LABELS = {
+    "year": "Year",
+    "future_revenue_growth": "Revenue Growth %",
+    "ebidta_margin_growth": "EBITDA Margin %",
+    "da_percent_growth": "D&A % of Revenue",
+    "capex_percent_growth": "CAPEX % of Revenue",
+    "working_capital_days_growth": "Working Capital Days",
+    "wacc_direction": "WACC %",
+}
 
 
 def _pct_to_decimal(value: Optional[float]) -> Optional[float]:
@@ -224,6 +253,22 @@ def _compute_series_ratio(numerator: object, denominator: object) -> Optional[fl
     return float(num) / float(den)
 
 
+def _compute_average_ncwc(ncwc_series: Dict[int, float], year: int) -> Optional[float]:
+    current_ncwc = _safe_float(ncwc_series.get(int(year)))
+    previous_ncwc = _safe_float(ncwc_series.get(int(year) - 1))
+    if current_ncwc is None or previous_ncwc is None:
+        return None
+    return (float(previous_ncwc) + float(current_ncwc)) / 2.0
+
+
+def _compute_average_ncwc_days(ncwc_series: Dict[int, float], year: int, revenue: object) -> Optional[float]:
+    avg_ncwc = _compute_average_ncwc(ncwc_series, int(year))
+    revenue_value = _safe_float(revenue)
+    if avg_ncwc is None or revenue_value in (None, 0):
+        return None
+    return (float(avg_ncwc) * 365.0) / float(revenue_value)
+
+
 def _compute_growth_for_year(series_map: Dict[int, float], year: int) -> Optional[float]:
     current_value = _safe_float(series_map.get(int(year)))
     previous_value = _safe_float(series_map.get(int(year) - 1))
@@ -281,6 +326,18 @@ def _anchor_config_from_settings(settings: Dict[str, object]) -> Dict[str, objec
     path_config = _parse_projection_path_config(settings.get("projection_path_config"))
     anchor_config = path_config.get(_ANCHOR_CONFIG_KEY)
     return anchor_config if isinstance(anchor_config, dict) else {}
+
+
+def _normalize_forecast_year_limit(value: object, default: int = _DEFAULT_FORECAST_YEAR_LIMIT) -> int:
+    try:
+        return min(max(int(value), 1), 10)
+    except Exception:
+        return min(max(int(default), 1), 10)
+
+
+def _forecast_year_limit_from_settings(settings: Dict[str, object]) -> int:
+    anchor_config = _anchor_config_from_settings(settings)
+    return _normalize_forecast_year_limit(anchor_config.get("forecast_year_limit"), _DEFAULT_FORECAST_YEAR_LIMIT)
 
 
 def _settings_with_anchor_config(settings: Dict[str, object], anchor_config: Dict[str, object]) -> Dict[str, object]:
@@ -449,7 +506,7 @@ def _build_company_assumption_preview_context(
 ) -> Dict[str, object]:
     company_id = int(company_row["id"])
     country = _get_company_country(conn, company_id, company_row)
-    series = _build_required_series(conn, company_id)
+    series = _build_required_series_for_preview(company_id)
     revenue_series = series["revenue"]
     raw_latest_actual_year, _ = _latest_numeric_value(revenue_series)
     if raw_latest_actual_year is None:
@@ -481,15 +538,8 @@ def _build_company_assumption_preview_context(
         ]
     ]
     working_capital_days_values = [
-        (
-            (float(ncwc_value) * 365.0) / float(revenue_value)
-            if ncwc_value is not None and revenue_value not in (None, 0)
-            else None
-        )
-        for ncwc_value, revenue_value in [
-            (_safe_float(series["ncwc"].get(year)), _safe_float(revenue_series.get(year)))
-            for year in actual_years
-        ]
+        _compute_average_ncwc_days(series["ncwc"], year, revenue_series.get(year))
+        for year in actual_years
     ]
     wacc_values = [_pct_to_decimal(_safe_float(series["wacc"].get(year))) for year in actual_years]
 
@@ -546,6 +596,7 @@ def _build_company_assumption_preview_context(
         "metric_values": metric_values,
         "metric_base_values": metric_base_values,
         "metric_base_growths": metric_base_growths,
+        "forecast_year_limit": _forecast_year_limit_from_settings(settings or {}),
         "baseline_anchor_year": baseline_anchor_year,
         "baseline_overrides": baseline_overrides_for_display,
     }
@@ -575,6 +626,7 @@ def _build_assumption_preview_rows(
     actual_values = list(metric_values.get(metric_key, []))
     actual_growths = _growths_from_values(actual_values)
     projection_start_year = preview_context.get("projection_start_year")
+    forecast_year_limit = _normalize_forecast_year_limit(preview_context.get("forecast_year_limit"), _DEFAULT_FORECAST_YEAR_LIMIT)
 
     rows: List[Dict[str, object]] = []
     order = 0
@@ -600,7 +652,7 @@ def _build_assumption_preview_rows(
 
     if metric_key == "future_revenue_growth":
         previous_revenue = _safe_float(preview_context.get("latest_revenue"))
-        for idx in range(1, 11):
+        for idx in range(1, forecast_year_limit + 1):
             projected_growth = _project_assumption_value(float(base_value), idx, metric_key, preview_settings, legacy_step)
             projected_revenue = None
             if previous_revenue is not None:
@@ -619,7 +671,7 @@ def _build_assumption_preview_rows(
         return pd.DataFrame(rows)
 
     previous_value = actual_values[-1] if actual_values else None
-    for idx in range(1, 11):
+    for idx in range(1, forecast_year_limit + 1):
         projected_value = _project_assumption_value(float(base_value), idx, metric_key, preview_settings, legacy_step)
         projected_growth = _projection_path_growth_rate(metric_config, idx)
         rows.append(
@@ -634,6 +686,89 @@ def _build_assumption_preview_rows(
         previous_value = projected_value
         order += 1
     return pd.DataFrame(rows)
+
+
+def _preview_chart_value(value: object, value_format: str, country: Optional[str]) -> Optional[float]:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    if value_format == "percent":
+        return float(numeric) * 100.0
+    if value_format == "money":
+        _, scale = _country_money_display(country)
+        return float(numeric) * float(scale)
+    return float(numeric)
+
+
+def _preview_value_axis_title(value_format: str, country: Optional[str]) -> str:
+    if value_format == "percent":
+        return "Value %"
+    if value_format == "money":
+        unit_label, _ = _country_money_display(country)
+        return f"Value ({unit_label})"
+    if value_format == "days":
+        return "Value (days)"
+    return "Value"
+
+
+def _preview_year_sort(df: pd.DataFrame) -> List[str]:
+    if df.empty or "__order" not in df.columns or "Year/FY" not in df.columns:
+        return []
+    ordered_labels: List[str] = []
+    for _, row in df.sort_values("__order").iterrows():
+        label = str(row.get("Year/FY"))
+        if label not in ordered_labels:
+            ordered_labels.append(label)
+    return ordered_labels
+
+
+def _render_assumption_value_preview_chart(
+    preview_df: pd.DataFrame,
+    value_format: str,
+    country: Optional[str],
+) -> None:
+    rows: List[Dict[str, object]] = []
+    for _, row in preview_df.iterrows():
+        raw_value = row.get("Actual / Projected Value")
+        chart_value = _preview_chart_value(raw_value, value_format, country)
+        if chart_value is None:
+            continue
+        rows.append(
+            {
+                "Period": row.get("Period"),
+                "Year/FY": row.get("Year/FY"),
+                "Value": chart_value,
+                "Display": _format_preview_value(raw_value, value_format, country),
+                "Growth %": row.get("Growth %"),
+                "__order": row.get("__order"),
+            }
+        )
+
+    if not rows:
+        return
+
+    chart_df = pd.DataFrame(rows)
+    year_sort = _preview_year_sort(chart_df)
+    st.markdown("**Actual / Projected Value Preview**")
+    bars = (
+        alt.Chart(chart_df)
+        .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3, opacity=0.82)
+        .encode(
+            x=alt.X("Year/FY:N", sort=year_sort, title="Year / Forecast Year"),
+            y=alt.Y("Value:Q", title=_preview_value_axis_title(value_format, country)),
+            color=alt.Color(
+                "Period:N",
+                scale=alt.Scale(domain=["Historical", "Projected"], range=["#2563EB", "#16A34A"]),
+                legend=alt.Legend(title="Series"),
+            ),
+            tooltip=[
+                alt.Tooltip("Period:N"),
+                alt.Tooltip("Year/FY:N"),
+                alt.Tooltip("Display:N", title="Actual / Projected Value"),
+            ],
+        )
+    )
+    st.altair_chart(bars.properties(height=260), use_container_width=True)
 
 
 def _render_assumption_base_snapshot(preview_context: Optional[Dict[str, object]]) -> None:
@@ -695,11 +830,12 @@ def _render_assumption_path_preview(
             chart_df = pd.concat([chart_df, pd.DataFrame([bridge_row])], ignore_index=True)
 
         chart_df["Growth %"] = chart_df["Growth %"].astype(float) * 100.0
+        year_sort = _preview_year_sort(chart_df)
         chart = (
             alt.Chart(chart_df)
             .mark_line(point=True, strokeWidth=3)
             .encode(
-                x=alt.X("Year/FY:N", sort=alt.SortField(field="__order", order="ascending"), title="Year / Forecast Year"),
+                x=alt.X("Year/FY:N", sort=year_sort, title="Year / Forecast Year"),
                 y=alt.Y("Growth %:Q", title="Growth %"),
                 color=alt.Color(
                     "Period:N",
@@ -718,6 +854,7 @@ def _render_assumption_path_preview(
 
     value_format = _PREVIEW_METRIC_FORMATS.get(metric_key, "number")
     country = preview_context.get("country")
+    _render_assumption_value_preview_chart(preview_df, value_format, country)
     display_df = pd.DataFrame(
         [
             {
@@ -811,6 +948,332 @@ def _payload_metric_series(table_payload: Optional[Dict[str, object]], metric_na
         if str(row.get("metric", "")) == metric_name:
             return columns, list(row.get("values", []))
     return [], []
+
+
+def _payload_metric_value(table_payload: Optional[Dict[str, object]], metric_name: str, column_name: str) -> Optional[object]:
+    columns, values = _payload_metric_series(table_payload, metric_name)
+    if not columns:
+        return None
+    try:
+        idx = columns.index(str(column_name))
+    except ValueError:
+        return None
+    return values[idx] if idx < len(values) else None
+
+
+def _fcff_derivation_year_options(detail_payload: Dict[str, object]) -> List[str]:
+    operating_table = detail_payload.get("operating_table")
+    columns = [str(column) for column in (operating_table or {}).get("columns", [])]
+    return [
+        column
+        for column in columns
+        if _payload_metric_value(operating_table, "FCFF", column) is not None
+    ]
+
+
+def _render_metric_tile(label: str, value: object, value_format: str, country: Optional[str], help_text: Optional[str] = None) -> None:
+    st.metric(label, _format_breakdown_value(value, value_format, country) or "N/A", help=help_text)
+
+
+def _signed_money(value: object, country: Optional[str]) -> str:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return "N/A"
+    formatted = _format_breakdown_value(abs(float(numeric)), "money", country)
+    sign = "+" if float(numeric) >= 0 else "-"
+    return f"{sign}{formatted}"
+
+
+def _render_fcff_equation_strip(
+    *,
+    year_label: str,
+    nopat: object,
+    da_value: object,
+    capex_signed: object,
+    change_ncwc: object,
+    fcff: object,
+    country: Optional[str],
+) -> None:
+    capex_abs = abs(float(capex_signed)) if _safe_float(capex_signed) is not None else None
+    unit_label, _ = _country_money_display(country)
+    st.markdown(
+        f"""
+<div style="border:1px solid #E5E7EB;border-radius:8px;padding:1rem 1.1rem;margin:0.35rem 0 1rem 0;background:#FFFFFF;">
+  <div style="font-size:0.82rem;color:#6B7280;margin-bottom:0.55rem;">FCFF Derivation ({year_label}, {unit_label})</div>
+  <div style="font-size:1.05rem;font-weight:700;color:#111827;margin-bottom:0.55rem;">
+    FCFF = NOPAT + D&amp;A - CapEx + Change in NCWC
+  </div>
+  <div style="font-size:1.15rem;color:#111827;line-height:1.8;">
+    <strong>{_format_breakdown_value(fcff, "money", country) or "N/A"}</strong>
+    =
+    {_format_breakdown_value(nopat, "money", country) or "N/A"}
+    + {_format_breakdown_value(da_value, "money", country) or "N/A"}
+    - {_format_breakdown_value(capex_abs, "money", country) or "N/A"}
+    + {_format_breakdown_value(change_ncwc, "money", country) or "N/A"}
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+def _render_fcff_waterfall(
+    *,
+    year_label: str,
+    nopat: object,
+    da_value: object,
+    capex_signed: object,
+    change_ncwc: object,
+    fcff: object,
+    country: Optional[str],
+) -> None:
+    components = [
+        ("NOPAT", _safe_float(nopat)),
+        ("D&A", _safe_float(da_value)),
+        ("CapEx", _safe_float(capex_signed)),
+        ("Change in NCWC", _safe_float(change_ncwc)),
+    ]
+    if any(value is None for _, value in components) or _safe_float(fcff) is None:
+        st.info("FCFF component visualization is unavailable because one or more component values are missing.")
+        return
+
+    running = 0.0
+    rows: List[Dict[str, object]] = []
+    for label, value in components:
+        start = running
+        running += float(value)
+        rows.append(
+            {
+                "Component": label,
+                "Start": min(start, running),
+                "End": max(start, running),
+                "Value": float(value),
+                "Type": "Increase" if float(value) >= 0 else "Decrease",
+                "Display": _signed_money(value, country),
+            }
+        )
+    rows.append(
+        {
+            "Component": "FCFF",
+            "Start": min(0.0, float(_safe_float(fcff) or 0.0)),
+            "End": max(0.0, float(_safe_float(fcff) or 0.0)),
+            "Value": float(_safe_float(fcff) or 0.0),
+            "Type": "Total",
+            "Display": _format_breakdown_value(fcff, "money", country),
+        }
+    )
+    chart_df = pd.DataFrame(rows)
+    chart = (
+        alt.Chart(chart_df)
+        .mark_bar(cornerRadiusTopLeft=3, cornerRadiusTopRight=3)
+        .encode(
+            x=alt.X("Component:N", sort=None, title=None),
+            y=alt.Y("Start:Q", title=f"{_country_money_display(country)[0]}"),
+            y2="End:Q",
+            color=alt.Color(
+                "Type:N",
+                scale=alt.Scale(domain=["Increase", "Decrease", "Total"], range=["#15803D", "#B91C1C", "#1D4ED8"]),
+                legend=None,
+            ),
+            tooltip=[
+                alt.Tooltip("Component:N"),
+                alt.Tooltip("Display:N", title="Value"),
+            ],
+        )
+        .properties(height=260, title=f"FCFF Component Waterfall - {year_label}")
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_fcff_timeline(detail_payload: Dict[str, object], country: Optional[str]) -> None:
+    operating_table = detail_payload.get("operating_table")
+    columns, fcff_values = _payload_metric_series(operating_table, "FCFF")
+    if not columns:
+        return
+    rows = []
+    last_historical_row = None
+    for idx, column in enumerate(columns):
+        value = fcff_values[idx] if idx < len(fcff_values) else None
+        numeric = _safe_float(value)
+        if numeric is None:
+            continue
+        period = "Projected" if str(column).startswith("FY") else "Historical"
+        row = {
+            "Year": str(column),
+            "FCFF": float(numeric),
+            "Period": period,
+            "Display": _format_breakdown_value(value, "money", country),
+        }
+        rows.append(
+            row
+        )
+        if period == "Historical":
+            last_historical_row = row
+    if not rows:
+        return
+    projected_bridge_rows = list(rows)
+    if last_historical_row is not None and any(row["Period"] == "Projected" for row in rows):
+        projected_bridge_rows.append({**last_historical_row, "Period": "Projected"})
+
+    historical_df = pd.DataFrame([row for row in rows if row["Period"] == "Historical"])
+    projected_df = pd.DataFrame([row for row in projected_bridge_rows if row["Period"] == "Projected"])
+    point_df = pd.DataFrame(rows)
+
+    historical_line = (
+        alt.Chart(historical_df)
+        .mark_line(point=False, color="#2563EB")
+        .encode(
+            x=alt.X("Year:N", sort=None, title=None),
+            y=alt.Y("FCFF:Q", title=f"FCFF ({_country_money_display(country)[0]})"),
+            tooltip=[
+                alt.Tooltip("Year:N"),
+                alt.Tooltip("Period:N"),
+                alt.Tooltip("Display:N", title="FCFF"),
+            ],
+        )
+    )
+    projected_line = (
+        alt.Chart(projected_df)
+        .mark_line(point=False, color="#F97316")
+        .encode(
+            x=alt.X("Year:N", sort=None, title=None),
+            y=alt.Y("FCFF:Q", title=f"FCFF ({_country_money_display(country)[0]})"),
+            tooltip=[
+                alt.Tooltip("Year:N"),
+                alt.Tooltip("Period:N"),
+                alt.Tooltip("Display:N", title="FCFF"),
+            ],
+        )
+    )
+    points = (
+        alt.Chart(point_df)
+        .mark_point(filled=True, size=55)
+        .encode(
+            x=alt.X("Year:N", sort=None, title=None),
+            y=alt.Y("FCFF:Q", title=f"FCFF ({_country_money_display(country)[0]})"),
+            color=alt.Color("Period:N", scale=alt.Scale(domain=["Historical", "Projected"], range=["#2563EB", "#F97316"])),
+            tooltip=[
+                alt.Tooltip("Year:N"),
+                alt.Tooltip("Period:N"),
+                alt.Tooltip("Display:N", title="FCFF"),
+            ],
+        )
+    )
+    chart = (
+        (historical_line + projected_line + points)
+        .resolve_scale(color="independent")
+        .properties(height=260)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _render_fcff_derivation_view(detail_payload: Dict[str, object], country: Optional[str]) -> None:
+    operating_table = detail_payload.get("operating_table")
+    working_capital_table = detail_payload.get("working_capital_table")
+    year_options = _fcff_derivation_year_options(detail_payload)
+    if not year_options:
+        st.info("FCFF derivation is unavailable because no FCFF rows are present in the valuation detail.")
+        return
+
+    default_idx = len(year_options) - 1
+    historical_options = [idx for idx, label in enumerate(year_options) if not str(label).startswith("FY")]
+    if historical_options:
+        default_idx = historical_options[-1]
+    selected_year = st.selectbox(
+        "Year",
+        options=year_options,
+        index=default_idx,
+        key="dcf_fcff_derivation_year",
+        help="Select a historical or projected year to inspect the FCFF mechanics.",
+    )
+
+    revenue = _payload_metric_value(operating_table, "Revenue", selected_year)
+    ebitda_margin = _payload_metric_value(operating_table, "EBITDA Margin", selected_year)
+    ebitda = _payload_metric_value(operating_table, "EBITDA", selected_year)
+    da_value = _payload_metric_value(operating_table, "D&A", selected_year)
+    ebit = _payload_metric_value(operating_table, "EBIT", selected_year)
+    tax_rate = _payload_metric_value(operating_table, "Tax Rate", selected_year)
+    nopat = _payload_metric_value(operating_table, "NOPAT", selected_year)
+    capex_signed = _payload_metric_value(operating_table, "CAPEX", selected_year)
+    capex_pct = _payload_metric_value(operating_table, "Capex %", selected_year)
+    fcff = _payload_metric_value(operating_table, "FCFF", selected_year)
+    wc_columns = [str(column) for column in (working_capital_table or {}).get("columns", [])]
+    previous_year = None
+    try:
+        selected_idx = wc_columns.index(str(selected_year))
+        previous_year = wc_columns[selected_idx - 1] if selected_idx > 0 else None
+    except ValueError:
+        previous_year = None
+    previous_ncwc = (
+        _payload_metric_value(working_capital_table, "Non-Cash Working Capital", previous_year)
+        if previous_year is not None
+        else None
+    )
+    ncwc = _payload_metric_value(working_capital_table, "Non-Cash Working Capital", selected_year)
+    avg_ncwc = _payload_metric_value(working_capital_table, "Average Non-Cash Working Capital", selected_year)
+    wc_days = _payload_metric_value(working_capital_table, "Working Capital Days", selected_year)
+    change_ncwc = _payload_metric_value(working_capital_table, "Change in NCWC", selected_year)
+
+    _render_fcff_equation_strip(
+        year_label=str(selected_year),
+        nopat=nopat,
+        da_value=da_value,
+        capex_signed=capex_signed,
+        change_ncwc=change_ncwc,
+        fcff=fcff,
+        country=country,
+    )
+
+    top_cols = st.columns(4)
+    with top_cols[0]:
+        _render_metric_tile("Revenue", revenue, "money", country)
+    with top_cols[1]:
+        _render_metric_tile("EBITDA Margin", ebitda_margin, "percent", country)
+    with top_cols[2]:
+        _render_metric_tile("CapEx %", capex_pct, "percent", country)
+    with top_cols[3]:
+        _render_metric_tile("FCFF", fcff, "money", country)
+
+    bridge_col, wc_col = st.columns([1, 1])
+    with bridge_col:
+        dashboard_section("Operating Profit Bridge")
+        bridge_df = pd.DataFrame(
+            [
+                {"Step": "Revenue", "Value": _format_breakdown_value(revenue, "money", country)},
+                {"Step": "EBITDA", "Value": _format_breakdown_value(ebitda, "money", country)},
+                {"Step": "D&A", "Value": _format_breakdown_value(da_value, "money", country)},
+                {"Step": "EBIT", "Value": _format_breakdown_value(ebit, "money", country)},
+                {"Step": "Tax Rate", "Value": _format_breakdown_value(tax_rate, "percent", country)},
+                {"Step": "NOPAT", "Value": _format_breakdown_value(nopat, "money", country)},
+            ]
+        )
+        st.dataframe(bridge_df, use_container_width=True, hide_index=True)
+
+    with wc_col:
+        dashboard_section("Working Capital Bridge")
+        wc_df = pd.DataFrame(
+            [
+                {"Step": "Prior Non-Cash Working Capital", "Value": _format_breakdown_value(previous_ncwc, "money", country)},
+                {"Step": "Non-Cash Working Capital", "Value": _format_breakdown_value(ncwc, "money", country)},
+                {"Step": "Average Non-Cash Working Capital", "Value": _format_breakdown_value(avg_ncwc, "money", country)},
+                {"Step": "Working Capital Days", "Value": _format_breakdown_value(wc_days, "number", country)},
+                {"Step": "Change in NCWC", "Value": _format_breakdown_value(change_ncwc, "money", country)},
+            ]
+        )
+        st.dataframe(wc_df, use_container_width=True, hide_index=True)
+
+    _render_fcff_waterfall(
+        year_label=str(selected_year),
+        nopat=nopat,
+        da_value=da_value,
+        capex_signed=capex_signed,
+        change_ncwc=change_ncwc,
+        fcff=fcff,
+        country=country,
+    )
+
+    dashboard_section("FCFF Timeline")
+    _render_fcff_timeline(detail_payload, country)
 
 
 def _split_actual_projected_points(columns: List[str], values: List[object]) -> Tuple[List[Tuple[str, float]], List[Tuple[str, float]]]:
@@ -1310,19 +1773,26 @@ def _render_company_valuation_detail(detail_payload: Dict[str, object]) -> None:
         ]
     )
 
-    summary_col, assumption_col = st.columns([1, 1])
-    with summary_col:
-        dashboard_section("Summary")
-        if not summary_df.empty:
-            render_dashboard_table(summary_df, key="dcf_expanded_summary")
-    with assumption_col:
-        dashboard_section("Assumptions")
-        if not assumptions_df.empty:
-            render_dashboard_table(assumptions_df, key="dcf_expanded_assumptions")
+    fcff_tab, summary_tab, raw_tab = st.tabs(["FCFF Derivation", "Summary & Assumptions", "Raw Tables"])
 
-    _render_breakdown_table("Operating Model", detail_payload.get("operating_table"), country)
-    _render_breakdown_table("Working Capital Bridge", detail_payload.get("working_capital_table"), country)
-    _render_breakdown_table("Discounting and Equity Value", detail_payload.get("discounting_table"), country)
+    with fcff_tab:
+        _render_fcff_derivation_view(detail_payload, country)
+
+    with summary_tab:
+        summary_col, assumption_col = st.columns([1, 1])
+        with summary_col:
+            dashboard_section("Summary")
+            if not summary_df.empty:
+                render_dashboard_table(summary_df, key="dcf_expanded_summary")
+        with assumption_col:
+            dashboard_section("Assumptions")
+            if not assumptions_df.empty:
+                render_dashboard_table(assumptions_df, key="dcf_expanded_assumptions")
+
+    with raw_tab:
+        _render_breakdown_table("Operating Model", detail_payload.get("operating_table"), country)
+        _render_breakdown_table("Working Capital Bridge", detail_payload.get("working_capital_table"), country)
+        _render_breakdown_table("Discounting and Equity Value", detail_payload.get("discounting_table"), country)
 
 
 def _summarize_price_source(results_df: pd.DataFrame) -> Dict[str, int]:
@@ -1562,6 +2032,28 @@ def _build_required_series(conn, company_id: int) -> Dict[str, Dict[int, float]]
     }
 
 
+def _preview_cache_token() -> str:
+    db_url = get_db_url()
+    if is_sqlite_url(db_url):
+        db_path = get_sqlite_path()
+        try:
+            stat = db_path.stat()
+            return f"sqlite:{db_path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+        except Exception:
+            return f"sqlite:{db_path}"
+    return f"uncached:{time.time_ns()}"
+
+
+@st.cache_data(show_spinner=False)
+def _cached_required_series_for_preview(company_id: int, cache_token: str) -> Dict[str, Dict[int, float]]:
+    conn = get_db()
+    return _build_required_series(conn, int(company_id))
+
+
+def _build_required_series_for_preview(company_id: int) -> Dict[str, Dict[int, float]]:
+    return _cached_required_series_for_preview(int(company_id), _preview_cache_token())
+
+
 def _get_effective_tax_rate_decimal(conn, country: Optional[str]) -> Optional[float]:
     country_key = str(country or "").strip().lower()
     country_variants = {
@@ -1598,6 +2090,7 @@ def _compute_dcf_projection(
     growth_weight_map: Dict[str, float],
     stddev_weight_map: Dict[str, float],
     selected_bucket_map: Dict[int, str],
+    compute_overall_score: bool = True,
 ) -> Dict[str, object]:
     company_id = int(company_row["id"])
     company_name = str(company_row["name"])
@@ -1693,10 +2186,10 @@ def _compute_dcf_projection(
         return _fail("Missing metric: CAPEX percent history")
 
     wc_days_sample = [
-        (float(ncwc) * 365.0) / float(revenue)
+        days
         for year, revenue in recent_revenue_values
-        for ncwc in [series["ncwc"].get(year)]
-        if ncwc is not None and revenue not in (None, 0)
+        for days in [_compute_average_ncwc_days(series["ncwc"], int(year), revenue)]
+        if days is not None
     ]
     if not wc_days_sample:
         return _fail("Missing metric: Working capital days history")
@@ -1812,6 +2305,7 @@ def _compute_dcf_projection(
     projected_capex_signeds: List[float] = []
     projected_capex_pcts: List[float] = []
     projected_ncwcs: List[float] = []
+    projected_avg_ncwcs: List[float] = []
     projected_wc_days_values: List[float] = []
     projected_change_ncwcs: List[float] = []
     prev_revenue = float(latest_revenue)
@@ -1841,7 +2335,8 @@ def _compute_dcf_projection(
         ebit = float(ebitda) - float(da_value)
         nopat = float(ebit) * (1.0 - float(tax_rate))
         capex_signed = -float(revenue) * float(capex_pct)
-        ncwc = (float(working_capital_days) * float(revenue)) / 365.0
+        avg_ncwc = (float(working_capital_days) * float(revenue)) / 365.0
+        ncwc = (2.0 * float(avg_ncwc)) - float(prev_ncwc)
         change_in_ncwc = float(prev_ncwc) - float(ncwc)
         fcff = float(nopat) + float(da_value) + float(capex_signed) + float(change_in_ncwc)
 
@@ -1856,6 +2351,7 @@ def _compute_dcf_projection(
         projected_capex_signeds.append(float(capex_signed))
         projected_capex_pcts.append(float(capex_pct))
         projected_ncwcs.append(float(ncwc))
+        projected_avg_ncwcs.append(float(avg_ncwc))
         projected_wc_days_values.append(float(working_capital_days))
         projected_change_ncwcs.append(float(change_in_ncwc))
         projected_fcff.append(float(fcff))
@@ -1908,12 +2404,13 @@ def _compute_dcf_projection(
     )
     base_row["Total Scaled Volatility-Adjusted Score"] = value_creation_metrics.get("Total Scaled Volatility-Adjusted Score")
     base_row["Total Debt-Adjusted Scaled Volatility-Adjusted Score"] = value_creation_metrics.get("Total Debt-Adjusted Scaled Volatility-Adjusted Score")
-    base_row["Overall Score (0-400)"] = _compute_ttc_overall_score(
-        conn,
-        company_id,
-        f"{int(latest_actual_year)}-{max(int(latest_actual_year) - int(historical_years) + 1, 0)}",
-        score_context,
-    )
+    if compute_overall_score:
+        base_row["Overall Score (0-400)"] = _compute_ttc_overall_score(
+            conn,
+            company_id,
+            f"{int(latest_actual_year)}-{max(int(latest_actual_year) - int(historical_years) + 1, 0)}",
+            score_context,
+        )
     detail_payload["validation"] = base_row["Validation"]
 
     actual_columns = [_actual_year_label(year) for year in actual_years]
@@ -1962,9 +2459,10 @@ def _compute_dcf_projection(
         for total_current_liabilities, current_debt_value in zip(actual_total_current_liabilities, actual_current_debt)
     ]
     actual_ncwc_values = [_safe_float(series["ncwc"].get(year)) for year in actual_years]
+    actual_avg_ncwc_values = [_compute_average_ncwc(series["ncwc"], year) for year in actual_years]
     actual_wc_days_values = [
-        ((float(ncwc_value) * 365.0) / float(revenue_value) if ncwc_value is not None and revenue_value not in (None, 0) else None)
-        for ncwc_value, revenue_value in zip(actual_ncwc_values, actual_revenue_values)
+        _compute_average_ncwc_days(series["ncwc"], year, revenue_value)
+        for year, revenue_value in zip(actual_years, actual_revenue_values)
     ]
     actual_change_ncwcs = [None]
     actual_fcff_values = [None]
@@ -2048,6 +2546,7 @@ def _compute_dcf_projection(
             ("Current Debt", "money", actual_current_debt + ([None] * len(projection_years))),
             ("Net Current Liabilities", "money", actual_net_current_liabilities + ([None] * len(projection_years))),
             ("Non-Cash Working Capital", "money", actual_ncwc_values + projected_ncwcs),
+            ("Average Non-Cash Working Capital", "money", actual_avg_ncwc_values + projected_avg_ncwcs),
             ("Working Capital Days", "number", actual_wc_days_values + projected_wc_days_values),
             ("Change in NCWC", "money", actual_change_ncwcs + projected_change_ncwcs),
         ],
@@ -2303,6 +2802,767 @@ def _render_dcf_results(display_df: pd.DataFrame, *, caption_text: str, download
         st.warning("Some companies completed with validation issues. Review the Validation column for details.")
 
 
+def _valuation_dashboard_excel_bytes(df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Valuation Dashboard")
+        worksheet = writer.sheets["Valuation Dashboard"]
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+
+        for column_cells in worksheet.columns:
+            header = str(column_cells[0].value or "")
+            max_len = len(header)
+            for cell in column_cells[1:]:
+                value = cell.value
+                if value is None:
+                    continue
+                max_len = max(max_len, len(str(value)))
+            worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_len + 2, 10), 42)
+
+    return output.getvalue()
+
+
+def _commit_db(conn) -> None:
+    try:
+        conn.commit()
+    except Exception:
+        session = getattr(conn, "session", None)
+        if session is not None:
+            session.commit()
+            return
+        raise
+
+
+def _ensure_valuation_saved_dashboards_table(conn) -> None:
+    if is_sqlite_url(get_db_url()):
+        create_sql = f"""
+        CREATE TABLE IF NOT EXISTS {_VALUATION_DASHBOARD_SAVED_TABLE} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            company_ids_json TEXT NOT NULL,
+            result_json TEXT,
+            score_year_range TEXT,
+            terminal_year INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    else:
+        create_sql = f"""
+        CREATE TABLE IF NOT EXISTS {_VALUATION_DASHBOARD_SAVED_TABLE} (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL UNIQUE,
+            company_ids_json TEXT NOT NULL,
+            result_json TEXT,
+            score_year_range TEXT,
+            terminal_year INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    conn.execute(create_sql)
+    _commit_db(conn)
+
+
+def _list_saved_valuation_dashboards(conn) -> pd.DataFrame:
+    _ensure_valuation_saved_dashboards_table(conn)
+    df = read_df(
+        f"""
+        SELECT id, name, company_ids_json, score_year_range, terminal_year, updated_at
+        FROM {_VALUATION_DASHBOARD_SAVED_TABLE}
+        ORDER BY name
+        """,
+        conn,
+    )
+    return df if df is not None else pd.DataFrame()
+
+
+def _saved_dashboard_company_ids(row: pd.Series) -> List[int]:
+    try:
+        raw_ids = json.loads(str(row.get("company_ids_json") or "[]"))
+    except Exception:
+        raw_ids = []
+    company_ids: List[int] = []
+    for raw_id in raw_ids:
+        try:
+            company_ids.append(int(raw_id))
+        except Exception:
+            continue
+    return sorted(set(company_ids))
+
+
+def _valuation_dashboard_result_json(dashboard_df: pd.DataFrame) -> str:
+    if not isinstance(dashboard_df, pd.DataFrame) or dashboard_df.empty:
+        return "[]"
+    safe_df = dashboard_df.astype(object).where(pd.notna(dashboard_df), None)
+    return json.dumps(safe_df.to_dict("records"), default=str)
+
+
+def _merge_valuation_dashboard_result_json(existing_json: object, append_df: pd.DataFrame) -> str:
+    try:
+        existing_rows = json.loads(str(existing_json or "[]"))
+    except Exception:
+        existing_rows = []
+    if not isinstance(existing_rows, list):
+        existing_rows = []
+
+    try:
+        append_rows = json.loads(_valuation_dashboard_result_json(append_df))
+    except Exception:
+        append_rows = []
+    if not isinstance(append_rows, list):
+        append_rows = []
+
+    merged_by_key: Dict[str, Dict[str, object]] = {}
+    fallback_idx = 0
+    for row in [*existing_rows, *append_rows]:
+        if not isinstance(row, dict):
+            continue
+        key = str(row.get("Ticker") or row.get("Company Name") or "").strip().upper()
+        if not key:
+            fallback_idx += 1
+            key = f"__ROW_{fallback_idx}"
+        merged_by_key[key] = row
+    return json.dumps(list(merged_by_key.values()), default=str)
+
+
+def _save_new_valuation_dashboard(
+    conn,
+    *,
+    name: str,
+    company_ids: List[int],
+    dashboard_df: pd.DataFrame,
+    score_year_range: str,
+    terminal_year: int,
+) -> Tuple[bool, str]:
+    clean_name = str(name or "").strip()
+    if not clean_name:
+        return False, "Enter a dashboard name."
+    if len(clean_name) > 20:
+        return False, "Dashboard name must be 20 characters or fewer."
+    clean_company_ids = sorted(set(int(company_id) for company_id in company_ids))
+    if not clean_company_ids:
+        return False, "No companies are available to save."
+
+    _ensure_valuation_saved_dashboards_table(conn)
+    existing_df = read_df(
+        f"SELECT id FROM {_VALUATION_DASHBOARD_SAVED_TABLE} WHERE LOWER(name) = LOWER(?) LIMIT 1",
+        conn,
+        params=(clean_name,),
+    )
+    if existing_df is not None and not existing_df.empty:
+        return False, "A saved dashboard with this name already exists. Use Update Dashboard instead."
+
+    now = datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        f"""
+        INSERT INTO {_VALUATION_DASHBOARD_SAVED_TABLE} (
+            name,
+            company_ids_json,
+            result_json,
+            score_year_range,
+            terminal_year,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            clean_name,
+            json.dumps(clean_company_ids),
+            _valuation_dashboard_result_json(dashboard_df),
+            str(score_year_range or ""),
+            int(terminal_year),
+            now,
+            now,
+        ),
+    )
+    _commit_db(conn)
+    return True, f"Saved dashboard '{clean_name}'."
+
+
+def _update_valuation_dashboard(
+    conn,
+    *,
+    dashboard_id: int,
+    company_ids: List[int],
+    dashboard_df: pd.DataFrame,
+    score_year_range: str,
+    terminal_year: int,
+) -> Tuple[bool, str]:
+    clean_company_ids = sorted(set(int(company_id) for company_id in company_ids))
+    if not clean_company_ids:
+        return False, "No companies are available to save."
+
+    _ensure_valuation_saved_dashboards_table(conn)
+    saved_df = read_df(
+        f"SELECT name FROM {_VALUATION_DASHBOARD_SAVED_TABLE} WHERE id = ? LIMIT 1",
+        conn,
+        params=(int(dashboard_id),),
+    )
+    if saved_df is None or saved_df.empty:
+        return False, "Select a saved dashboard to update."
+
+    now = datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        f"""
+        UPDATE {_VALUATION_DASHBOARD_SAVED_TABLE}
+        SET
+            company_ids_json = ?,
+            result_json = ?,
+            score_year_range = ?,
+            terminal_year = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            json.dumps(clean_company_ids),
+            _valuation_dashboard_result_json(dashboard_df),
+            str(score_year_range or ""),
+            int(terminal_year),
+            now,
+            int(dashboard_id),
+        ),
+    )
+    _commit_db(conn)
+    return True, f"Updated dashboard '{saved_df.iloc[0]['name']}'."
+
+
+def _append_valuation_dashboard(
+    conn,
+    *,
+    dashboard_id: int,
+    company_ids: List[int],
+    dashboard_df: pd.DataFrame,
+    score_year_range: str,
+    terminal_year: int,
+) -> Tuple[bool, str]:
+    append_company_ids = sorted(set(int(company_id) for company_id in company_ids))
+    if not append_company_ids:
+        return False, "No companies are available to append."
+
+    _ensure_valuation_saved_dashboards_table(conn)
+    saved_df = read_df(
+        f"""
+        SELECT name, company_ids_json, result_json
+        FROM {_VALUATION_DASHBOARD_SAVED_TABLE}
+        WHERE id = ?
+        LIMIT 1
+        """,
+        conn,
+        params=(int(dashboard_id),),
+    )
+    if saved_df is None or saved_df.empty:
+        return False, "Select a saved dashboard to append."
+
+    saved_row = saved_df.iloc[0]
+    existing_company_ids = _saved_dashboard_company_ids(saved_row)
+    merged_company_ids = sorted(set(existing_company_ids) | set(append_company_ids))
+    added_count = len(merged_company_ids) - len(set(existing_company_ids))
+    if added_count <= 0:
+        return False, "All selected companies are already in this saved dashboard."
+
+    now = datetime.now().isoformat(timespec="seconds")
+    conn.execute(
+        f"""
+        UPDATE {_VALUATION_DASHBOARD_SAVED_TABLE}
+        SET
+            company_ids_json = ?,
+            result_json = ?,
+            score_year_range = ?,
+            terminal_year = ?,
+            updated_at = ?
+        WHERE id = ?
+        """,
+        (
+            json.dumps(merged_company_ids),
+            _merge_valuation_dashboard_result_json(saved_row.get("result_json"), dashboard_df),
+            str(score_year_range or ""),
+            int(terminal_year),
+            now,
+            int(dashboard_id),
+        ),
+    )
+    _commit_db(conn)
+    return True, f"Appended {added_count} compan(y/ies) to dashboard '{saved_row['name']}'."
+
+
+def _render_valuation_dashboard_save_controls(
+    conn,
+    *,
+    dashboard_df: pd.DataFrame,
+    company_ids: List[int],
+    score_year_range: str,
+    terminal_year: int,
+) -> None:
+    st.markdown("---")
+    save_mode = st.radio(
+        "Save dashboard",
+        ["Save as new Dashboard", "Update Dashboard", "Append Dashboard"],
+        horizontal=True,
+        key=_VALUATION_DASHBOARD_SAVE_MODE_KEY,
+    )
+    if save_mode == "Save as new Dashboard":
+        dashboard_name = st.text_input(
+            "Dashboard name",
+            max_chars=20,
+            key="valuation_dashboard_new_name",
+        )
+        if st.button("Save as new Dashboard", key="valuation_dashboard_save_new"):
+            ok, message = _save_new_valuation_dashboard(
+                conn,
+                name=dashboard_name,
+                company_ids=company_ids,
+                dashboard_df=dashboard_df,
+                score_year_range=score_year_range,
+                terminal_year=int(terminal_year),
+            )
+            (st.success if ok else st.error)(message)
+    elif save_mode == "Update Dashboard":
+        saved_dashboards_df = _list_saved_valuation_dashboards(conn)
+        if saved_dashboards_df.empty:
+            st.info("No saved valuation dashboards are available yet.")
+            return
+
+        name_to_id = {str(row["name"]): int(row["id"]) for _, row in saved_dashboards_df.iterrows()}
+        selected_name = st.selectbox(
+            "Saved dashboard",
+            options=list(name_to_id.keys()),
+            key="valuation_dashboard_update_select",
+        )
+        if st.button("Update Dashboard", key="valuation_dashboard_update_existing"):
+            ok, message = _update_valuation_dashboard(
+                conn,
+                dashboard_id=name_to_id[selected_name],
+                company_ids=company_ids,
+                dashboard_df=dashboard_df,
+                score_year_range=score_year_range,
+                terminal_year=int(terminal_year),
+            )
+            (st.success if ok else st.error)(message)
+    else:
+        saved_dashboards_df = _list_saved_valuation_dashboards(conn)
+        if saved_dashboards_df.empty:
+            st.info("No saved valuation dashboards are available yet.")
+            return
+
+        name_to_id = {str(row["name"]): int(row["id"]) for _, row in saved_dashboards_df.iterrows()}
+        selected_name = st.selectbox(
+            "Saved dashboard",
+            options=list(name_to_id.keys()),
+            key="valuation_dashboard_append_select",
+        )
+        if st.button("Append Dashboard", key="valuation_dashboard_append_existing"):
+            ok, message = _append_valuation_dashboard(
+                conn,
+                dashboard_id=name_to_id[selected_name],
+                company_ids=company_ids,
+                dashboard_df=dashboard_df,
+                score_year_range=score_year_range,
+                terminal_year=int(terminal_year),
+            )
+            (st.success if ok else st.error)(message)
+
+
+def _parse_valuation_dashboard_year_range(year_range: str, available_years: List[int]) -> Tuple[int, int]:
+    text = (year_range or "").strip()
+    if not available_years:
+        raise ValueError("No annual years available.")
+
+    normalized = text.replace("–", "-").replace("—", "-").replace("â€“", "-").replace("â€”", "-")
+    most_recent = max(int(year) for year in available_years)
+    recent_match = re.match(r"^recent\s*-\s*(\d{4})$", normalized, flags=re.IGNORECASE)
+    two_year_match = re.match(r"^(\d{4})\s*-\s*(\d{4})$", normalized)
+    if recent_match:
+        return most_recent, int(recent_match.group(1))
+    if two_year_match:
+        return int(two_year_match.group(1)), int(two_year_match.group(2))
+    raise ValueError("Could not parse the year range. Use 'Recent - YYYY' or 'YYYY-YYYY'.")
+
+
+def _available_value_creation_years(conn, company_id: int) -> List[int]:
+    tables = [
+        "revenues_annual",
+        "accumulated_profit_annual",
+        "roe_annual",
+        "roce_annual",
+        "interest_load_annual",
+        "op_margin_annual",
+        "fcff_annual",
+        "roic_wacc_spread_annual",
+    ]
+    years: set[int] = set()
+    for table in tables:
+        try:
+            df = read_df(
+                f"SELECT fiscal_year AS year FROM {table} WHERE company_id = ?",
+                conn,
+                params=(int(company_id),),
+            )
+        except Exception:
+            continue
+        if df is None or df.empty:
+            continue
+        years.update(int(year) for year in df["year"].dropna().tolist())
+    return sorted(years)
+
+
+def _percentage_points(value: object) -> Optional[float]:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    return float(numeric) * 100.0
+
+
+def _metric_cagrs_from_payload(
+    detail_payload: Dict[str, object],
+    metric_name: str,
+    *,
+    positive_only: bool = True,
+) -> Tuple[Optional[float], Optional[float]]:
+    columns, values = _payload_metric_series(detail_payload.get("operating_table"), metric_name)
+    actual_points, projected_points = _split_actual_projected_points(columns, values)
+    return (
+        _cagr_from_points(actual_points, positive_only=positive_only),
+        _cagr_from_points(projected_points, positive_only=positive_only),
+    )
+
+
+def _latest_projected_metric_value(detail_payload: Dict[str, object], metric_name: str) -> Optional[float]:
+    columns, values = _payload_metric_series(detail_payload.get("discounting_table"), metric_name)
+    _, projected_points = _split_actual_projected_points(columns, values)
+    if not projected_points:
+        return None
+    return _safe_float(projected_points[-1][1])
+
+
+def _valuation_dashboard_composite_score(debt_adjusted_score: object, upside_downside: object) -> Optional[float]:
+    quality_score = _safe_float(debt_adjusted_score)
+    upside_pct = _safe_float(upside_downside)
+    if quality_score is None or upside_pct is None:
+        return None
+
+    quality_component = min(max(float(quality_score), 0.0), 20.0) / 20.0
+    valuation_component = 1.0 / (1.0 + np.exp(-float(upside_pct) / 25.0))
+    return 10.0 * (quality_component ** 0.6) * (valuation_component ** 0.4)
+
+
+def _valuation_dashboard_row(
+    projection_row: pd.Series,
+    *,
+    debt_adjusted_score: Optional[float],
+    terminal_year: int,
+) -> Dict[str, object]:
+    detail_payload = projection_row.get("__valuation_detail")
+    if not isinstance(detail_payload, dict):
+        detail_payload = {}
+
+    growth_rows, multiplier_rows, median_rows = _valuation_insight_rows(detail_payload)
+    embedded_growth_score, _, _, _ = _build_growth_intensity_summary(growth_rows, multiplier_rows, median_rows)
+    historical_revenue_cagr, projected_revenue_cagr = _metric_cagrs_from_payload(detail_payload, "Revenue")
+    historical_fcff_cagr, projected_fcff_cagr = _metric_cagrs_from_payload(detail_payload, "FCFF")
+    historical_ebit_cagr, projected_ebit_cagr = _metric_cagrs_from_payload(detail_payload, "EBIT")
+    terminal_growth_rate = _assumption_row_value(detail_payload, "Terminal Growth Rate")
+    historical_years = _assumption_row_value(detail_payload, "Historical Years Used")
+    terminal_year_wacc = _latest_projected_metric_value(detail_payload, "Projected Year WACC")
+    upside_downside = _safe_float(projection_row.get("Difference %"))
+
+    return {
+        "Company Name": projection_row.get("Company Name"),
+        "Ticker": projection_row.get("Ticker"),
+        "Industry Bucket": projection_row.get("Industry Bucket"),
+        "Current Market Price": _safe_float(projection_row.get("Current Market Price")),
+        "Intrinsic Value": _safe_float(projection_row.get("Intrinsic Value")),
+        "Upside/Downside": upside_downside,
+        "Embedded Growth Intensity": _percentage_points(embedded_growth_score),
+        "Number of Historical Years Considered": int(historical_years) if historical_years is not None else None,
+        "Total Debt-Adjusted Scaled Volatility-Adjusted Score": debt_adjusted_score,
+        "Composite Score": _valuation_dashboard_composite_score(debt_adjusted_score, upside_downside),
+        "Overall Through-the-Cycle-Efficiency Score": _safe_float(projection_row.get("Overall Through-the-Cycle-Efficiency Score")),
+        "Terminal Year": int(terminal_year),
+        "Terminal Year WACC%": _percentage_points(terminal_year_wacc),
+        "Terminal Growth Rate%": _percentage_points(terminal_growth_rate),
+        "Historical Revenue CAGR%": _percentage_points(historical_revenue_cagr),
+        "Projected Revenue CAGR%": _percentage_points(projected_revenue_cagr),
+        "Historical FCFF CAGR%": _percentage_points(historical_fcff_cagr),
+        "Projected FCFF CAGR%": _percentage_points(projected_fcff_cagr),
+        "Historic EBIT CAGR%": _percentage_points(historical_ebit_cagr),
+        "Projected EBIT CAGR%": _percentage_points(projected_ebit_cagr),
+    }
+
+
+def _run_valuation_dashboard(
+    conn,
+    selected_company_ids: List[int],
+    *,
+    score_year_range: str,
+    terminal_year: int,
+) -> pd.DataFrame:
+    if not selected_company_ids:
+        return pd.DataFrame()
+
+    members_df = read_df(
+        f"""
+        SELECT DISTINCT c.id, c.name, c.ticker, c.country
+        FROM companies c
+        WHERE c.id IN ({','.join(['?'] * len(selected_company_ids))})
+        ORDER BY c.name
+        """,
+        conn,
+        params=tuple(int(company_id) for company_id in selected_company_ids),
+    )
+    if members_df is None or members_df.empty:
+        return pd.DataFrame()
+
+    memberships_df = _get_company_group_memberships(conn, members_df["id"].astype(int).tolist())
+    selected_group_ids = sorted({int(group_id) for group_id in memberships_df.get("group_id", pd.Series(dtype=int)).dropna().tolist()})
+    industry_overrides_df = get_dcf_industry_valuation_settings(conn, selected_group_ids) if selected_group_ids else pd.DataFrame()
+    company_overrides_df = get_dcf_company_valuation_settings(conn, members_df["id"].astype(int).tolist())
+    general_settings = _get_general_settings_dict(conn)
+    selected_bucket_map = _get_company_buckets(conn, members_df["id"].astype(int).tolist())
+    growth_weight_map, stddev_weight_map = _load_weight_maps(conn)
+    score_context: Dict[str, object] = {}
+    ttc_context = _build_ttc_context(conn)
+    live_quote_map = _fetch_live_quotes_for_companies(members_df)
+
+    progress_bar = st.progress(0, text="Preparing valuation dashboard...")
+    total = max(len(members_df), 1)
+    rows: List[Dict[str, object]] = []
+
+    for idx, (_, company_row) in enumerate(members_df.iterrows(), start=1):
+        company_id = int(company_row["id"])
+        progress_bar.progress(
+            int((idx / total) * 100),
+            text=f"Computing valuation dashboard row for {company_row['name']} ({idx}/{total})...",
+        )
+
+        compute_and_store_fcff_and_reinvestment_rate(conn, company_id)
+        compute_and_store_levered_beta(conn, company_id)
+        compute_and_store_cost_of_equity(conn, company_id)
+        compute_and_store_pre_tax_cost_of_debt(conn, company_id)
+        compute_and_store_wacc(conn, company_id)
+        compute_and_store_roic_wacc_spread(conn, company_id)
+
+        effective_settings = _get_effective_company_settings(
+            company_id,
+            general_settings,
+            industry_overrides_df,
+            company_overrides_df,
+            memberships_df,
+        )
+        projection_row = _compute_dcf_projection(
+            conn=conn,
+            company_row=company_row,
+            live_quote=live_quote_map.get(company_id),
+            settings=effective_settings,
+            terminal_year=int(terminal_year),
+            score_context=score_context,
+            growth_weight_map=growth_weight_map,
+            stddev_weight_map=stddev_weight_map,
+            selected_bucket_map=selected_bucket_map,
+            compute_overall_score=False,
+        )
+
+        debt_adjusted_score = None
+        available_years = _available_value_creation_years(conn, company_id)
+        try:
+            yr_start, yr_end = _parse_valuation_dashboard_year_range(score_year_range, available_years)
+            if yr_start < yr_end:
+                yr_start, yr_end = yr_end, yr_start
+            score_metrics = _compute_value_creation_filter_metrics(
+                conn,
+                company_id,
+                int(yr_start),
+                int(yr_end),
+                growth_weight_map,
+                stddev_weight_map,
+            )
+            debt_adjusted_score = score_metrics.get("Total Debt-Adjusted Scaled Volatility-Adjusted Score")
+        except Exception:
+            debt_adjusted_score = None
+
+        try:
+            projection_row["Overall Through-the-Cycle-Efficiency Score"] = _compute_ttc_overall_score(
+                conn,
+                company_id,
+                score_year_range,
+                ttc_context,
+            )
+        except Exception:
+            projection_row["Overall Through-the-Cycle-Efficiency Score"] = None
+
+        rows.append(
+            _valuation_dashboard_row(
+                pd.Series(projection_row),
+                debt_adjusted_score=debt_adjusted_score,
+                terminal_year=int(terminal_year),
+            )
+        )
+
+    progress_bar.progress(100, text="Valuation dashboard complete.")
+    dashboard_df = pd.DataFrame(rows)
+    if dashboard_df.empty:
+        return dashboard_df
+    return dashboard_df.sort_values(by="Composite Score", ascending=False, na_position="last").reset_index(drop=True)
+
+
+def _render_valuation_dashboard_tab(conn) -> None:
+    st.subheader("Valuation Dashboard")
+
+    companies_df = list_companies(conn)
+    if companies_df.empty:
+        st.info("No companies are available yet. Upload company financials first.")
+        return
+
+    score_year_range = st.text_input(
+        "Year range for Overall Scores (e.g., 'Recent - 2020' or '2023-2018')",
+        value="Recent - 2020",
+        key="valuation_dashboard_year_range",
+    )
+    terminal_year = datetime.now().year + 7
+
+    selection_mode = st.radio(
+        "Search by",
+        ["Company", "Industry Bucket", "Saved Dashboard"],
+        horizontal=True,
+        key="valuation_dashboard_search_mode",
+    )
+
+    selected_company_ids: List[int] = []
+    selected_saved_dashboard_id: Optional[int] = None
+    if selection_mode == "Company":
+        filtered_df = companies_df.copy()
+        labels = company_label_map(filtered_df)
+        selected_company_ids = st.multiselect(
+            "Companies",
+            options=list(labels.keys()),
+            format_func=lambda company_id: labels.get(company_id, str(company_id)),
+            key="valuation_dashboard_company_select",
+        )
+    elif selection_mode == "Industry Bucket":
+        groups_df = read_df("SELECT id, name FROM company_groups ORDER BY name", conn)
+        if groups_df.empty:
+            st.info("No industry buckets are available yet.")
+            return
+
+        group_name_to_id = {str(row["name"]): int(row["id"]) for _, row in groups_df.iterrows()}
+        selected_bucket_names = st.multiselect(
+            "Industry bucket(s)",
+            options=list(group_name_to_id.keys()),
+            key="valuation_dashboard_bucket_select",
+        )
+        if selected_bucket_names:
+            group_ids = [group_name_to_id[name] for name in selected_bucket_names if name in group_name_to_id]
+            if group_ids:
+                members_df = read_df(
+                    f"""
+                    SELECT DISTINCT company_id
+                    FROM company_group_members
+                    WHERE group_id IN ({','.join(['?'] * len(group_ids))})
+                    """,
+                    conn,
+                    params=tuple(group_ids),
+                )
+                if members_df is not None and not members_df.empty:
+                    selected_company_ids = [int(company_id) for company_id in members_df["company_id"].dropna().tolist()]
+    else:
+        saved_dashboards_df = _list_saved_valuation_dashboards(conn)
+        if saved_dashboards_df.empty:
+            st.info("No saved valuation dashboards are available yet. Run a Company search and save a dashboard first.")
+            return
+
+        saved_name_to_idx = {str(row["name"]): idx for idx, row in saved_dashboards_df.iterrows()}
+        selected_saved_name = st.selectbox(
+            "Saved dashboard",
+            options=list(saved_name_to_idx.keys()),
+            key="valuation_dashboard_saved_select",
+        )
+        saved_row = saved_dashboards_df.loc[saved_name_to_idx[selected_saved_name]]
+        selected_saved_dashboard_id = int(saved_row["id"])
+        selected_company_ids = _saved_dashboard_company_ids(saved_row)
+        st.caption(f"Saved dashboard last updated: {saved_row.get('updated_at') or 'N/A'}")
+
+    selected_company_ids = sorted(set(selected_company_ids))
+    if not selected_company_ids:
+        st.info("Select at least one company, industry bucket, or saved dashboard to build the valuation dashboard.")
+        return
+
+    st.caption(f"{len(selected_company_ids)} compan(y/ies) selected.")
+    run_dashboard = st.button(
+        "Run Valuation Dashboard",
+        type="primary",
+        key="valuation_dashboard_run",
+    )
+    if run_dashboard:
+        st.session_state[_VALUATION_DASHBOARD_RESULTS_KEY] = _run_valuation_dashboard(
+            conn,
+            selected_company_ids,
+            score_year_range=score_year_range,
+            terminal_year=int(terminal_year),
+        )
+        st.session_state[_VALUATION_DASHBOARD_META_KEY] = {
+            "company_ids": list(selected_company_ids),
+            "score_year_range": score_year_range,
+            "terminal_year": int(terminal_year),
+            "selection_mode": selection_mode,
+            "saved_dashboard_id": selected_saved_dashboard_id,
+        }
+
+    dashboard_df = st.session_state.get(_VALUATION_DASHBOARD_RESULTS_KEY)
+    dashboard_meta = st.session_state.get(_VALUATION_DASHBOARD_META_KEY, {})
+    if not isinstance(dashboard_df, pd.DataFrame) or dashboard_df.empty:
+        return
+
+    if (
+        dashboard_meta.get("company_ids") != list(selected_company_ids)
+        or dashboard_meta.get("score_year_range") != score_year_range
+        or int(dashboard_meta.get("terminal_year", terminal_year)) != int(terminal_year)
+        or dashboard_meta.get("selection_mode") != selection_mode
+        or dashboard_meta.get("saved_dashboard_id") != selected_saved_dashboard_id
+    ):
+        st.info("Run the valuation dashboard again to refresh results for the current filters.")
+        return
+
+    composite_help = (
+        "Quality component: Q = MIN(MAX(Total Debt-Adjusted Scaled Volatility-Adjusted Score, 0), 20) / 20. "
+        "Valuation component: V = 1 / (1 + EXP(-Upside/Downside / 25)). "
+        "Composite Score = 10 * (Q ^ 0.6) * (V ^ 0.4)."
+    )
+    ttc_score_help = (
+        "Source: Equity Research -> Through-the-Cycle Efficiency -> Combined Score -> Overall Score (0-400). "
+        "Computed with the valuation dashboard year range and current TTC assumptions."
+    )
+    render_dashboard_table(
+        dashboard_df,
+        help_map={
+            "Composite Score": composite_help,
+            "Overall Through-the-Cycle-Efficiency Score": ttc_score_help,
+        },
+        column_config={
+            "Number of Historical Years Considered": st.column_config.NumberColumn(format="%d"),
+            "Terminal Year": st.column_config.NumberColumn(format="%d"),
+        },
+        key="valuation_dashboard_table",
+    )
+
+    if selection_mode == "Company":
+        _render_valuation_dashboard_save_controls(
+            conn,
+            dashboard_df=dashboard_df,
+            company_ids=selected_company_ids,
+            score_year_range=score_year_range,
+            terminal_year=int(terminal_year),
+        )
+
+    st.download_button(
+        "Download Valuation Dashboard (Excel)",
+        data=_valuation_dashboard_excel_bytes(dashboard_df),
+        file_name="valuation_dashboard.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="valuation_dashboard_excel_download",
+    )
+
+
 def _get_latest_risk_free_rates(conn) -> Optional[Dict[str, float]]:
     df = read_df(
         """
@@ -2378,9 +3638,15 @@ def _row_to_settings_dict(row) -> Dict[str, float]:
     return settings
 
 
-def _get_general_settings_dict(conn) -> Dict[str, float]:
-    saved_df = get_dcf_valuation_settings(conn)
-    default_rates = _get_latest_risk_free_rates(conn)
+def _get_general_settings_dict(
+    conn,
+    saved_df: Optional[pd.DataFrame] = None,
+    default_rates: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    if saved_df is None:
+        saved_df = get_dcf_valuation_settings(conn)
+    if default_rates is None:
+        default_rates = _get_latest_risk_free_rates(conn)
     if saved_df.empty:
         return {
             "historical_years": 7,
@@ -2434,6 +3700,232 @@ def _path_config_legacy_step(config: Dict[str, object]) -> float:
     return _safe_float(config.get("annual_step_pct")) or 0.0
 
 
+def _normalize_upload_column_label(label: object) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(label or "").strip().lower().replace("&", "and"))
+
+
+def _coerce_upload_numeric(value: object) -> Optional[float]:
+    if value is None or pd.isna(value):
+        return None
+    if isinstance(value, str):
+        text = value.strip().replace(",", "")
+        if text.endswith("%"):
+            text = text[:-1].strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except Exception:
+            return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
+def _upload_absolute_to_model_value(metric_key: str, value: object) -> Optional[float]:
+    numeric = _coerce_upload_numeric(value)
+    if numeric is None:
+        return None
+    if metric_key == "working_capital_days_growth":
+        return float(numeric)
+    return float(numeric) / 100.0
+
+
+def _model_value_to_upload_display(metric_key: str, value: object) -> Optional[float]:
+    numeric = _safe_float(value)
+    if numeric is None:
+        return None
+    if metric_key == "working_capital_days_growth":
+        return float(numeric)
+    return float(numeric) * 100.0
+
+
+def _compute_assumption_upload_steps_pct(
+    assumptions_df: pd.DataFrame,
+    preview_context: Dict[str, object],
+) -> Tuple[Optional[Dict[str, List[float]]], List[str]]:
+    errors: List[str] = []
+    if not preview_context or preview_context.get("error"):
+        return None, [str(preview_context.get("error") or "Could not calculate base assumptions for the selected company.")]
+
+    metric_base_values = dict(preview_context.get("metric_base_values", {}))
+    metric_base_growths = dict(preview_context.get("metric_base_growths", {}))
+    steps_by_metric: Dict[str, List[float]] = {}
+
+    for metric_key, _ in _PROJECTION_PATH_METRICS:
+        absolute_values = [
+            _upload_absolute_to_model_value(metric_key, value)
+            for value in assumptions_df[metric_key].tolist()
+        ]
+        if any(value is None for value in absolute_values):
+            errors.append(f"Could not parse uploaded absolute values for {_ASSUMPTION_UPLOAD_FIELD_LABELS.get(metric_key, metric_key)}.")
+            continue
+
+        if metric_key == "future_revenue_growth":
+            steps_by_metric[metric_key] = [float(value) * 100.0 for value in absolute_values if value is not None]
+            continue
+
+        base_value = _safe_float(metric_base_values.get(metric_key))
+        if base_value is None:
+            errors.append(f"Could not calculate the base value for {_ASSUMPTION_UPLOAD_FIELD_LABELS.get(metric_key, metric_key)}.")
+            continue
+
+        previous_value = float(base_value)
+        metric_steps: List[float] = []
+        for idx, target_value in enumerate(absolute_values, start=1):
+            if target_value is None:
+                continue
+            target = float(target_value)
+            if previous_value == 0.0:
+                if target == 0.0:
+                    step_pct = 0.0
+                else:
+                    errors.append(
+                        f"Cannot compute FY{idx} ascend/descend % for {_ASSUMPTION_UPLOAD_FIELD_LABELS.get(metric_key, metric_key)} "
+                        "because the prior base/projected value is zero."
+                    )
+                    break
+            else:
+                step_pct = ((target / previous_value) - 1.0) * 100.0
+            metric_steps.append(float(step_pct))
+            previous_value = target
+        steps_by_metric[metric_key] = metric_steps
+
+    if errors:
+        return None, errors
+    return steps_by_metric, []
+
+
+def _computed_upload_steps_display_df(steps_by_metric: Dict[str, List[float]], years: List[int]) -> pd.DataFrame:
+    rows: List[Dict[str, object]] = []
+    for idx, year in enumerate(years):
+        row: Dict[str, object] = {"Year": int(year)}
+        for metric_key, _ in _PROJECTION_PATH_METRICS:
+            steps = steps_by_metric.get(metric_key, [])
+            row[dict(_PROJECTION_PATH_METRICS).get(metric_key, metric_key)] = steps[idx] if idx < len(steps) else None
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _read_company_assumption_upload(uploaded_file, base_anchor_year: int) -> Tuple[Optional[pd.DataFrame], List[str]]:
+    errors: List[str] = []
+    try:
+        raw_df = pd.read_excel(uploaded_file)
+    except Exception as exc:
+        return None, [f"Could not read the uploaded spreadsheet: {exc}"]
+
+    if raw_df is None or raw_df.empty:
+        return None, ["The uploaded spreadsheet is empty."]
+
+    normalized_to_original = {_normalize_upload_column_label(col): col for col in raw_df.columns}
+    selected_columns: Dict[str, object] = {}
+    for field, aliases in _ASSUMPTION_UPLOAD_COLUMN_ALIASES.items():
+        original_col = None
+        for alias in aliases:
+            normalized_alias = _normalize_upload_column_label(alias)
+            if normalized_alias in normalized_to_original:
+                original_col = normalized_to_original[normalized_alias]
+                break
+        if original_col is None:
+            label = _ASSUMPTION_UPLOAD_FIELD_LABELS.get(field, field)
+            errors.append(f"Missing required column: {label}")
+        else:
+            selected_columns[field] = original_col
+    if errors:
+        return None, errors
+
+    parsed_df = pd.DataFrame({field: raw_df[col] for field, col in selected_columns.items()})
+    parsed_df = parsed_df.dropna(how="all")
+    parsed_df = parsed_df.dropna(how="all", subset=["year"] + [metric_key for metric_key, _ in _PROJECTION_PATH_METRICS])
+    if parsed_df.empty:
+        return None, ["The uploaded spreadsheet does not contain any assumption rows."]
+    if len(parsed_df) > 10:
+        errors.append("The uploaded spreadsheet can contain at most 10 forecast rows.")
+
+    parsed_df["year"] = parsed_df["year"].apply(_coerce_upload_numeric)
+    if parsed_df["year"].isna().any():
+        errors.append("Every assumption row must have a numeric Year value.")
+    else:
+        non_integer_years = [year for year in parsed_df["year"].tolist() if int(year) != float(year)]
+        if non_integer_years:
+            errors.append("Year values must be whole years.")
+        parsed_df["year"] = parsed_df["year"].astype(int)
+
+    for metric_key, label in _PROJECTION_PATH_METRICS:
+        parsed_df[metric_key] = parsed_df[metric_key].apply(_coerce_upload_numeric)
+        if parsed_df[metric_key].isna().any():
+            errors.append(f"Every assumption row must have a numeric value for {_ASSUMPTION_UPLOAD_FIELD_LABELS.get(metric_key, label)}.")
+
+    if errors:
+        return None, errors
+
+    parsed_df = parsed_df.sort_values("year").reset_index(drop=True)
+    years = parsed_df["year"].astype(int).tolist()
+    duplicate_years = sorted({year for year in years if years.count(year) > 1})
+    if duplicate_years:
+        errors.append(f"Duplicate Year values are not allowed: {', '.join(str(year) for year in duplicate_years)}")
+
+    expected_years = list(range(int(base_anchor_year) + 1, int(base_anchor_year) + 1 + len(parsed_df)))
+    if years != expected_years:
+        errors.append(
+            "Uploaded years must be consecutive and start immediately after the selected base historical year anchor "
+            f"({int(base_anchor_year)}). Expected: {', '.join(str(year) for year in expected_years)}."
+        )
+
+    if errors:
+        return None, errors
+
+    return parsed_df[["year"] + [metric_key for metric_key, _ in _PROJECTION_PATH_METRICS]], []
+
+
+def _build_company_assumption_upload_values(
+    initial_values: Dict[str, object],
+    historical_years: int,
+    base_anchor_year: int,
+    assumptions_df: pd.DataFrame,
+    steps_by_metric: Dict[str, List[float]],
+) -> Dict[str, object]:
+    projection_path_config = _parse_projection_path_config(initial_values.get("projection_path_config"))
+    for metric_key, _ in _PROJECTION_PATH_METRICS:
+        projection_path_config[metric_key] = {
+            "mode": "year_by_year",
+            "steps_pct": [float(value) for value in steps_by_metric.get(metric_key, [])],
+        }
+    projection_path_config[_ANCHOR_CONFIG_KEY] = {
+        "use_base_historical_year": True,
+        "base_historical_year": int(base_anchor_year),
+        "forecast_year_limit": len(assumptions_df),
+        "use_baseline_overrides": False,
+        "baseline_anchor_year": None,
+        "baseline_overrides": {},
+    }
+
+    result = {
+        "historical_years": int(historical_years),
+        "terminal_growth_usa": float(_safe_float(initial_values.get("terminal_growth_usa")) or 0.0),
+        "terminal_growth_india": float(_safe_float(initial_values.get("terminal_growth_india")) or 0.0),
+        "terminal_growth_china": float(_safe_float(initial_values.get("terminal_growth_china")) or 0.0),
+        "terminal_growth_japan": float(_safe_float(initial_values.get("terminal_growth_japan")) or 0.0),
+        "starting_projected_revenue_growth_cap": float(_safe_float(initial_values.get("starting_projected_revenue_growth_cap")) or 25.0),
+        "projection_path_config": json.dumps(projection_path_config),
+    }
+    for metric_key, _ in _PROJECTION_PATH_METRICS:
+        result[metric_key] = _path_config_legacy_step(projection_path_config[metric_key])
+    return result
+
+
+def _uploaded_assumptions_display_df(assumptions_df: pd.DataFrame) -> pd.DataFrame:
+    display_df = assumptions_df.rename(
+        columns={
+            "year": "Year",
+            **{metric_key: _ASSUMPTION_UPLOAD_FIELD_LABELS.get(metric_key, label) for metric_key, label in _PROJECTION_PATH_METRICS},
+        }
+    )
+    return display_df
+
+
+
 def _company_revenue_years(conn, company_row: Optional[pd.Series]) -> List[int]:
     if conn is None or company_row is None:
         return []
@@ -2477,6 +3969,7 @@ def _render_projection_anchor_controls(
         return {
             "use_base_historical_year": False,
             "base_historical_year": None,
+            "forecast_year_limit": _normalize_forecast_year_limit(saved_config.get("forecast_year_limit"), _DEFAULT_FORECAST_YEAR_LIMIT),
             "use_baseline_overrides": False,
             "baseline_anchor_year": None,
             "baseline_overrides": {},
@@ -2510,6 +4003,16 @@ def _render_projection_anchor_controls(
         )
         st.caption(f"Historical calculations stop at {anchor_year}. FY1 represents {int(anchor_year) + 1}.")
 
+    forecast_year_limit = st.number_input(
+        "Forecast year limit",
+        min_value=1,
+        max_value=10,
+        value=_normalize_forecast_year_limit(saved_config.get("forecast_year_limit"), _DEFAULT_FORECAST_YEAR_LIMIT),
+        step=1,
+        key=f"{form_key}_forecast_year_limit",
+        help="Controls how many projected years are included in the Growth % and Actual / Projected Value previews.",
+    )
+
     try:
         baseline_anchor_default = int(saved_config.get("baseline_anchor_year") or (int(anchor_year) + 1))
     except Exception:
@@ -2538,6 +4041,7 @@ def _render_projection_anchor_controls(
             {
                 "use_base_historical_year": bool(use_anchor),
                 "base_historical_year": int(anchor_year) if use_anchor else None,
+                "forecast_year_limit": int(forecast_year_limit),
                 "use_baseline_overrides": False,
                 "baseline_anchor_year": int(baseline_anchor_year),
                 "baseline_overrides": {},
@@ -2591,6 +4095,7 @@ def _render_projection_anchor_controls(
     return {
         "use_base_historical_year": bool(use_anchor),
         "base_historical_year": int(anchor_year) if use_anchor else None,
+        "forecast_year_limit": int(forecast_year_limit),
         "use_baseline_overrides": bool(use_baseline_overrides),
         "baseline_anchor_year": int(baseline_anchor_year) if use_baseline_overrides else None,
         "baseline_overrides": overrides if use_baseline_overrides else {},
@@ -2997,44 +4502,23 @@ def _render_company_tab(conn) -> None:
         return
 
     filtered_df = companies_df.copy()
-    filtered_df["ticker"] = filtered_df["ticker"].fillna("").astype(str)
-    filtered_df["company_label"] = filtered_df.apply(
-        lambda row: f"{row['name']} ({row['ticker']})" if row["ticker"].strip() else str(row["name"]),
-        axis=1,
-    )
-
-    duplicate_labels = filtered_df["company_label"].value_counts()
-    if (duplicate_labels > 1).any() and "country" in filtered_df.columns:
-        filtered_df["country"] = filtered_df["country"].fillna("").astype(str)
-        filtered_df.loc[
-            filtered_df["company_label"].isin(duplicate_labels[duplicate_labels > 1].index),
-            "company_label",
-        ] = filtered_df.apply(
-            lambda row: (
-                f"{row['company_label']} - {row['country']}"
-                if duplicate_labels.get(row["company_label"], 0) > 1 and row["country"].strip()
-                else row["company_label"]
-            ),
-            axis=1,
-        )
-
-    label_to_id = {str(row.company_label): int(row.id) for _, row in filtered_df.iterrows()}
-    options = filtered_df["company_label"].astype(str).tolist()
+    labels = company_label_map(filtered_df)
+    options = list(labels.keys())
     stored_selection_ids = st.session_state.get(_DCF_COMPANY_KEY, [])
     default_selection = [
-        label
-        for label, company_id in label_to_id.items()
+        company_id
+        for company_id in options
         if company_id in stored_selection_ids
     ]
 
-    selected_company_labels = st.multiselect(
+    selected_company_ids = st.multiselect(
         "Companies for DCF valuation",
         options=options,
         default=default_selection,
+        format_func=lambda company_id: labels.get(company_id, str(company_id)),
         key="dcf_company_multi_select",
         help="Select one or more companies to include in the DCF valuation workflow.",
     )
-    selected_company_ids = [label_to_id[label] for label in selected_company_labels if label in label_to_id]
     st.session_state[_DCF_COMPANY_KEY] = selected_company_ids
 
     st.caption("Search and select one or more companies independently of the Industry tab.")
@@ -3106,8 +4590,7 @@ def _render_company_tab(conn) -> None:
         company_id = int(company_id)
         label = str(row.get("Company Name") or company_id)
         ticker_value = str(row.get("Ticker") or "").strip()
-        if ticker_value:
-            label = f"{label} ({ticker_value})"
+        label = format_company_option(label, ticker_value)
         result_rows.append((company_id, label))
 
     if not result_rows:
@@ -3117,8 +4600,7 @@ def _render_company_tab(conn) -> None:
     option_ids = list(option_map.keys())
     stored_selected_result_id = st.session_state.get(_DCF_COMPANY_RESULT_SELECT_KEY)
     if stored_selected_result_id not in option_map:
-        stored_selected_result_id = option_ids[0]
-        st.session_state[_DCF_COMPANY_RESULT_SELECT_KEY] = stored_selected_result_id
+        st.session_state[_DCF_COMPANY_RESULT_SELECT_KEY] = option_ids[0]
 
     st.caption("Select one company from the output and expand the valuation mechanics below the results table.")
     selector_col, action_col = st.columns([3, 2])
@@ -3126,7 +4608,6 @@ def _render_company_tab(conn) -> None:
         selected_result_company_id = st.radio(
             "Company valuation detail",
             options=option_ids,
-            index=option_ids.index(stored_selected_result_id),
             format_func=lambda company_id: option_map.get(company_id, str(company_id)),
             key=_DCF_COMPANY_RESULT_SELECT_KEY,
         )
@@ -3164,10 +4645,13 @@ def _render_company_tab(conn) -> None:
         st.info("Detailed valuation mechanics are not available for this company in the current run.")
         return
 
+    detail_view_options = ["Expanded Valuation", "Valuation Insights"]
+    if st.session_state.get(_DCF_COMPANY_DETAIL_VIEW_KEY) not in detail_view_options:
+        st.session_state[_DCF_COMPANY_DETAIL_VIEW_KEY] = "Expanded Valuation"
+
     detail_view = st.segmented_control(
         "Detail view",
-        options=["Expanded Valuation", "Valuation Insights"],
-        default=st.session_state.get(_DCF_COMPANY_DETAIL_VIEW_KEY, "Expanded Valuation"),
+        options=detail_view_options,
         key=_DCF_COMPANY_DETAIL_VIEW_KEY,
     )
     if detail_view == "Valuation Insights":
@@ -3181,7 +4665,7 @@ def _render_general_settings_tab(conn) -> None:
 
     default_rates = _get_latest_risk_free_rates(conn)
     saved_df = get_dcf_valuation_settings(conn)
-    initial_values = _get_general_settings_dict(conn)
+    initial_values = _get_general_settings_dict(conn, saved_df=saved_df, default_rates=default_rates)
 
     if not saved_df.empty and saved_df.iloc[0]["updated_at"]:
         st.caption(f"Last saved: {saved_df.iloc[0]['updated_at']}")
@@ -3245,8 +4729,13 @@ def _render_industry_settings_tab(conn) -> None:
 
     industry_overrides_df = get_dcf_industry_valuation_settings(conn, selected_group_ids)
     selected_groups_df = groups_df[groups_df["id"].isin(selected_group_ids)].copy()
+    industry_override_ids = (
+        set(industry_overrides_df["group_id"].astype(int).tolist())
+        if industry_overrides_df is not None and not industry_overrides_df.empty and "group_id" in industry_overrides_df.columns
+        else set()
+    )
     selected_groups_df["Setting Source"] = selected_groups_df["id"].apply(
-        lambda group_id: "Industry Override" if not industry_overrides_df[industry_overrides_df["group_id"] == int(group_id)].empty else "General"
+        lambda group_id: "Industry Override" if int(group_id) in industry_override_ids else "General"
     )
     st.dataframe(
         selected_groups_df.rename(columns={"name": "Industry"})[["Industry", "Setting Source"]],
@@ -3336,6 +4825,135 @@ def _get_company_effective_source(
     return "General"
 
 
+def _render_company_assumption_upload_workflow(
+    conn,
+    baseline_settings: Dict[str, object],
+    baseline_company_row: pd.Series,
+    form_key: str,
+) -> Optional[Dict[str, object]]:
+    st.markdown("---")
+    st.markdown("**Upload Assumptions**")
+
+    if st.button("Cancel upload", key=f"{form_key}_cancel_upload"):
+        st.session_state[_DCF_COMPANY_ASSUMPTION_UPLOAD_VISIBLE_KEY] = False
+        return {"__cancel_upload": True}
+
+    available_years = _company_revenue_years(conn, baseline_company_row)
+    if not available_years:
+        st.warning("No annual revenue history is available for the selected baseline company. Upload assumptions require a base historical year anchor.")
+        return None
+
+    saved_anchor_config = _anchor_config_from_settings(baseline_settings)
+    latest_year = max(available_years)
+    saved_anchor_year = saved_anchor_config.get("base_historical_year")
+    try:
+        saved_anchor_year = int(saved_anchor_year)
+    except Exception:
+        saved_anchor_year = latest_year
+    if saved_anchor_year not in available_years:
+        saved_anchor_year = latest_year
+
+    col1, col2 = st.columns(2)
+    with col1:
+        historical_years = st.number_input(
+            "Number of historical years to consider",
+            min_value=3,
+            max_value=10,
+            value=int(baseline_settings["historical_years"]),
+            step=1,
+            key=f"{form_key}_upload_historical_years",
+            help="Controls how many historical annual observations are used when calculating the DCF starting point.",
+        )
+    with col2:
+        base_anchor_year = st.selectbox(
+            "Base historical year anchor",
+            options=available_years,
+            index=available_years.index(int(saved_anchor_year)),
+            key=f"{form_key}_upload_base_historical_year",
+            help="The uploaded Year column must start in the year immediately after this anchor.",
+        )
+
+    st.caption(
+        "Upload absolute forecast assumptions in the spreadsheet format. The app will compute and save the required Year-by-year ascend/descend %. "
+        f"The first uploaded year must be {int(base_anchor_year) + 1}."
+    )
+    uploaded_file = st.file_uploader(
+        "Assumptions spreadsheet",
+        type=["xlsx", "xls"],
+        key=f"{form_key}_assumption_upload_file",
+        help="Expected columns: Year, Revenue Growth %, EBITDA Margin %, D&A % of Revenue, CAPEX % of Revenue, Working Capital Days, WACC %.",
+    )
+
+    parsed_df = None
+    steps_by_metric = None
+    validation_errors: List[str] = []
+    if uploaded_file is not None:
+        try:
+            uploaded_file.seek(0)
+        except Exception:
+            pass
+        parsed_df, validation_errors = _read_company_assumption_upload(uploaded_file, int(base_anchor_year))
+        if validation_errors:
+            for error in validation_errors:
+                st.error(error)
+        elif parsed_df is not None:
+            anchor_config = {
+                "use_base_historical_year": True,
+                "base_historical_year": int(base_anchor_year),
+                "forecast_year_limit": len(parsed_df),
+                "use_baseline_overrides": False,
+                "baseline_anchor_year": None,
+                "baseline_overrides": {},
+            }
+            anchored_settings = _settings_with_anchor_config(baseline_settings, anchor_config)
+            preview_context = _build_company_assumption_preview_context(
+                conn,
+                baseline_company_row,
+                int(historical_years),
+                float(_safe_float(baseline_settings.get("starting_projected_revenue_growth_cap")) or 25.0),
+                anchored_settings,
+            )
+            steps_by_metric, conversion_errors = _compute_assumption_upload_steps_pct(parsed_df, preview_context)
+            if conversion_errors:
+                validation_errors.extend(conversion_errors)
+                for error in conversion_errors:
+                    st.error(error)
+
+        if parsed_df is not None:
+            st.markdown("**Uploaded absolute assumptions**")
+            st.dataframe(_uploaded_assumptions_display_df(parsed_df), use_container_width=True, hide_index=True)
+        if parsed_df is not None and steps_by_metric is not None and not validation_errors:
+            st.markdown("**Computed Year-by-year ascend/descend % to be saved**")
+            st.dataframe(
+                _computed_upload_steps_display_df(steps_by_metric, parsed_df["year"].astype(int).tolist()),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    go_clicked = st.button(
+        "Go",
+        type="primary",
+        key=f"{form_key}_apply_assumption_upload",
+        disabled=uploaded_file is None or bool(validation_errors),
+    )
+    if not go_clicked:
+        return None
+    if parsed_df is None:
+        st.error("Upload a valid assumptions spreadsheet before clicking Go.")
+        return None
+    if steps_by_metric is None:
+        st.error("Could not compute Year-by-year ascend/descend % from the uploaded absolute assumptions.")
+        return None
+
+    return _build_company_assumption_upload_values(
+        baseline_settings,
+        int(historical_years),
+        int(base_anchor_year),
+        parsed_df,
+        steps_by_metric,
+    )
+
+
 def _render_company_settings_tab(conn) -> None:
     st.subheader("Company - Level")
 
@@ -3344,10 +4962,7 @@ def _render_company_settings_tab(conn) -> None:
         st.info("No companies are available yet.")
         return
 
-    label_map = {
-        int(row.id): f"{row.name} ({row.ticker})"
-        for _, row in companies_df.iterrows()
-    }
+    label_map = company_label_map(companies_df)
     selected_company_ids = st.multiselect(
         "Companies",
         options=companies_df["id"].astype(int).tolist(),
@@ -3367,8 +4982,27 @@ def _render_company_settings_tab(conn) -> None:
     company_overrides_df = get_dcf_company_valuation_settings(conn, selected_company_ids)
 
     selected_companies_df = companies_df[companies_df["id"].isin(selected_company_ids)].copy()
+    company_override_ids = (
+        set(company_overrides_df["company_id"].astype(int).tolist())
+        if company_overrides_df is not None and not company_overrides_df.empty and "company_id" in company_overrides_df.columns
+        else set()
+    )
+    industry_override_ids = (
+        set(industry_overrides_df["group_id"].astype(int).tolist())
+        if industry_overrides_df is not None and not industry_overrides_df.empty and "group_id" in industry_overrides_df.columns
+        else set()
+    )
+    company_source_map: Dict[int, str] = {int(company_id): "Company Override" for company_id in company_override_ids}
+    if memberships_df is not None and not memberships_df.empty:
+        for _, membership in memberships_df.iterrows():
+            company_id = int(membership["company_id"])
+            if company_id in company_source_map:
+                continue
+            group_id = int(membership["group_id"])
+            if group_id in industry_override_ids:
+                company_source_map[company_id] = f"Industry Override: {membership['group_name']}"
     selected_companies_df["Setting Source"] = selected_companies_df["id"].apply(
-        lambda company_id: _get_company_effective_source(company_id, industry_overrides_df, company_overrides_df, memberships_df)
+        lambda company_id: company_source_map.get(int(company_id), "General")
     )
     st.dataframe(
         selected_companies_df.rename(columns={"name": "Company", "ticker": "Ticker"})[["Company", "Ticker", "Setting Source"]],
@@ -3387,14 +5021,33 @@ def _render_company_settings_tab(conn) -> None:
     baseline_label = label_map.get(baseline_company_id, str(baseline_company_id))
     st.caption(f"The form is prefilled from '{baseline_label}'. Saving applies the displayed values to all selected companies.")
 
-    values = _render_settings_form(
-        baseline_settings,
-        "Save Company Settings",
-        "dcf_company_settings_form",
-        company_level_paths=True,
-        preview_conn=conn,
-        preview_company_row=selected_companies_df[selected_companies_df["id"] == baseline_company_id].iloc[0],
-    )
+    baseline_company_row = selected_companies_df[selected_companies_df["id"] == baseline_company_id].iloc[0]
+    if not st.session_state.get(_DCF_COMPANY_ASSUMPTION_UPLOAD_VISIBLE_KEY, False):
+        if st.button("Upload assumptions", key="dcf_company_show_assumption_upload"):
+            st.session_state[_DCF_COMPANY_ASSUMPTION_UPLOAD_VISIBLE_KEY] = True
+
+    values = None
+    if st.session_state.get(_DCF_COMPANY_ASSUMPTION_UPLOAD_VISIBLE_KEY, False):
+        values = _render_company_assumption_upload_workflow(
+            conn,
+            baseline_settings,
+            baseline_company_row,
+            "dcf_company_assumption_upload",
+        )
+        if values is None:
+            return
+        if values.pop("__cancel_upload", False):
+            values = None
+
+    if values is None:
+        values = _render_settings_form(
+            baseline_settings,
+            "Save Company Settings",
+            "dcf_company_settings_form",
+            company_level_paths=True,
+            preview_conn=conn,
+            preview_company_row=baseline_company_row,
+        )
     if values is None:
         return
 
@@ -3420,16 +5073,21 @@ def _render_company_settings_tab(conn) -> None:
         for company_id in selected_company_ids
     ]
     upsert_dcf_company_valuation_settings(conn, rows)
+    st.session_state[_DCF_COMPANY_ASSUMPTION_UPLOAD_VISIBLE_KEY] = False
     st.success(f"Saved company-level DCF settings for {len(selected_company_ids)} compan(y/ies).")
 
 
 def _render_settings_tab(conn) -> None:
-    tab_general, tab_industry_level, tab_company_level = st.tabs(["General", "Industry - Level", "Company - Level"])
-    with tab_general:
+    active_settings_tab = lazy_tab_bar(
+        ["General", "Industry - Level", "Company - Level"],
+        key="dcf_settings_tabs",
+        default="General",
+    )
+    if active_settings_tab == "General":
         _render_general_settings_tab(conn)
-    with tab_industry_level:
+    elif active_settings_tab == "Industry - Level":
         _render_industry_settings_tab(conn)
-    with tab_company_level:
+    elif active_settings_tab == "Company - Level":
         _render_company_settings_tab(conn)
 
 
@@ -3437,16 +5095,19 @@ def render_dcf_valuations_tab() -> None:
     st.title("Valuations")
 
     conn = get_db()
-    tab_dcf = st.tabs(["Discounted Cash Flow"])[0]
+    active_model_tab = lazy_tab_bar(
+        ["Discounted Cash Flow", "Valuation Dashboard"],
+        key="valuation_model_tabs",
+        default="Discounted Cash Flow",
+    )
 
-    with tab_dcf:
-        tab_industry, tab_company, tab_settings = st.tabs(["Industry", "Company", "Settings"])
-
-        with tab_industry:
+    if active_model_tab == "Discounted Cash Flow":
+        active_dcf_tab = lazy_tab_bar(["Industry", "Company", "Settings"], key="dcf_primary_tabs", default="Industry")
+        if active_dcf_tab == "Industry":
             _render_industry_tab(conn)
-
-        with tab_company:
+        elif active_dcf_tab == "Company":
             _render_company_tab(conn)
-
-        with tab_settings:
+        elif active_dcf_tab == "Settings":
             _render_settings_tab(conn)
+    elif active_model_tab == "Valuation Dashboard":
+        _render_valuation_dashboard_tab(conn)

@@ -350,3 +350,6 @@ class TotalLongTermLiabilitiesTtm(Base):
 class WaccAnnual(Base):
     __table__ = db_models.wacc_annual
 
+class AppBackfillState(Base):
+    __table__ = db_models.app_backfill_state
+

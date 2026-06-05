@@ -1847,22 +1847,65 @@ def init_db(conn) -> None:
             ],
         )
 
-    # Refresh/backfill Cost of Equity (derived) using current Levered Beta + US RFR + US ERP
-    refresh_cost_of_equity_all_companies(conn)
-
-    # Refresh/backfill Default Spread (derived) using Interest Coverage Ratio
-    refresh_default_spread_all_companies(conn)
-
-    # Refresh/backfill Pre-Tax Cost of Debt (derived) using US RFR + Default Spread
-    refresh_pre_tax_cost_of_debt_all_companies(conn)
-
-    # Refresh/backfill WACC (derived) using CoE + Pre-Tax CoD + Market Cap + Total Debt + USA tax rate
-    refresh_wacc_all_companies(conn)
-
-    # Refresh/backfill ROIC - WACC Spread (derived) using uploaded ROIC and computed WACC
-    refresh_roic_wacc_spread_all_companies(conn)
-
     conn.commit()
+
+
+def run_derived_metric_backfills_once(conn, name: str = "derived_metric_backfill_v1") -> None:
+    """Run expensive derived valuation metric backfills explicitly, not at startup."""
+    compat_conn = DbCompat(conn) if not hasattr(conn, "cursor") else conn
+    try:
+        cur = compat_conn.cursor()
+        cur.execute("SELECT completed_at FROM app_backfill_state WHERE name = ?", (name,))
+        if cur.fetchone() is not None:
+            return
+
+        refresh_cost_of_equity_all_companies(compat_conn)
+        refresh_default_spread_all_companies(compat_conn)
+        refresh_pre_tax_cost_of_debt_all_companies(compat_conn)
+        refresh_wacc_all_companies(compat_conn)
+        refresh_roic_wacc_spread_all_companies(compat_conn)
+
+        compat_conn.execute(
+            """
+            INSERT INTO app_backfill_state(name, completed_at, source_signature)
+            VALUES(?, ?, ?)
+            ON CONFLICT (name) DO UPDATE SET
+                completed_at = excluded.completed_at,
+                source_signature = excluded.source_signature
+            """,
+            (name, datetime.utcnow().isoformat(), "derived-metrics-v1"),
+        )
+        compat_conn.commit()
+    except Exception:
+        try:
+            compat_conn.rollback()
+        except Exception:
+            pass
+
+
+def refresh_levered_beta_all_companies(conn) -> None:
+    """Refresh derived levered beta rows for every company when global beta inputs change."""
+    try:
+        cur = conn.cursor()
+        rows = cur.execute("SELECT id FROM companies").fetchall()
+        for r in rows:
+            try:
+                compute_and_store_levered_beta(conn, int(r[0]))
+            except Exception:
+                continue
+    except Exception:
+        return
+
+
+def refresh_valuation_derived_metrics_all_companies(conn, include_levered_beta: bool = False) -> None:
+    """Refresh valuation derived metrics after explicit admin/global input writes."""
+    if include_levered_beta:
+        refresh_levered_beta_all_companies(conn)
+    refresh_cost_of_equity_all_companies(conn)
+    refresh_default_spread_all_companies(conn)
+    refresh_pre_tax_cost_of_debt_all_companies(conn)
+    refresh_wacc_all_companies(conn)
+    refresh_roic_wacc_spread_all_companies(conn)
 
 
 
@@ -1923,13 +1966,52 @@ def compute_and_store_wacc(conn: sqlite3.Connection, company_id: int) -> None:
 def refresh_wacc_all_companies(conn: sqlite3.Connection) -> None:
     """Refresh/backfill WACC for all companies (safe to call repeatedly)."""
     try:
-        cur = conn.cursor()
-        rows = cur.execute("SELECT id FROM companies").fetchall()
-        for r in rows:
-            try:
-                compute_and_store_wacc(conn, int(r[0]))
-            except Exception:
-                continue
+        conn.execute(
+            """
+            WITH tax_source AS (
+                SELECT
+                    c.id AS company_id,
+                    COALESCE(
+                        CASE
+                            WHEN UPPER(c.country) IN ('INDIA','IN') THEN (SELECT effective_rate FROM marginal_corporate_tax_rates WHERE country = 'India' LIMIT 1)
+                            WHEN UPPER(c.country) IN ('CHINA','CN','PRC') THEN (SELECT effective_rate FROM marginal_corporate_tax_rates WHERE country = 'China' LIMIT 1)
+                            WHEN UPPER(c.country) IN ('JAPAN','JP') THEN (SELECT effective_rate FROM marginal_corporate_tax_rates WHERE country = 'Japan' LIMIT 1)
+                            ELSE (SELECT effective_rate FROM marginal_corporate_tax_rates WHERE country = 'USA' LIMIT 1)
+                        END,
+                        (SELECT effective_rate FROM marginal_corporate_tax_rates WHERE country = 'USA' LIMIT 1),
+                        0.0
+                    ) AS effective_rate
+                FROM companies c
+            ),
+            tax_decimal AS (
+                SELECT
+                    company_id,
+                    CASE
+                        WHEN ABS(effective_rate) > 1.0 THEN effective_rate / 100.0
+                        ELSE effective_rate
+                    END AS tax_rate
+                FROM tax_source
+            )
+            INSERT INTO wacc_annual(company_id, fiscal_year, wacc)
+            SELECT
+                td.company_id,
+                td.fiscal_year,
+                (pcd.pre_tax_cost_of_debt * (td.total_debt * (1.0 - tax_decimal.tax_rate) / (td.total_debt + mc.market_capitalization)))
+                + (coe.cost_of_equity * (mc.market_capitalization / (td.total_debt + mc.market_capitalization)))
+            FROM total_debt_annual td
+            JOIN market_capitalization_annual mc
+                ON mc.company_id = td.company_id AND mc.fiscal_year = td.fiscal_year
+            JOIN pre_tax_cost_of_debt_annual pcd
+                ON pcd.company_id = td.company_id AND pcd.fiscal_year = td.fiscal_year
+            JOIN cost_of_equity_annual coe
+                ON coe.company_id = td.company_id AND coe.fiscal_year = td.fiscal_year
+            JOIN tax_decimal
+                ON tax_decimal.company_id = td.company_id
+            WHERE (td.total_debt + mc.market_capitalization) != 0.0
+            ON CONFLICT (company_id, fiscal_year) DO UPDATE SET wacc=excluded.wacc
+            """
+        )
+        conn.commit()
     except Exception:
         return
 

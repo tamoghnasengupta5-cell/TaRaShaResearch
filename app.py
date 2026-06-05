@@ -9,35 +9,15 @@ from typing import Dict, List
 import streamlit as st
 import streamlit.components.v1 as components
 
-from admin import render_admin_tab
-from bs_metrics import render_balance_sheet_metrics_tab
-from cap_structure_cost import render_capital_structure_cost_of_capital_tab
-from cash_flow_spread import render_cash_flow_and_spread_tab
-from combined_dashboard import render_combined_dashboard_tab
 from core import get_db
-from data_upload import render_data_upload_tab
-from dcf_valuation import render_dcf_valuations_tab
-from pl_metrics import render_pl_metrics_tab
-from key_data import render_key_data_tab
-from search_aggregate import (
-    DEFAULT_YEAR_RANGE,
-    SEARCH_ACTIVATE_KEY,
-    SEARCH_SELECTED_IDS_KEY,
-    SEARCH_TAB_LABEL,
-    SEARCH_YEAR_RANGE_KEY,
-    get_header_search_context,
-    render_search_aggregate_tab,
-)
-from ttc_efficiency import (
-    render_through_the_cycle_assumptions_tab,
-    render_through_the_cycle_income_statement_score_tab,
-    render_through_the_cycle_balance_sheet_score_tab,
-    render_through_the_cycle_cash_flow_score_tab,
-    render_through_the_cycle_working_capital_score_tab,
-    render_through_the_cycle_combined_score_tab,
-    render_through_the_cycle_formula_tab,
-)
-from ui_theme import inject_dashboard_table_css, install_dataframe_defaults
+from ui_lazy_tabs import lazy_tab_bar
+from ui_theme import company_label_map, inject_dashboard_table_css, install_dataframe_defaults
+
+SEARCH_TAB_LABEL = "Search Aggregate"
+SEARCH_ACTIVATE_KEY = "search_aggregate_activate_tab"
+SEARCH_SELECTED_IDS_KEY = "search_aggregate_selected_ids"
+SEARCH_YEAR_RANGE_KEY = "search_aggregate_year_range"
+DEFAULT_YEAR_RANGE = "Recent - 2020"
 
 # --- Branding assets (kept local to the repo) ---
 _ASSETS_DIR = Path(__file__).parent / "assets"
@@ -75,29 +55,125 @@ def _inject_shell_css() -> None:
         <style>
           :root {
             --app-font-family: Aptos, "Segoe UI Variable", "Segoe UI", Inter, Roboto, Arial, sans-serif;
-            --tab-border-color: rgba(226, 232, 240, 1);
-            --tab-text-color: rgba(71, 85, 105, 1);
-            --tab-hover-text-color: rgba(15, 23, 42, 1);
-            --tab-hover-bg: rgba(241, 245, 249, 0.6);
-            --tab-selected-text-color: rgba(15, 23, 42, 1);
-            --tab-selected-border-color: rgba(59, 130, 246, 1);
+            --app-page-x: 24px;
+            --app-background: #f5f7fb;
+            --app-background-raised: #f8fafc;
+            --app-surface: rgba(255, 255, 255, 0.88);
+            --app-surface-strong: #ffffff;
+            --app-text-primary: #172033;
+            --app-text-secondary: #5f6f86;
+            --app-border: rgba(148, 163, 184, 0.30);
+            --app-border-strong: rgba(148, 163, 184, 0.46);
+            --app-hover-bg: rgba(226, 232, 240, 0.48);
+            --app-focus-ring: rgba(37, 99, 235, 0.24);
+            --app-shadow-soft: 0 14px 36px rgba(15, 23, 42, 0.07);
+            --app-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+            --tab-border-color: var(--app-border);
+            --tab-text-color: var(--app-text-secondary);
+            --tab-hover-text-color: var(--app-text-primary);
+            --tab-hover-bg: var(--app-hover-bg);
+            --tab-selected-text-color: #0f4fd6;
+            --tab-selected-border-color: rgba(37, 99, 235, 0.95);
+            --app-accent: #2563eb;
+            --app-accent-hover: #1d4ed8;
+            --app-accent-soft: #e0f2fe;
+            --app-accent-soft-border: #bae6fd;
+            --app-accent-soft-text: #075985;
           }
 
           @media (prefers-color-scheme: dark) {
             :root {
-              --tab-border-color: rgba(71, 85, 105, 0.65);
-              --tab-text-color: rgba(203, 213, 225, 0.88);
-              --tab-hover-text-color: rgba(248, 250, 252, 1);
-              --tab-hover-bg: rgba(51, 65, 85, 0.45);
-              --tab-selected-text-color: rgba(248, 250, 252, 1);
+              --app-background: #0e1420;
+              --app-background-raised: #111827;
+              --app-surface: rgba(17, 24, 39, 0.88);
+              --app-surface-strong: #111827;
+              --app-text-primary: #f8fafc;
+              --app-text-secondary: rgba(203, 213, 225, 0.82);
+              --app-border: rgba(100, 116, 139, 0.44);
+              --app-border-strong: rgba(148, 163, 184, 0.42);
+              --app-hover-bg: rgba(51, 65, 85, 0.50);
+              --app-focus-ring: rgba(96, 165, 250, 0.30);
+              --app-shadow-soft: 0 16px 40px rgba(0, 0, 0, 0.28);
+              --app-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+              --tab-border-color: var(--app-border);
+              --tab-text-color: var(--app-text-secondary);
+              --tab-hover-text-color: var(--app-text-primary);
+              --tab-hover-bg: var(--app-hover-bg);
+              --tab-selected-text-color: #93c5fd;
               --tab-selected-border-color: rgba(96, 165, 250, 1);
+              --app-accent: #3b82f6;
+              --app-accent-hover: #60a5fa;
+              --app-accent-soft: rgba(14, 116, 144, 0.26);
+              --app-accent-soft-border: rgba(125, 211, 252, 0.34);
+              --app-accent-soft-text: #e0f2fe;
             }
+          }
+
+          :root[data-theme="light"],
+          [data-theme="light"] {
+            --app-background: #f5f7fb;
+            --app-background-raised: #f8fafc;
+            --app-surface: rgba(255, 255, 255, 0.88);
+            --app-surface-strong: #ffffff;
+            --app-text-primary: #172033;
+            --app-text-secondary: #5f6f86;
+            --app-border: rgba(148, 163, 184, 0.30);
+            --app-border-strong: rgba(148, 163, 184, 0.46);
+            --app-hover-bg: rgba(226, 232, 240, 0.48);
+            --app-focus-ring: rgba(37, 99, 235, 0.24);
+            --app-shadow-soft: 0 14px 36px rgba(15, 23, 42, 0.07);
+            --app-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+            --tab-border-color: var(--app-border);
+            --tab-text-color: var(--app-text-secondary);
+            --tab-hover-text-color: var(--app-text-primary);
+            --tab-hover-bg: var(--app-hover-bg);
+            --tab-selected-text-color: #0f4fd6;
+            --tab-selected-border-color: rgba(37, 99, 235, 0.95);
+            --app-accent: #2563eb;
+            --app-accent-hover: #1d4ed8;
+            --app-accent-soft: #e0f2fe;
+            --app-accent-soft-border: #bae6fd;
+            --app-accent-soft-text: #075985;
+          }
+
+          :root[data-theme="dark"],
+          [data-theme="dark"] {
+            --app-background: #0e1420;
+            --app-background-raised: #111827;
+            --app-surface: rgba(17, 24, 39, 0.88);
+            --app-surface-strong: #111827;
+            --app-text-primary: #f8fafc;
+            --app-text-secondary: rgba(203, 213, 225, 0.82);
+            --app-border: rgba(100, 116, 139, 0.44);
+            --app-border-strong: rgba(148, 163, 184, 0.42);
+            --app-hover-bg: rgba(51, 65, 85, 0.50);
+            --app-focus-ring: rgba(96, 165, 250, 0.30);
+            --app-shadow-soft: 0 16px 40px rgba(0, 0, 0, 0.28);
+            --app-shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+            --tab-border-color: var(--app-border);
+            --tab-text-color: var(--app-text-secondary);
+            --tab-hover-text-color: var(--app-text-primary);
+            --tab-hover-bg: var(--app-hover-bg);
+            --tab-selected-text-color: #93c5fd;
+            --tab-selected-border-color: rgba(96, 165, 250, 1);
+            --app-accent: #3b82f6;
+            --app-accent-hover: #60a5fa;
+            --app-accent-soft: rgba(14, 116, 144, 0.26);
+            --app-accent-soft-border: rgba(125, 211, 252, 0.34);
+            --app-accent-soft-text: #e0f2fe;
+          }
+
+          @media (max-width: 1024px) {
+            :root { --app-page-x: 20px; }
+          }
+
+          @media (max-width: 640px) {
+            :root { --app-page-x: 16px; }
           }
 
           html,
           body,
           .stApp,
-          .block-container,
           [data-testid="stAppViewContainer"],
           [data-testid="stAppViewContainer"] *,
           [data-testid="stSidebar"] *,
@@ -107,6 +183,20 @@ def _inject_shell_css() -> None:
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
             text-rendering: optimizeLegibility;
+          }
+
+          html,
+          body,
+          .stApp,
+          [data-testid="stAppViewContainer"],
+          [data-testid="stMain"],
+          [data-testid="stMainBlockContainer"] {
+            background: var(--app-background) !important;
+            color: var(--app-text-primary) !important;
+          }
+
+          [data-testid="stHeader"] {
+            background: transparent !important;
           }
 
           .stMarkdown,
@@ -162,6 +252,7 @@ def _inject_shell_css() -> None:
           [data-testid="stMarkdownContainer"] p {
             font-weight: 400;
             line-height: 1.48;
+            color: inherit;
           }
 
           [data-testid="stWidgetLabel"],
@@ -186,6 +277,7 @@ def _inject_shell_css() -> None:
             font-weight: 625 !important;
             letter-spacing: 0 !important;
             line-height: 1.18 !important;
+            color: var(--app-text-primary) !important;
           }
 
           h1 { font-size: clamp(1.75rem, 2.4vw, 2.35rem) !important; }
@@ -204,6 +296,52 @@ def _inject_shell_css() -> None:
             font-weight: 500 !important;
           }
 
+          [data-testid="stButton"] > button[kind="primary"],
+          [data-testid="stDownloadButton"] > button[kind="primary"],
+          [data-testid="stFormSubmitButton"] > button[kind="primary"],
+          button[data-testid="baseButton-primary"] {
+            background: var(--app-accent) !important;
+            border-color: var(--app-accent) !important;
+            color: #ffffff !important;
+            box-shadow: none !important;
+          }
+
+          [data-testid="stButton"] > button[kind="primary"]:hover,
+          [data-testid="stDownloadButton"] > button[kind="primary"]:hover,
+          [data-testid="stFormSubmitButton"] > button[kind="primary"]:hover,
+          button[data-testid="baseButton-primary"]:hover {
+            background: var(--app-accent-hover) !important;
+            border-color: var(--app-accent-hover) !important;
+            color: #ffffff !important;
+          }
+
+          [data-testid="stButton"] > button:focus,
+          [data-testid="stButton"] > button:focus-visible,
+          [data-testid="stDownloadButton"] > button:focus,
+          [data-testid="stDownloadButton"] > button:focus-visible,
+          [data-testid="stFormSubmitButton"] > button:focus,
+          [data-testid="stFormSubmitButton"] > button:focus-visible {
+            box-shadow: 0 0 0 0.12rem var(--app-focus-ring) !important;
+            outline: none !important;
+          }
+
+          [data-testid="stMultiSelect"] [data-baseweb="select"] > div:focus-within {
+            border-color: var(--app-accent) !important;
+            box-shadow: 0 0 0 0.12rem var(--app-focus-ring) !important;
+          }
+
+          [data-testid="stMultiSelect"] [data-baseweb="tag"] {
+            background: var(--app-accent-soft) !important;
+            border: 1px solid var(--app-accent-soft-border) !important;
+            color: var(--app-accent-soft-text) !important;
+          }
+
+          [data-testid="stMultiSelect"] [data-baseweb="tag"] span,
+          [data-testid="stMultiSelect"] [data-baseweb="tag"] svg {
+            color: var(--app-accent-soft-text) !important;
+            fill: var(--app-accent-soft-text) !important;
+          }
+
           [data-testid="stDataFrame"],
           [data-testid="stTable"],
           [data-testid="stDataEditor"] {
@@ -211,28 +349,72 @@ def _inject_shell_css() -> None:
             line-height: 1.42 !important;
           }
 
-          /* Full-bleed layout: remove Streamlit's default max-width + side padding */
+          /* Shared page grid: keep all app sections on the same left edge. */
+          [data-testid="stMainBlockContainer"],
           .block-container {
             max-width: 100% !important;
-            padding-top: 1.0rem !important;
+            padding-top: 1.15rem !important;
             padding-bottom: 2rem !important;
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+            padding-left: var(--app-page-x) !important;
+            padding-right: var(--app-page-x) !important;
           }
 
-          /* Some Streamlit versions add padding on these containers too */
           [data-testid="stAppViewContainer"],
-          [data-testid="stAppViewContainer"] > .main,
-          [data-testid="stMainBlockContainer"] {
-            padding-left: 10px !important;
-            padding-right: 10px !important;
+          [data-testid="stAppViewContainer"] > .main {
+            padding-left: 0 !important;
+            padding-right: 0 !important;
           }
 
-          /* StockAnalysis-like tabs (applies to top-level tabs and nested sub-tabs) */
+          [data-testid="stMainBlockContainer"] .block-container {
+            padding-left: 0 !important;
+            padding-right: 0 !important;
+          }
+
+          [data-testid="stMainBlockContainer"] > div,
+          .block-container > div {
+            max-width: 100% !important;
+          }
+
+          [data-testid="stVerticalBlock"] {
+            gap: 0.85rem;
+          }
+
+          [data-testid="stForm"],
+          [data-testid="stExpander"],
+          [data-testid="stVerticalBlockBorderWrapper"] {
+            border: 1px solid var(--app-border) !important;
+            border-radius: 10px !important;
+            background: var(--app-surface) !important;
+            box-shadow: var(--app-shadow-soft), var(--app-shadow-inset) !important;
+          }
+
+          [data-testid="stForm"] {
+            padding: 1rem 1.05rem 1.05rem !important;
+          }
+
+          [data-testid="stExpander"] {
+            overflow: hidden;
+          }
+
+          [data-baseweb="select"] > div,
+          [data-baseweb="input"] > div,
+          [data-baseweb="textarea"] textarea {
+            background: var(--app-surface-strong) !important;
+            border-color: var(--app-border-strong) !important;
+          }
+
+          [data-baseweb="select"] > div:focus-within,
+          [data-baseweb="input"] > div:focus-within,
+          [data-baseweb="textarea"] textarea:focus {
+            border-color: var(--app-accent) !important;
+            box-shadow: 0 0 0 0.12rem var(--app-focus-ring) !important;
+          }
+
+          /* Native Streamlit tabs used inside a few legacy screens. */
           [data-testid="stTabs"] [data-baseweb="tab-list"] {
             gap: 0.25rem;
-            padding-left: 10px;
-            padding-right: 10px;
+            padding-left: 0;
+            padding-right: 0;
             border-bottom: 1px solid var(--tab-border-color);
           }
 
@@ -242,14 +424,16 @@ def _inject_shell_css() -> None:
             font-family: var(--app-font-family) !important;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
-            font-weight: 525 !important;
-            font-size: 0.95rem !important;
+            font-weight: 540 !important;
+            font-size: 0.93rem !important;
             line-height: 1.22 !important;
-            padding: 0.55rem 0.75rem !important;
+            padding: 0.68rem 0.9rem !important;
             border: none !important;
             border-bottom: 2px solid transparent !important;
-            border-radius: 0 !important;
+            border-radius: 8px 8px 0 0 !important;
             margin: 0 !important;
+            min-height: 2.4rem !important;
+            transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
           }
 
           [data-testid="stTabs"] button[role="tab"]:hover {
@@ -266,7 +450,8 @@ def _inject_shell_css() -> None:
 
           [data-testid="stTabs"] button[role="tab"]:focus,
           [data-testid="stTabs"] button[role="tab"]:focus-visible {
-            outline: none !important;
+            outline: 2px solid var(--app-focus-ring) !important;
+            outline-offset: -2px !important;
             box-shadow: none !important;
           }
 
@@ -284,20 +469,20 @@ def _inject_shell_css() -> None:
           /* Home header search styling, scoped so other tabs keep their existing widget look */
           .st-key-home_header_search [data-testid="stMultiSelect"] [data-baseweb="select"] > div,
           .st-key-home_header_search [data-testid="stSelectbox"] [data-baseweb="select"] > div {
-            border: 1px solid #d4dbe4 !important;
-            box-shadow: none !important;
-            min-height: 2.65rem !important;
+            border: 1px solid var(--app-border-strong) !important;
+            box-shadow: var(--app-shadow-inset) !important;
+            min-height: 2.75rem !important;
           }
 
           .st-key-home_header_search [data-testid="stMultiSelect"] [data-baseweb="select"] > div {
-            background: #f9fafb !important;
-            border-radius: 999px !important;
+            background: var(--app-surface-strong) !important;
+            border-radius: 12px !important;
             padding-left: 0.35rem !important;
           }
 
           .st-key-home_header_search [data-testid="stSelectbox"] [data-baseweb="select"] > div {
-            background: #f0f2f6 !important;
-            border-radius: 0.7rem !important;
+            background: var(--app-surface-strong) !important;
+            border-radius: 12px !important;
           }
 
           .st-key-home_header_search [data-testid="stMultiSelect"] input,
@@ -307,54 +492,45 @@ def _inject_shell_css() -> None:
           .st-key-home_header_search [data-testid="stSelectbox"] [data-baseweb="select"] input,
           .st-key-home_header_search [data-testid="stSelectbox"] [data-baseweb="select"] svg,
           .st-key-home_header_search [data-testid="stMultiSelect"] [data-baseweb="select"] svg {
-            color: #111827 !important;
+            color: var(--app-text-primary) !important;
             opacity: 1 !important;
           }
 
           .st-key-home_header_search [data-testid="stMultiSelect"] [data-baseweb="tag"] {
-            background: #e9eff7 !important;
-            border: 1px solid #d4dbe4 !important;
-            border-radius: 999px !important;
+            background: var(--app-accent-soft) !important;
+            border: 1px solid var(--app-accent-soft-border) !important;
+            border-radius: 8px !important;
           }
 
           .st-key-home_header_search [data-testid="stButton"] > button {
-            background: #f3f4f6 !important;
-            border: 1px solid #d4dbe4 !important;
-            border-radius: 0.7rem !important;
-            box-shadow: none !important;
-            color: #5b6472 !important;
+            background: var(--app-surface-strong) !important;
+            border: 1px solid var(--app-border-strong) !important;
+            border-radius: 12px !important;
+            box-shadow: var(--app-shadow-inset) !important;
+            color: var(--app-text-primary) !important;
             font-size: 0.95rem !important;
-            font-weight: 700 !important;
-            min-height: 2.65rem !important;
+            font-weight: 625 !important;
+            min-height: 2.75rem !important;
             padding: 0 !important;
           }
 
           .st-key-home_header_search [data-testid="stButton"] > button:hover {
-            background: #e8ecf1 !important;
-            border-color: #c8d0da !important;
-            color: #344054 !important;
+            background: var(--app-hover-bg) !important;
+            border-color: var(--app-border-strong) !important;
+            color: var(--app-text-primary) !important;
           }
 
           .st-key-home_header_search [data-testid="stButton"] > button:focus,
           .st-key-home_header_search [data-testid="stButton"] > button:focus-visible {
-            border-color: #b8c3d0 !important;
-            box-shadow: none !important;
+            border-color: var(--app-accent) !important;
+            box-shadow: 0 0 0 0.12rem var(--app-focus-ring) !important;
             outline: none !important;
           }
 
           /* Mobile responsiveness (primarily affects the Home shell) */
           @media (max-width: 640px) {
             .block-container {
-              padding-left: 6px !important;
-              padding-right: 6px !important;
               padding-top: 0.6rem !important;
-            }
-
-            [data-testid="stAppViewContainer"],
-            [data-testid="stAppViewContainer"] > .main,
-            [data-testid="stMainBlockContainer"] {
-              padding-left: 6px !important;
-              padding-right: 6px !important;
             }
 
             /* Make tabs horizontally scrollable instead of overflowing */
@@ -363,18 +539,25 @@ def _inject_shell_css() -> None:
               overflow-x: auto;
               flex-wrap: nowrap;
               -webkit-overflow-scrolling: touch;
-              padding-left: 6px;
-              padding-right: 6px;
+              padding-left: 0;
+              padding-right: 0;
               border-bottom: 1px solid var(--tab-border-color);
             }
             [data-testid="stTabs"] button[role="tab"] {
               flex: 0 0 auto;
               white-space: nowrap;
+              min-height: 2.75rem !important;
+            }
+
+            [data-testid="stButton"] > button,
+            [data-testid="stDownloadButton"] > button,
+            [data-testid="stFormSubmitButton"] > button {
+              min-height: 2.75rem !important;
             }
 
             /* Keep the logo from dominating the top on narrow screens */
             div[data-testid="stImage"] img {
-              max-width: 160px;
+              max-width: 150px;
               height: auto;
             }
           }
@@ -417,6 +600,38 @@ def _submit_header_search() -> None:
     selected_ids = [int(x) for x in st.session_state.get(SEARCH_SELECTED_IDS_KEY, []) if str(x).isdigit()]
     if selected_ids:
         st.session_state[SEARCH_ACTIVATE_KEY] = True
+        st.session_state["app_top_nav_active"] = SEARCH_TAB_LABEL
+
+
+def _get_header_search_context(conn) -> tuple:
+    from core import list_companies, read_df
+
+    companies_df = list_companies(conn)
+    years_df = read_df("SELECT MIN(fiscal_year) AS min_year, MAX(fiscal_year) AS max_year FROM revenues_annual", conn)
+    if years_df is None or years_df.empty:
+        return companies_df, [DEFAULT_YEAR_RANGE]
+
+    min_year = years_df.iloc[0]["min_year"]
+    max_year = years_df.iloc[0]["max_year"]
+    if min_year is None or max_year is None or pd_is_na(min_year) or pd_is_na(max_year):
+        return companies_df, [DEFAULT_YEAR_RANGE]
+
+    min_year = int(min_year)
+    max_year = int(max_year)
+    start_year = max(min_year, max_year - 10)
+    year_options = [f"Recent - {year}" for year in range(max_year - 1, start_year - 1, -1)]
+    if DEFAULT_YEAR_RANGE not in year_options:
+        year_options.insert(0, DEFAULT_YEAR_RANGE)
+    return companies_df, year_options
+
+
+def pd_is_na(value: object) -> bool:
+    try:
+        import pandas as pd
+
+        return bool(pd.isna(value))
+    except Exception:
+        return value is None
 
 
 def _render_header() -> tuple:
@@ -424,7 +639,7 @@ def _render_header() -> tuple:
     inject_dashboard_table_css()
 
     conn = get_db()
-    companies_df, year_options = get_header_search_context(conn)
+    companies_df, year_options = _get_header_search_context(conn)
     current_year_range = str(st.session_state.get(SEARCH_YEAR_RANGE_KEY, DEFAULT_YEAR_RANGE) or DEFAULT_YEAR_RANGE)
     if current_year_range not in year_options:
         year_options = [current_year_range, *[opt for opt in year_options if opt != current_year_range]]
@@ -437,10 +652,7 @@ def _render_header() -> tuple:
             if _LOGO_PATH.exists():
                 st.image(str(_LOGO_PATH), width=200)
         with controls_col:
-            company_label_map = {
-                int(row["id"]): f"{row['name']} ({row['ticker']})"
-                for _, row in companies_df.iterrows()
-            }
+            header_company_label_map = company_label_map(companies_df)
             if SEARCH_SELECTED_IDS_KEY not in st.session_state:
                 st.session_state[SEARCH_SELECTED_IDS_KEY] = []
             with st.container(key="home_header_search"):
@@ -448,8 +660,8 @@ def _render_header() -> tuple:
                 with search_col:
                     st.multiselect(
                         'Company Search',
-                        options=list(company_label_map.keys()),
-                        format_func=lambda company_id: company_label_map.get(company_id, str(company_id)),
+                        options=list(header_company_label_map.keys()),
+                        format_func=lambda company_id: header_company_label_map.get(company_id, str(company_id)),
                         key=SEARCH_SELECTED_IDS_KEY,
                         label_visibility='collapsed',
                         placeholder='Company or stock symbol...',
@@ -466,17 +678,21 @@ def _render_header() -> tuple:
                     if st.button('Go', key='header_search_submit', use_container_width=True):
                         _submit_header_search()
 
-        tab_home, tab_search_aggregate, tab_key_data, tab_equity_research, tab_valuations = st.tabs([
-            'Home',
-            SEARCH_TAB_LABEL,
-            'Key Data',
-            'Equity Research',
-            'Valuations',
-        ])
         if st.session_state.get(SEARCH_ACTIVATE_KEY):
-            _activate_top_level_tab(SEARCH_TAB_LABEL)
             st.session_state[SEARCH_ACTIVATE_KEY] = False
-        return tab_home, tab_search_aggregate, tab_key_data, tab_equity_research, tab_valuations
+            st.session_state["app_top_nav_active"] = SEARCH_TAB_LABEL
+
+        return lazy_tab_bar(
+            [
+                "Home",
+                SEARCH_TAB_LABEL,
+                "Key Data",
+                "Equity Research",
+                "Valuations",
+            ],
+            key="app_top_nav",
+            default="Home",
+        )
 
 def _render_hero_carousel(image_paths: List[Path], slide_meta: List[Dict] | None = None) -> None:
     """
@@ -1176,19 +1392,24 @@ def _render_home_body() -> None:
     _render_featured_articles_carousel(_get_featured_articles())
 
 def _render_equity_research_body() -> None:
-    tab_upload, tab_value_creation, tab_ttc = st.tabs(
+    active_tab = lazy_tab_bar(
         [
             "Data Upload",
             "Value Creation Stability Score",
             "Through-the-Cycle Efficiency Score",
-        ]
+        ],
+        key="equity_research_primary",
+        default="Data Upload",
     )
 
-    with tab_upload:
-        render_data_upload_tab()
+    if active_tab == "Data Upload":
+        from data_upload import render_data_upload_tab
 
-    with tab_value_creation:
-        tab_pl, tab_bs, tab_cs, tab_cf, tab_combined, tab_admin = st.tabs(
+        render_data_upload_tab()
+        return
+
+    if active_tab == "Value Creation Stability Score":
+        active_value_tab = lazy_tab_bar(
             [
                 "P&L Metrics Dashboard",
                 "Balance Sheet Metrics and Dashboard",
@@ -1196,29 +1417,39 @@ def _render_equity_research_body() -> None:
                 "Cash Flow and Reinvestment",
                 "Combined Dashboard",
                 "Admin",
-            ]
+            ],
+            key="value_creation_tabs",
+            default="P&L Metrics Dashboard",
         )
 
-        with tab_pl:
+        if active_value_tab == "P&L Metrics Dashboard":
+            from pl_metrics import render_pl_metrics_tab
+
             render_pl_metrics_tab()
+        elif active_value_tab == "Balance Sheet Metrics and Dashboard":
+            from bs_metrics import render_balance_sheet_metrics_tab
 
-        with tab_bs:
             render_balance_sheet_metrics_tab()
+        elif active_value_tab == "Capital structure & Spread":
+            from cap_structure_cost import render_capital_structure_cost_of_capital_tab
 
-        with tab_cs:
             render_capital_structure_cost_of_capital_tab()
+        elif active_value_tab == "Cash Flow and Reinvestment":
+            from cash_flow_spread import render_cash_flow_and_spread_tab
 
-        with tab_cf:
             render_cash_flow_and_spread_tab()
+        elif active_value_tab == "Combined Dashboard":
+            from combined_dashboard import render_combined_dashboard_tab
 
-        with tab_combined:
             render_combined_dashboard_tab()
+        elif active_value_tab == "Admin":
+            from admin import render_admin_tab
 
-        with tab_admin:
             render_admin_tab()
+        return
 
-    with tab_ttc:
-        tab_income_stmt, tab_balance_sheet, tab_cash_flow, tab_working_capital, tab_combined, tab_admin = st.tabs(
+    if active_tab == "Through-the-Cycle Efficiency Score":
+        active_ttc_tab = lazy_tab_bar(
             [
                 "Income Statement Efficiency Score",
                 "Balance Sheet Strength Score",
@@ -1226,47 +1457,66 @@ def _render_equity_research_body() -> None:
                 "Working Capital Efficiency Score",
                 "Combined Score",
                 "Admin",
-            ]
+            ],
+            key="ttc_tabs",
+            default="Income Statement Efficiency Score",
         )
-        with tab_income_stmt:
+
+        if active_ttc_tab == "Income Statement Efficiency Score":
+            from ttc_efficiency import render_through_the_cycle_income_statement_score_tab
+
             render_through_the_cycle_income_statement_score_tab()
-        with tab_balance_sheet:
+        elif active_ttc_tab == "Balance Sheet Strength Score":
+            from ttc_efficiency import render_through_the_cycle_balance_sheet_score_tab
+
             render_through_the_cycle_balance_sheet_score_tab()
-        with tab_cash_flow:
+        elif active_ttc_tab == "Cash Flow Efficiency Score":
+            from ttc_efficiency import render_through_the_cycle_cash_flow_score_tab
+
             render_through_the_cycle_cash_flow_score_tab()
-        with tab_working_capital:
+        elif active_ttc_tab == "Working Capital Efficiency Score":
+            from ttc_efficiency import render_through_the_cycle_working_capital_score_tab
+
             render_through_the_cycle_working_capital_score_tab()
-        with tab_combined:
+        elif active_ttc_tab == "Combined Score":
+            from ttc_efficiency import render_through_the_cycle_combined_score_tab
+
             render_through_the_cycle_combined_score_tab()
-        with tab_admin:
-            tab_assumptions, tab_formula = st.tabs(["Assumptions", "Formula"])
-            with tab_assumptions:
+        elif active_ttc_tab == "Admin":
+            active_admin_tab = lazy_tab_bar(["Assumptions", "Formula"], key="ttc_admin_tabs", default="Assumptions")
+            if active_admin_tab == "Assumptions":
+                from ttc_efficiency import render_through_the_cycle_assumptions_tab
+
                 render_through_the_cycle_assumptions_tab()
-            with tab_formula:
+            else:
+                from ttc_efficiency import render_through_the_cycle_formula_tab
+
                 render_through_the_cycle_formula_tab()
 
 def _render_key_data_body() -> None:
+    from key_data import render_key_data_tab
+
     render_key_data_tab()
 
 def _render_footer() -> None:
     # Intentionally empty for now (layout placeholder).
     st.markdown("", unsafe_allow_html=True)
 
-tab_home, tab_search_aggregate, tab_key_data, tab_equity_research, tab_valuations = _render_header()
+active_top_tab = _render_header()
 
-with tab_home:
+if active_top_tab == "Home":
     _render_home_body()
-
-with tab_key_data:
+elif active_top_tab == "Key Data":
     _render_key_data_body()
+elif active_top_tab == SEARCH_TAB_LABEL:
+    from search_aggregate import render_search_aggregate_tab
 
-with tab_search_aggregate:
     render_search_aggregate_tab()
-
-with tab_equity_research:
+elif active_top_tab == "Equity Research":
     _render_equity_research_body()
+elif active_top_tab == "Valuations":
+    from dcf_valuation import render_dcf_valuations_tab
 
-with tab_valuations:
     render_dcf_valuations_tab()
 
 _render_footer()
