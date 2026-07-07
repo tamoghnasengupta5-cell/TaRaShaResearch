@@ -105,7 +105,12 @@ def lazy_tab_bar(labels: Sequence[str], key: str, default: str | None = None) ->
             font-size: 0.96rem !important;
           }}
 
-          .st-key-{class_suffix} [role="radiogroup"] label > div:first-child {{
+          .st-key-{class_suffix} [role="radiogroup"] label > div:first-child,
+          .st-key-{class_suffix} [role="radiogroup"] label div[role="radio"],
+          .st-key-{class_suffix} [role="radiogroup"] label [aria-checked],
+          .st-key-{class_suffix} [role="radiogroup"] label input[type="radio"],
+          .st-key-{class_suffix} [role="radiogroup"] label input[type="radio"] + div,
+          .st-key-{class_suffix} [role="radiogroup"] label [data-baseweb="radio"] > div:first-child {{
             display: none !important;
           }}
 
