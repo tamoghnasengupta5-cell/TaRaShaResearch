@@ -46,9 +46,6 @@ class StddevWeightFactors(Base):
 class TtcAssumptions(Base):
     __table__ = db_models.ttc_assumptions
 
-class BusinessQuarterTrendWeights(Base):
-    __table__ = db_models.business_quarter_trend_weights
-
 
 class AccumulatedProfitAnnual(Base):
     __table__ = db_models.accumulated_profit_annual
@@ -61,9 +58,6 @@ class CapitalEmployedAnnual(Base):
 
 class CapitalExpendituresAnnual(Base):
     __table__ = db_models.capital_expenditures_annual
-
-class CapitalExpendituresQuarterly(Base):
-    __table__ = db_models.capital_expenditures_quarterly
 
 class CashAndCashEquivalentsAnnual(Base):
     __table__ = db_models.cash_and_cash_equivalents_annual
@@ -79,15 +73,6 @@ class SharesOutstandingBasicTtm(Base):
 
 class CompanyGroupMembers(Base):
     __table__ = db_models.company_group_members
-
-class RelativeValuationCategories(Base):
-    __table__ = db_models.relative_valuation_categories
-
-class RelativeValuationSubcategories(Base):
-    __table__ = db_models.relative_valuation_subcategories
-
-class RelativeValuationCompanyAssignments(Base):
-    __table__ = db_models.relative_valuation_company_assignments
 
 class ComprehensiveIncomeAnnual(Base):
     __table__ = db_models.comprehensive_income_annual
@@ -200,17 +185,11 @@ class OpMarginTtm(Base):
 class OperatingIncomeAnnual(Base):
     __table__ = db_models.operating_income_annual
 
-class OperatingIncomeQuarterly(Base):
-    __table__ = db_models.operating_income_quarterly
-
 class OperatingIncomeTtm(Base):
     __table__ = db_models.operating_income_ttm
 
 class OperatingCashFlowAnnual(Base):
     __table__ = db_models.operating_cash_flow_annual
-
-class OperatingCashFlowQuarterly(Base):
-    __table__ = db_models.operating_cash_flow_quarterly
 
 class OperatingCashFlowTtm(Base):
     __table__ = db_models.operating_cash_flow_ttm
@@ -235,9 +214,6 @@ class OtherLongTermAssetsTtm(Base):
 
 class DeferredRevenueAnnual(Base):
     __table__ = db_models.deferred_revenue_annual
-
-class DeferredRevenueQuarterly(Base):
-    __table__ = db_models.deferred_revenue_quarterly
 
 class DeferredRevenueTtm(Base):
     __table__ = db_models.deferred_revenue_ttm
@@ -287,9 +263,6 @@ class RevenueYieldNonCashWorkingCapitalAnnual(Base):
 class RevenuesAnnual(Base):
     __table__ = db_models.revenues_annual
 
-class RevenuesQuarterly(Base):
-    __table__ = db_models.revenues_quarterly
-
 class RevenuesTtm(Base):
     __table__ = db_models.revenues_ttm
 
@@ -325,9 +298,6 @@ class ShortTermInvestmentsTtm(Base):
 
 class AccountsReceivableAnnual(Base):
     __table__ = db_models.accounts_receivable_annual
-
-class AccountsReceivableQuarterly(Base):
-    __table__ = db_models.accounts_receivable_quarterly
 
 class AccountsReceivableTtm(Base):
     __table__ = db_models.accounts_receivable_ttm
