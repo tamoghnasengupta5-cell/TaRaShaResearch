@@ -82,6 +82,12 @@ def lazy_tab_bar(labels: Sequence[str], key: str, default: str | None = None) ->
             outline-offset: -2px !important;
           }}
 
+          .st-key-{class_suffix} [role="radiogroup"] label [data-testid="stMarkdownContainer"],
+          .st-key-{class_suffix} [role="radiogroup"] label [data-testid="stMarkdownContainer"] * {{
+            display: block !important;
+            visibility: visible !important;
+          }}
+
           .st-key-{class_suffix} [role="radiogroup"] label [data-testid="stMarkdownContainer"] p {{
             color: inherit !important;
             font-family: var(--app-font-family) !important;
@@ -105,12 +111,10 @@ def lazy_tab_bar(labels: Sequence[str], key: str, default: str | None = None) ->
             font-size: 0.96rem !important;
           }}
 
-          .st-key-{class_suffix} [role="radiogroup"] label > div:first-child,
-          .st-key-{class_suffix} [role="radiogroup"] label div[role="radio"],
-          .st-key-{class_suffix} [role="radiogroup"] label [aria-checked],
-          .st-key-{class_suffix} [role="radiogroup"] label input[type="radio"],
-          .st-key-{class_suffix} [role="radiogroup"] label input[type="radio"] + div,
-          .st-key-{class_suffix} [role="radiogroup"] label [data-baseweb="radio"] > div:first-child {{
+          .st-key-{class_suffix} [role="radiogroup"] label > div:first-child:not([data-testid="stMarkdownContainer"]),
+          .st-key-{class_suffix} [role="radiogroup"] label > span:first-child,
+          .st-key-{class_suffix} [role="radiogroup"] label [data-baseweb="radio"] > div:first-child,
+          .st-key-{class_suffix} [role="radiogroup"] label input[type="radio"] {{
             display: none !important;
           }}
 
