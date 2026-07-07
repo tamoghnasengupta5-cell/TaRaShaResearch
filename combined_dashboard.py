@@ -230,7 +230,7 @@ def render_combined_dashboard_tab() -> None:
         # -----------------------------
         selection_mode = st.radio(
             "Analyze by",
-            ["Company", "Industry Bucket"],
+            ["Company", "Industry Bucket", "Category / Sub-Category"],
             horizontal=True,
             key="combined_score_mode",
         )
@@ -246,7 +246,7 @@ def render_combined_dashboard_tab() -> None:
                 key="combined_score_company_select",
             )
             score_company_ids = [int(company_id) for company_id in selected_companies]
-        else:
+        elif selection_mode == "Industry Bucket":
             groups_df = read_df(
                 "SELECT id, name FROM company_groups ORDER BY name",
                 conn,
@@ -275,9 +275,59 @@ def render_combined_dashboard_tab() -> None:
                     )
                     if not bucket_members_df.empty:
                         score_company_ids = [int(x) for x in bucket_members_df["company_id"].tolist()]
+        else:
+            categories_df = read_df(
+                """
+                SELECT
+                    c.name AS master_category,
+                    s.id AS subcategory_id,
+                    s.name AS subcategory
+                FROM relative_valuation_categories c
+                JOIN relative_valuation_subcategories s
+                    ON s.category_id = c.id
+                ORDER BY c.name, s.name
+                """,
+                conn,
+            )
+            if categories_df is None or categories_df.empty:
+                st.info("No categories found yet.")
+                return
+
+            master_categories = sorted(categories_df["master_category"].dropna().astype(str).unique().tolist())
+            selected_master = st.selectbox(
+                "Select category",
+                options=master_categories,
+                key="combined_score_category_select",
+            )
+            subcategory_rows = categories_df[categories_df["master_category"] == selected_master].copy()
+            subcategory_id_to_name = {
+                int(row["subcategory_id"]): str(row["subcategory"])
+                for _, row in subcategory_rows.iterrows()
+            }
+            selected_subcategory_ids = st.multiselect(
+                "Select one or more sub-categories for Overall Score computation",
+                options=list(subcategory_id_to_name.keys()),
+                format_func=lambda subcategory_id: subcategory_id_to_name.get(int(subcategory_id), str(subcategory_id)),
+                key="combined_score_subcategory_select",
+            )
+
+            if selected_subcategory_ids:
+                subcategory_ids = sorted({int(subcategory_id) for subcategory_id in selected_subcategory_ids})
+                placeholders = ",".join(["?"] * len(subcategory_ids))
+                category_members_df = read_df(
+                    f"""
+                    SELECT DISTINCT company_id
+                    FROM relative_valuation_company_assignments
+                    WHERE subcategory_id IN ({placeholders})
+                    """,
+                    conn,
+                    params=subcategory_ids,
+                )
+                if category_members_df is not None and not category_members_df.empty:
+                    score_company_ids = [int(x) for x in category_members_df["company_id"].tolist()]
 
         if not score_company_ids:
-            st.info("Select at least one company or bucket to compute Overall Scores.")
+            st.info("Select at least one company, industry bucket, or sub-category to compute Overall Scores.")
             return
 
         score_company_ids = sorted(set(score_company_ids))
@@ -835,7 +885,7 @@ def render_combined_dashboard_tab() -> None:
 
         if not rows:
             progress_bar.progress(100, text="No overall scores to display for the selected filters.")
-            st.info("No overall scores to display for the selected year range and buckets.")
+            st.info("No overall scores to display for the selected year range and filters.")
             return
 
 
@@ -1080,4 +1130,3 @@ def render_combined_dashboard_tab() -> None:
             key="combined_overall_score_excel_download",
             on_click="ignore",
         )
-

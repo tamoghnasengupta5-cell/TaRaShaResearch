@@ -23,6 +23,14 @@ revenues_annual = Table(
     Column("revenue", Float, nullable=False),
 )
 
+revenues_quarterly = Table(
+    "revenues_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("revenue", Float, nullable=False),
+)
+
 revenues_ttm = Table(
     "revenues_ttm",
     metadata,
@@ -183,6 +191,14 @@ operating_income_annual = Table(
     Column("operating_income", Float, nullable=False),
 )
 
+operating_income_quarterly = Table(
+    "operating_income_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("operating_income", Float, nullable=False),
+)
+
 operating_income_ttm = Table(
     "operating_income_ttm",
     metadata,
@@ -236,6 +252,14 @@ accounts_receivable_annual = Table(
     metadata,
     Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
     Column("fiscal_year", Integer, primary_key=True),
+    Column("accounts_receivable", Float, nullable=False),
+)
+
+accounts_receivable_quarterly = Table(
+    "accounts_receivable_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
     Column("accounts_receivable", Float, nullable=False),
 )
 
@@ -495,11 +519,27 @@ capital_expenditures_annual = Table(
     Column("capital_expenditures", Float, nullable=False),
 )
 
+capital_expenditures_quarterly = Table(
+    "capital_expenditures_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("capital_expenditures", Float, nullable=False),
+)
+
 operating_cash_flow_annual = Table(
     "operating_cash_flow_annual",
     metadata,
     Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
     Column("fiscal_year", Integer, primary_key=True),
+    Column("operating_cash_flow", Float, nullable=False),
+)
+
+operating_cash_flow_quarterly = Table(
+    "operating_cash_flow_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
     Column("operating_cash_flow", Float, nullable=False),
 )
 
@@ -564,6 +604,14 @@ deferred_revenue_annual = Table(
     metadata,
     Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
     Column("fiscal_year", Integer, primary_key=True),
+    Column("deferred_revenue", Float, nullable=False),
+)
+
+deferred_revenue_quarterly = Table(
+    "deferred_revenue_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
     Column("deferred_revenue", Float, nullable=False),
 )
 
@@ -829,6 +877,29 @@ company_group_members = Table(
     Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
 )
 
+relative_valuation_categories = Table(
+    "relative_valuation_categories",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", Text, nullable=False, unique=True),
+)
+
+relative_valuation_subcategories = Table(
+    "relative_valuation_subcategories",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("category_id", Integer, ForeignKey("relative_valuation_categories.id", ondelete="CASCADE"), nullable=False),
+    Column("name", Text, nullable=False),
+    UniqueConstraint("category_id", "name", name="uq_relative_valuation_subcategories_category_name"),
+)
+
+relative_valuation_company_assignments = Table(
+    "relative_valuation_company_assignments",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("subcategory_id", Integer, ForeignKey("relative_valuation_subcategories.id", ondelete="CASCADE"), primary_key=True),
+)
+
 risk_free_rates = Table(
     "risk_free_rates",
     metadata,
@@ -977,6 +1048,15 @@ ttc_assumptions = Table(
     Column("units", Text, nullable=False, server_default=""),
     Column("sort_order", Integer, nullable=False),
     UniqueConstraint("section", "sort_order", name="uq_ttc_assumptions_section_order"),
+)
+
+business_quarter_trend_weights = Table(
+    "business_quarter_trend_weights",
+    metadata,
+    Column("parameter_key", Text, primary_key=True),
+    Column("parameter", Text, nullable=False),
+    Column("weight", Float, nullable=False),
+    Column("sort_order", Integer, nullable=False),
 )
 
 app_backfill_state = Table(
