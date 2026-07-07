@@ -363,7 +363,7 @@ def _render_pl_key_data() -> None:
         # YoY growth for display (keeps the same approach as Revenue).
         df_m["yoy_growth"] = df_m[value_col].astype(float).pct_change()
         med_g, std_g = compute_growth_stats(
-            ann_df,
+            stats_df if stats_df is not None else ann_df,
             yr_start,
             yr_end,
             stdev_sample=stdev_sample,
@@ -942,7 +942,7 @@ def _render_bs_key_data() -> None:
 
         df_m["yoy_growth"] = df_m[value_col].astype(float).pct_change()
         med_g, std_g = compute_growth_stats(
-            (stats_df if stats_df is not None else ann_df),
+            ann_df,
             yr_start,
             yr_end,
             stdev_sample=stdev_sample,
@@ -1095,7 +1095,13 @@ def _render_bs_key_data() -> None:
             yr_start,
             yr_end,
             stdev_sample=sample,
-            stats_df=ann_acc_stats,
+        )
+        acc_med_g, acc_std_g = compute_growth_stats(
+            ann_acc_stats,
+            yr_start,
+            yr_end,
+            stdev_sample=sample,
+            value_col="accumulated_profit",
         )
         roe_by_year, roe_growth_by_year, _, _ = build_metric(
             ann_roe, "roe", yr_start, yr_end, stdev_sample=sample
