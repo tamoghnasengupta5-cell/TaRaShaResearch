@@ -1396,6 +1396,7 @@ def _render_equity_research_body() -> None:
         [
             "Data Upload",
             "Value Creation Stability Score",
+            "Quarterly Business Trend Score",
             "Through-the-Cycle Efficiency Score",
         ],
         key="equity_research_primary",
@@ -1446,6 +1447,12 @@ def _render_equity_research_body() -> None:
             from admin import render_admin_tab
 
             render_admin_tab()
+        return
+
+    if active_tab == "Quarterly Business Trend Score":
+        from quarterly_business_trend import render_quarterly_business_trend_score_tab
+
+        render_quarterly_business_trend_score_tab()
         return
 
     if active_tab == "Through-the-Cycle Efficiency Score":

@@ -147,7 +147,7 @@ def _write_bulk_batch_log(
     log_dir.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_path = log_dir / f"bulk_upload_batch_{batch_number:03d}_{timestamp}.log"
-    header = "Ticker\tCompany\tStatus\tPercent\tFile\tMessage"
+    header = "Ticker\tCompany\tStatus\tPercent\tFile\tQuarterlyRows\tBusinessQuarterTrendScore\tMessage"
     metadata = [
         f"# Batch {batch_number}",
         f"# Companies {batch_start}-{batch_end} of {total_files}",
@@ -225,9 +225,13 @@ def _run_bulk_upload_batch(
             progress.progress(100)
             _render_bulk_status(status_placeholder, company_label, "Success", "100%", "#1f7a1f")
             warning_msg = " | ".join(result.get("warnings", []))
+            quarterly_counts = result.get("quarterly_upload_counts", {})
+            quarterly_rows = sum(int(v) for v in quarterly_counts.values()) if isinstance(quarterly_counts, dict) else 0
+            bq_score = result.get("business_quarter_trend_score")
+            bq_score_text = "" if bq_score is None else str(bq_score)
             success_count += 1
             log_lines.append(
-                f"{ticker}\t{company_label}\tSUCCESS\t100\t{file_path.name}\t{warning_msg}"
+                f"{ticker}\t{company_label}\tSUCCESS\t100\t{file_path.name}\t{quarterly_rows}\t{bq_score_text}\t{warning_msg}"
             )
         except Exception as e:
             try:
@@ -239,7 +243,7 @@ def _run_bulk_upload_batch(
             failure_count += 1
             errors.append(f"{ticker}: {e}")
             log_lines.append(
-                f"{ticker}\t{company_label}\tERROR\tNA\t{file_path.name}\t{e}"
+                f"{ticker}\t{company_label}\tERROR\tNA\t{file_path.name}\t0\t\t{e}"
             )
 
     conn.commit()
@@ -278,6 +282,18 @@ def ingest_financials_bytes(
     country: Optional[str] = None,
 ) -> Dict[str, object]:
     ingest_warnings: list[str] = []
+    quarterly_trend_inputs: Dict[str, Dict[str, float]] = {}
+    quarterly_upload_counts: Dict[str, int] = {}
+    business_quarter_trend_score: Optional[float] = None
+
+    try:
+        quarterly_trend_inputs = extract_quarterly_business_trend_inputs(bytes_data)
+        business_quarter_trend_score = calculate_business_quarter_trend_score(
+            quarterly_trend_inputs,
+            component_weights=get_business_quarter_trend_weight_map(conn),
+        )
+    except Exception as exc:
+        ingest_warnings.append(f"Quarterly trend inputs were not stored: {exc}")
 
     # Extract Revenue (annual + TTM)
     annual_rev = extract_annual_revenue_series(bytes_data)
@@ -915,6 +931,8 @@ def ingest_financials_bytes(
 
     # Store
     cid = upsert_company(conn, company, ticker, country=country)
+    if quarterly_trend_inputs:
+        quarterly_upload_counts = upsert_quarterly_business_trend_inputs(conn, cid, quarterly_trend_inputs)
 
     upsert_annual_revenues(conn, cid, annual_rev)
     upsert_annual_cost_of_revenue(conn, cid, annual_cogs)
@@ -1076,6 +1094,8 @@ def ingest_financials_bytes(
         "as_of_ni": as_of_ni,
         "ttm_ni": ttm_ni,
         "annual_nopat": annual_nopat,
+        "quarterly_upload_counts": quarterly_upload_counts,
+        "business_quarter_trend_score": business_quarter_trend_score,
     }
 
 def render_data_upload_tab():
@@ -1096,6 +1116,19 @@ def render_data_upload_tab():
                 try:
                     company, ticker = parse_company_and_ticker(comp_input)
                     bytes_data = file.getvalue()
+                    quarterly_trend_inputs: Dict[str, Dict[str, float]] = {}
+                    quarterly_upload_counts: Dict[str, int] = {}
+                    business_quarter_trend_score: Optional[float] = None
+                    quarterly_warning: Optional[str] = None
+
+                    try:
+                        quarterly_trend_inputs = extract_quarterly_business_trend_inputs(bytes_data)
+                        business_quarter_trend_score = calculate_business_quarter_trend_score(
+                            quarterly_trend_inputs,
+                            component_weights=get_business_quarter_trend_weight_map(get_db()),
+                        )
+                    except Exception as exc:
+                        quarterly_warning = f"Quarterly trend inputs were not stored: {exc}"
 
                     # Extract Revenue (annual + TTM)
                     annual_rev = extract_annual_revenue_series(bytes_data)
@@ -1757,6 +1790,8 @@ def render_data_upload_tab():
                     # Store
                     conn = get_db()
                     cid = upsert_company(conn, company, ticker)
+                    if quarterly_trend_inputs:
+                        quarterly_upload_counts = upsert_quarterly_business_trend_inputs(conn, cid, quarterly_trend_inputs)
             
                     # Remember last ingested company for default selection in dropdown
                     st.session_state["last_ingested_company_id"] = cid
@@ -1943,8 +1978,12 @@ def render_data_upload_tab():
                         f"Annual OpMargin years: {len(annual_om)}; TTM OpMargin as of {as_of_om}: {ttm_om}. "
                         f"Annual Pretax Income years: {len(annual_pt)}; TTM Pretax as of {as_of_pt}: {ttm_pt:,.2f}. "
                         f"Annual Net Income years: {len(annual_ni)}; TTM Net Income as of {as_of_ni}: {ttm_ni:,.2f}. "
-                        f"NOPAT years (derived from EBIT and Effective Tax Rate): {len(annual_nopat)}"
+                        f"NOPAT years (derived from EBIT and Effective Tax Rate): {len(annual_nopat)}. "
+                        f"Quarterly trend rows: {sum(quarterly_upload_counts.values())}"
+                        + (f"; Business Quarter Trend Score: {business_quarter_trend_score}" if business_quarter_trend_score is not None else "")
                     )
+                    if quarterly_warning:
+                        st.warning(quarterly_warning)
                     for warning in net_ppe_warnings:
                         st.warning(warning)
                 except Exception as e:
