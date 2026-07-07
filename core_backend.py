@@ -1,4 +1,5 @@
 ﻿import io
+import math
 import os
 import shutil
 import threading
@@ -21,6 +22,7 @@ from db_orm import (
     GrowthWeightFactors,
     StddevWeightFactors,
     TtcAssumptions,
+    BusinessQuarterTrendWeights,
     RiskFreeRates,
     IndexAnnualPriceMovement,
     ImpliedEquityRiskPremiumUsa,
@@ -31,7 +33,7 @@ from db_orm import (
     DcfCompanyValuationSettings,
 )
 from db_orm import (
-    RevenuesAnnual, RevenuesTtm,
+    RevenuesAnnual, RevenuesQuarterly, RevenuesTtm,
     CostOfRevenueAnnual, CostOfRevenueTtm,
     OpMarginAnnual, OpMarginTtm,
     PretaxIncomeAnnual, PretaxIncomeTtm,
@@ -40,8 +42,8 @@ from db_orm import (
     EbitdaAnnual, EbitdaTtm,
     EbitAnnual, EbitTtm,
     InterestExpenseAnnual, InterestExpenseTtm,
-    OperatingIncomeAnnual, OperatingIncomeTtm,
-    OperatingCashFlowAnnual, OperatingCashFlowTtm,
+    OperatingIncomeAnnual, OperatingIncomeQuarterly, OperatingIncomeTtm,
+    OperatingCashFlowAnnual, OperatingCashFlowQuarterly, OperatingCashFlowTtm,
     NopatAnnual,
     PriceChangeAnnual,
     TotalAssetsAnnual, TotalAssetsTtm,
@@ -54,7 +56,7 @@ from db_orm import (
     DebtEquityAnnual,
     LeveredBetaAnnual,
     TotalCurrentAssetsAnnual, TotalCurrentAssetsTtm,
-    AccountsReceivableAnnual, AccountsReceivableTtm,
+    AccountsReceivableAnnual, AccountsReceivableQuarterly, AccountsReceivableTtm,
     InventoryAnnual, InventoryTtm,
     AccountsPayableAnnual, AccountsPayableTtm,
     CurrentDebtAnnual, CurrentDebtTtm,
@@ -65,7 +67,7 @@ from db_orm import (
     NetPpeAnnual, NetPpeTtm,
     GoodwillAndIntangiblesAnnual, GoodwillAndIntangiblesTtm,
     OtherLongTermAssetsAnnual, OtherLongTermAssetsTtm,
-    DeferredRevenueAnnual, DeferredRevenueTtm,
+    DeferredRevenueAnnual, DeferredRevenueQuarterly, DeferredRevenueTtm,
     DeferredTaxLiabilitiesAnnual, DeferredTaxLiabilitiesTtm,
     OtherLongTermLiabilitiesAnnual, OtherLongTermLiabilitiesTtm,
     CapitalEmployedAnnual,
@@ -85,7 +87,7 @@ from db_orm import (
     RevenueYieldNonCashWorkingCapitalAnnual,
     ResearchAndDevelopmentExpenseAnnual,
     SgaAnnual, SgaTtm,
-    CapitalExpendituresAnnual,
+    CapitalExpendituresAnnual, CapitalExpendituresQuarterly,
     DepreciationAmortizationAnnual,
     NetDebtIssuedPaidAnnual,
     FcffAnnual,
@@ -420,6 +422,175 @@ def delete_company_group(conn, group_id: int) -> None:
     conn.commit()
 
 
+def _delete_where_id_in(conn, table: str, id_col: str, ids: List[int]) -> None:
+    clean_ids = sorted({int(x) for x in ids})
+    if not clean_ids:
+        return
+    placeholders = ",".join(["?"] * len(clean_ids))
+    conn.execute(
+        f"DELETE FROM {table} WHERE {id_col} IN ({placeholders})",
+        tuple(clean_ids),
+    )
+
+
+def _clean_relative_valuation_category_rows(rows: List[Dict[str, object]]) -> List[Tuple[str, str]]:
+    out: List[Tuple[str, str]] = []
+    seen = set()
+    for row in rows or []:
+        master = str(row.get("Master Category", "") or "").strip()
+        subcategory = str(row.get("Sub-Category", "") or "").strip()
+        if not master or not subcategory:
+            continue
+        key = (master.casefold(), subcategory.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((master, subcategory))
+    return out
+
+
+def get_relative_valuation_categories(conn) -> pd.DataFrame:
+    return _read_df(
+        """
+        SELECT
+            c.id AS category_id,
+            c.name AS master_category,
+            s.id AS subcategory_id,
+            s.name AS subcategory,
+            COUNT(a.company_id) AS assigned_companies
+        FROM relative_valuation_categories c
+        LEFT JOIN relative_valuation_subcategories s
+            ON s.category_id = c.id
+        LEFT JOIN relative_valuation_company_assignments a
+            ON a.subcategory_id = s.id
+        GROUP BY c.id, c.name, s.id, s.name
+        ORDER BY c.name, s.name
+        """,
+        conn,
+    )
+
+
+def replace_relative_valuation_categories(conn, rows: List[Dict[str, object]]) -> int:
+    clean_rows = _clean_relative_valuation_category_rows(rows)
+    desired_subcategory_ids: List[int] = []
+
+    for master, subcategory in clean_rows:
+        conn.execute(
+            "INSERT INTO relative_valuation_categories(name) VALUES(?) ON CONFLICT DO NOTHING",
+            (master,),
+        )
+        category_row = conn.execute(
+            "SELECT id FROM relative_valuation_categories WHERE name = ?",
+            (master,),
+        ).fetchone()
+        if category_row is None:
+            continue
+        category_id = int(category_row[0])
+        conn.execute(
+            """
+            INSERT INTO relative_valuation_subcategories(category_id, name)
+            VALUES(?, ?)
+            ON CONFLICT DO NOTHING
+            """,
+            (category_id, subcategory),
+        )
+        subcategory_row = conn.execute(
+            """
+            SELECT id
+            FROM relative_valuation_subcategories
+            WHERE category_id = ? AND name = ?
+            """,
+            (category_id, subcategory),
+        ).fetchone()
+        if subcategory_row is not None:
+            desired_subcategory_ids.append(int(subcategory_row[0]))
+
+    conn.commit()
+    existing_df = _read_df(
+        "SELECT id FROM relative_valuation_subcategories",
+        conn,
+    )
+    existing_ids = (
+        [int(x) for x in existing_df["id"].tolist()]
+        if existing_df is not None and not existing_df.empty
+        else []
+    )
+    stale_ids = sorted(set(existing_ids) - set(desired_subcategory_ids))
+    if stale_ids:
+        _delete_where_id_in(conn, "relative_valuation_company_assignments", "subcategory_id", stale_ids)
+        _delete_where_id_in(conn, "relative_valuation_subcategories", "id", stale_ids)
+
+    conn.execute(
+        """
+        DELETE FROM relative_valuation_categories
+        WHERE id NOT IN (
+            SELECT DISTINCT category_id
+            FROM relative_valuation_subcategories
+        )
+        """
+    )
+    conn.commit()
+    return len(clean_rows)
+
+
+def get_relative_valuation_company_assignments(conn) -> pd.DataFrame:
+    return _read_df(
+        """
+        SELECT
+            c.id AS company_id,
+            c.name AS company,
+            c.ticker AS ticker,
+            cat.id AS category_id,
+            cat.name AS master_category,
+            sub.id AS subcategory_id,
+            sub.name AS subcategory
+        FROM relative_valuation_company_assignments a
+        JOIN companies c
+            ON c.id = a.company_id
+        JOIN relative_valuation_subcategories sub
+            ON sub.id = a.subcategory_id
+        JOIN relative_valuation_categories cat
+            ON cat.id = sub.category_id
+        ORDER BY cat.name, sub.name, c.name, c.ticker
+        """,
+        conn,
+    )
+
+
+def add_relative_valuation_company_assignments(conn, company_ids: List[int], subcategory_id: int) -> int:
+    ids = sorted({int(x) for x in company_ids or []})
+    if not ids:
+        return 0
+    rows = [(company_id, int(subcategory_id)) for company_id in ids]
+    cur = conn.cursor()
+    cur.executemany(
+        """
+        INSERT INTO relative_valuation_company_assignments(company_id, subcategory_id)
+        VALUES(?, ?)
+        ON CONFLICT DO NOTHING
+        """,
+        rows,
+    )
+    conn.commit()
+    return len(rows)
+
+
+def remove_relative_valuation_company_assignments(conn, assignments: List[Tuple[int, int]]) -> int:
+    clean_rows = sorted({(int(company_id), int(subcategory_id)) for company_id, subcategory_id in assignments or []})
+    if not clean_rows:
+        return 0
+    cur = conn.cursor()
+    cur.executemany(
+        """
+        DELETE FROM relative_valuation_company_assignments
+        WHERE company_id = ? AND subcategory_id = ?
+        """,
+        clean_rows,
+    )
+    conn.commit()
+    return len(clean_rows)
+
+
 def update_growth_weight_factors(conn, weights: Dict[int, float]) -> None:
     """Update growth_weight_factors weights by id."""
     if not weights:
@@ -462,6 +633,86 @@ def update_stddev_weight_factors(conn, weights: Dict[int, float]) -> None:
         cur.execute(
             "UPDATE stddev_weight_factors SET weight = ? WHERE id = ?",
             (float(weight), int(row_id)),
+        )
+    conn.commit()
+
+
+BUSINESS_QUARTER_TREND_DEFAULT_WEIGHTS: List[Tuple[str, str, float, int]] = [
+    ("revenue_growth", "Revenue Growth", 20.0, 1),
+    ("operating_margin", "Operating Margin", 20.0, 2),
+    ("operating_margin_change", "Operating Margin Change", 15.0, 3),
+    ("incremental_operating_margin", "Incremental Operating Margin", 15.0, 4),
+    ("bill_to_revenue", "Bill to Revenue", 10.0, 5),
+    ("days_sales_outstanding", "Days Sales Outstanding", 10.0, 6),
+    ("capex_to_ocf", "Capex to OCF", 10.0, 7),
+]
+
+
+def _business_quarter_trend_default_weight_map() -> Dict[str, float]:
+    return {key: weight for key, _, weight, _ in BUSINESS_QUARTER_TREND_DEFAULT_WEIGHTS}
+
+
+def _seed_business_quarter_trend_weights_if_empty(conn) -> None:
+    cur = conn.cursor()
+    cur.execute("SELECT COUNT(*) FROM business_quarter_trend_weights")
+    row = cur.fetchone()
+    count = int(row[0]) if row and row[0] is not None else 0
+    if count > 0:
+        return
+    cur.executemany(
+        """
+        INSERT INTO business_quarter_trend_weights(parameter_key, parameter, weight, sort_order)
+        VALUES(?, ?, ?, ?)
+        """,
+        BUSINESS_QUARTER_TREND_DEFAULT_WEIGHTS,
+    )
+    conn.commit()
+
+
+def get_business_quarter_trend_weights(conn) -> pd.DataFrame:
+    _seed_business_quarter_trend_weights_if_empty(conn)
+    return _read_df(
+        """
+        SELECT parameter_key, parameter, weight, sort_order
+        FROM business_quarter_trend_weights
+        ORDER BY sort_order
+        """,
+        conn,
+    )
+
+
+def get_business_quarter_trend_weight_map(conn) -> Dict[str, float]:
+    weights_df = get_business_quarter_trend_weights(conn)
+    if weights_df.empty:
+        return _business_quarter_trend_default_weight_map()
+    return {
+        str(row["parameter_key"]): float(row["weight"])
+        for _, row in weights_df.iterrows()
+    }
+
+
+def update_business_quarter_trend_weights(conn, weights: Dict[str, float]) -> None:
+    if not weights:
+        return
+
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for parameter_key, weight in weights.items():
+            obj = session.get(BusinessQuarterTrendWeights, str(parameter_key))
+            if obj is not None:
+                obj.weight = float(weight)
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for parameter_key, weight in weights.items():
+        cur.execute(
+            """
+            UPDATE business_quarter_trend_weights
+            SET weight = ?
+            WHERE parameter_key = ?
+            """,
+            (float(weight), str(parameter_key)),
         )
     conn.commit()
 
@@ -842,6 +1093,82 @@ def replace_industry_betas(
     cur.executemany(
         "INSERT INTO industry_betas(user_industry_bucket, mapped_sector, unlevered_beta, cash_adjusted_beta, updated_at) VALUES(?, ?, ?, ?, ?)",
         rows,
+    )
+    conn.commit()
+
+
+def save_industry_beta_changes(
+    conn,
+    upsert_rows: List[Tuple[str, str, float, float, str]],
+    delete_keys: List[Tuple[str, str]],
+) -> None:
+    """Apply explicit Industry Beta editor changes without rewriting the whole table."""
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for bucket, sector in delete_keys:
+            session.query(IndustryBetas).filter(
+                IndustryBetas.user_industry_bucket == str(bucket),
+                IndustryBetas.mapped_sector == str(sector),
+            ).delete(synchronize_session=False)
+
+        for bucket, sector, unlevered, cash_adjusted, updated_at in upsert_rows:
+            group = (
+                session.query(CompanyGroups)
+                .filter(CompanyGroups.name == str(bucket))
+                .one_or_none()
+            )
+            if group is None:
+                session.add(CompanyGroups(name=str(bucket)))
+
+            row = (
+                session.query(IndustryBetas)
+                .filter(
+                    IndustryBetas.user_industry_bucket == str(bucket),
+                    IndustryBetas.mapped_sector == str(sector),
+                )
+                .one_or_none()
+            )
+            if row is None:
+                row = IndustryBetas(
+                    user_industry_bucket=str(bucket),
+                    mapped_sector=str(sector),
+                )
+                session.add(row)
+            row.unlevered_beta = float(unlevered)
+            row.cash_adjusted_beta = float(cash_adjusted)
+            row.updated_at = updated_at
+
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for bucket, *_ in upsert_rows:
+        cur.execute(
+            "INSERT INTO company_groups(name) VALUES(?) ON CONFLICT DO NOTHING",
+            (str(bucket),),
+        )
+
+    for bucket, sector in delete_keys:
+        cur.execute(
+            "DELETE FROM industry_betas WHERE user_industry_bucket = ? AND mapped_sector = ?",
+            (bucket, sector),
+        )
+
+    cur.executemany(
+        """
+        INSERT INTO industry_betas(
+            user_industry_bucket,
+            mapped_sector,
+            unlevered_beta,
+            cash_adjusted_beta,
+            updated_at
+        ) VALUES(?, ?, ?, ?, ?)
+        ON CONFLICT(user_industry_bucket, mapped_sector) DO UPDATE SET
+            unlevered_beta = excluded.unlevered_beta,
+            cash_adjusted_beta = excluded.cash_adjusted_beta,
+            updated_at = excluded.updated_at
+        """,
+        upsert_rows,
     )
     conn.commit()
 
@@ -1540,6 +1867,7 @@ def init_db(conn) -> None:
     _ensure_dcf_settings_growth_cap_column(conn)
     _ensure_dcf_company_projection_path_config_column(conn)
     conn = DbCompat(conn)
+    _seed_business_quarter_trend_weights_if_empty(conn)
 
     # Seed default rows if these tables are empty
     cur = conn.cursor()
@@ -2422,6 +2750,327 @@ def _extract_latest_ttm_column_label(file_bytes: bytes, sheet_name: str) -> str:
     if fallback_labels:
         return fallback_labels[-1]
     return "TTM"
+def _quarter_label(col) -> str:
+    parsed = _parse_date_label(col)
+    if parsed is not None:
+        return parsed.strftime("%Y-%m-%d")
+    return str(col).strip()
+
+
+def _extract_quarterly_series_by_rowlabel(
+    file_bytes: bytes,
+    sheet_name: str,
+    rowlabel: str,
+    fallbacks: Optional[List[str]] = None,
+    *,
+    default_missing: Optional[float] = None,
+) -> Dict[str, float]:
+    df = _read_sheet(file_bytes, sheet_name)
+    df = _normalize_first_column_to_date(df)
+    targets = [rowlabel] + (fallbacks or [])
+    try:
+        row = _find_row(df, targets)
+    except ValueError:
+        if default_missing is None:
+            raise
+        row = None
+
+    series: Dict[str, float] = {}
+    for col in df.columns:
+        if str(col) == "Date":
+            continue
+        quarter_end = _quarter_label(col)
+        if not quarter_end:
+            continue
+        val = default_missing if row is None else row[col]
+        if pd.isna(val):
+            val = default_missing
+        if val is None:
+            continue
+        try:
+            fv = float(val)
+        except Exception:
+            continue
+        if np.isfinite(fv):
+            series[quarter_end] = fv
+    return dict(sorted(series.items(), key=lambda kv: (_parse_date_label(kv[0]) or pd.Timestamp.min), reverse=True))
+
+
+def extract_quarterly_revenue_series(file_bytes: bytes) -> Dict[str, float]:
+    return _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Income-Quarterly",
+        "Revenue",
+        fallbacks=["Total Revenue", "Sales"],
+    )
+
+
+def extract_quarterly_operating_income_series(file_bytes: bytes) -> Dict[str, float]:
+    return _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Income-Quarterly",
+        "Operating Income",
+        fallbacks=["Operating income", "EBIT"],
+    )
+
+
+def extract_quarterly_accounts_receivable_series(file_bytes: bytes) -> Dict[str, float]:
+    return _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Balance-Sheet-Quarterly",
+        "Receivables",
+        fallbacks=["Accounts Receivable", "Accounts Receivable, Net"],
+    )
+
+
+def extract_quarterly_deferred_revenue_series(file_bytes: bytes) -> Dict[str, float]:
+    return _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Balance-Sheet-Quarterly",
+        "Deferred Revenue",
+        fallbacks=["Deferred revenue", "Unearned Revenue", "Unearned revenue"],
+        default_missing=0.0,
+    )
+
+
+def extract_quarterly_capital_expenditures_series(file_bytes: bytes) -> Dict[str, float]:
+    return _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Cash-Flow-Quarterly",
+        "Capital Expenditures",
+        fallbacks=[
+            "Capital expenditures",
+            "Capital Expenditure",
+            "CapEx",
+            "Purchase of Property, Plant & Equipment",
+            "Purchase of property, plant & equipment",
+        ],
+    )
+
+
+def extract_quarterly_operating_cash_flow_series(file_bytes: bytes) -> Dict[str, float]:
+    return _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Cash-Flow-Quarterly",
+        "Operating Cash Flow",
+        fallbacks=[
+            "Cash Flow from Operations",
+            "Net Cash Provided by Operating Activities",
+        ],
+    )
+
+
+def extract_quarterly_business_trend_inputs(file_bytes: bytes) -> Dict[str, Dict[str, float]]:
+    return {
+        "revenue": extract_quarterly_revenue_series(file_bytes),
+        "operating_income": extract_quarterly_operating_income_series(file_bytes),
+        "deferred_revenue": extract_quarterly_deferred_revenue_series(file_bytes),
+        "accounts_receivable": extract_quarterly_accounts_receivable_series(file_bytes),
+        "capital_expenditures": extract_quarterly_capital_expenditures_series(file_bytes),
+        "operating_cash_flow": extract_quarterly_operating_cash_flow_series(file_bytes),
+    }
+
+
+def _sorted_quarter_ends_desc(*series_maps: Dict[str, float]) -> List[str]:
+    labels = {label for series in series_maps for label in series.keys()}
+    return sorted(labels, key=lambda label: (_parse_date_label(label) or pd.Timestamp.min), reverse=True)
+
+
+def _finite_float(value) -> Optional[float]:
+    try:
+        fv = float(value)
+    except Exception:
+        return None
+    return fv if np.isfinite(fv) else None
+
+
+def _weighted_median(values: List[Optional[float]], weights: List[int]) -> Optional[float]:
+    expanded: List[float] = []
+    for value, weight in zip(values, weights):
+        fv = _finite_float(value)
+        if fv is None:
+            continue
+        expanded.extend([fv] * int(weight))
+    if not expanded:
+        return None
+    return float(np.median(expanded))
+
+
+def _clamp_0_100(value: float) -> float:
+    return max(0.0, min(100.0, float(value)))
+
+
+def _recency_block_weights(length: int) -> List[int]:
+    if length <= 0:
+        return []
+    blocks = int(math.ceil(length / 4.0))
+    weights: List[int] = []
+    for idx in range(length):
+        weights.append(max(blocks - (idx // 4), 1))
+    return weights
+
+
+def calculate_business_quarter_trend_details(
+    quarterly_inputs: Dict[str, Dict[str, float]],
+    quarter_range: int = 16,
+    component_weights: Optional[Dict[str, float]] = None,
+) -> Dict[str, Optional[float]]:
+    if quarter_range <= 4 or quarter_range % 4 != 0:
+        raise ValueError("Quarter range must be greater than 4 and a multiple of 4.")
+
+    revenue = quarterly_inputs.get("revenue", {})
+    operating_income = quarterly_inputs.get("operating_income", {})
+    deferred_revenue = quarterly_inputs.get("deferred_revenue", {})
+    accounts_receivable = quarterly_inputs.get("accounts_receivable", {})
+    capex = quarterly_inputs.get("capital_expenditures", {})
+    operating_cash_flow = quarterly_inputs.get("operating_cash_flow", {})
+
+    quarters = _sorted_quarter_ends_desc(
+        revenue,
+        operating_income,
+        deferred_revenue,
+        accounts_receivable,
+        capex,
+        operating_cash_flow,
+    )
+    if len(quarters) < quarter_range:
+        return {
+            "business_quarter_trend_score": None,
+            "weighted_median_revenue_growth": None,
+            "weighted_median_operating_margin": None,
+            "weighted_median_operating_margin_change": None,
+            "weighted_median_incremental_operating_margin": None,
+            "weighted_median_bill_to_revenue": None,
+            "weighted_median_days_sales_outstanding": None,
+            "weighted_median_capex_to_ocf": None,
+        }
+
+    selected_quarters = quarters[:quarter_range]
+
+    operating_margin: List[Optional[float]] = []
+    for quarter in selected_quarters:
+        rev = _finite_float(revenue.get(quarter))
+        oi = _finite_float(operating_income.get(quarter))
+        operating_margin.append((oi / rev) if rev is not None and rev > 0 and oi is not None else None)
+
+    revenue_growth: List[Optional[float]] = []
+    operating_margin_change: List[Optional[float]] = []
+    incremental_operating_margin: List[Optional[float]] = []
+    bill_to_revenue: List[Optional[float]] = []
+    dso: List[Optional[float]] = []
+    capex_to_ocf: List[Optional[float]] = []
+
+    yoy_length = quarter_range - 4
+    for i, quarter in enumerate(selected_quarters[:yoy_length]):
+        rev = _finite_float(revenue.get(quarter))
+        oi = _finite_float(operating_income.get(quarter))
+        prior_year_quarter = selected_quarters[i + 4]
+        next_older_quarter = selected_quarters[i + 1]
+        prior_rev = _finite_float(revenue.get(prior_year_quarter))
+        prior_oi = _finite_float(operating_income.get(prior_year_quarter))
+
+        revenue_growth.append((rev / prior_rev) - 1.0 if rev is not None and prior_rev is not None and prior_rev > 0 else None)
+
+        current_om = operating_margin[i]
+        prior_om = operating_margin[i + 4]
+        operating_margin_change.append(current_om - prior_om if current_om is not None and prior_om is not None else None)
+
+        if rev is not None and oi is not None and prior_rev is not None and prior_oi is not None:
+            delta_rev = rev - prior_rev
+            delta_oi = oi - prior_oi
+            if delta_rev == 0:
+                incremental_operating_margin.append(0.0)
+            elif delta_oi < 0 and delta_rev < 0:
+                incremental_operating_margin.append(-1.0 * delta_oi / delta_rev)
+            else:
+                incremental_operating_margin.append(delta_oi / delta_rev)
+        else:
+            incremental_operating_margin.append(None)
+
+        dr = _finite_float(deferred_revenue.get(quarter, 0.0))
+        prev_dr = _finite_float(deferred_revenue.get(next_older_quarter, 0.0))
+        if rev is not None and rev > 0 and dr is not None and dr > 0 and prev_dr is not None:
+            bill_to_revenue.append((rev + (dr - prev_dr)) / rev)
+        else:
+            bill_to_revenue.append(0.0)
+
+        ar = _finite_float(accounts_receivable.get(quarter))
+        prev_ar = _finite_float(accounts_receivable.get(next_older_quarter))
+        dso.append(((ar + prev_ar) / 2.0) / rev * 90.0 if rev is not None and rev > 0 and ar is not None and prev_ar is not None else None)
+
+        ocf = _finite_float(operating_cash_flow.get(quarter))
+        capex_value = _finite_float(capex.get(quarter))
+        if ocf is None or capex_value is None:
+            capex_to_ocf.append(None)
+        elif ocf > 0:
+            capex_to_ocf.append(abs(capex_value) / ocf)
+        else:
+            capex_to_ocf.append(0.30)
+
+    yoy_weights = _recency_block_weights(yoy_length)
+    range_weights = _recency_block_weights(quarter_range)
+    rg = _weighted_median(revenue_growth, yoy_weights)
+    om = _weighted_median(operating_margin, range_weights)
+    omc = _weighted_median(operating_margin_change, yoy_weights)
+    iom = _weighted_median(incremental_operating_margin, yoy_weights)
+    btr = _weighted_median(bill_to_revenue, yoy_weights)
+    dso_value = _weighted_median(dso, yoy_weights)
+    cocf = _weighted_median(capex_to_ocf, yoy_weights)
+
+    details: Dict[str, Optional[float]] = {
+        "business_quarter_trend_score": None,
+        "weighted_median_revenue_growth": rg,
+        "weighted_median_operating_margin": om,
+        "weighted_median_operating_margin_change": omc,
+        "weighted_median_incremental_operating_margin": iom,
+        "weighted_median_bill_to_revenue": btr,
+        "weighted_median_days_sales_outstanding": dso_value,
+        "weighted_median_capex_to_ocf": cocf,
+    }
+
+    if any(v is None for v in (rg, om, omc, iom, btr, dso_value, cocf)):
+        return details
+
+    scores = [
+        _clamp_0_100(((rg + 0.10) / 0.50) * 100.0),
+        _clamp_0_100((om / 0.50) * 100.0),
+        _clamp_0_100(((omc + 0.05) / 0.10) * 100.0),
+        _clamp_0_100((iom / 0.70) * 100.0),
+        _clamp_0_100(((btr - 0.90) / 0.30) * 100.0),
+        _clamp_0_100(((90.0 - dso_value) / 60.0) * 100.0),
+        _clamp_0_100(((0.30 - cocf) / 0.30) * 100.0),
+    ]
+    active_weights = _business_quarter_trend_default_weight_map()
+    if component_weights:
+        active_weights.update({str(key): float(value) for key, value in component_weights.items()})
+    score_weights = [
+        active_weights["revenue_growth"],
+        active_weights["operating_margin"],
+        active_weights["operating_margin_change"],
+        active_weights["incremental_operating_margin"],
+        active_weights["bill_to_revenue"],
+        active_weights["days_sales_outstanding"],
+        active_weights["capex_to_ocf"],
+    ]
+    details["business_quarter_trend_score"] = round(
+        sum(weight * score for weight, score in zip(score_weights, scores)) / 100.0,
+        1,
+    )
+    return details
+
+
+def calculate_business_quarter_trend_score(
+    quarterly_inputs: Dict[str, Dict[str, float]],
+    quarter_range: int = 16,
+    component_weights: Optional[Dict[str, float]] = None,
+) -> Optional[float]:
+    return calculate_business_quarter_trend_details(
+        quarterly_inputs,
+        quarter_range=quarter_range,
+        component_weights=component_weights,
+    )["business_quarter_trend_score"]
+
+
 def extract_annual_revenue_series(file_bytes: bytes) -> Dict[int, float]:
     return extract_annual_series_by_rowlabel(file_bytes, "Revenue", fallbacks=["Total Revenue", "Sales"])
 
@@ -6458,6 +7107,150 @@ def _upsert_ttm_metric_generic(
         (company_id, as_of, float(val)),
     )
     conn.commit()
+
+
+def _upsert_quarterly_metric_generic(
+    conn,
+    company_id: int,
+    quarter_to_val: Dict[str, float],
+    orm_cls,
+    orm_value_attr: str,
+    table: str,
+    value_col: str,
+) -> None:
+    if not quarter_to_val:
+        return
+    session = getattr(conn, "session", None)
+    if session is not None:
+        for quarter_end, val in quarter_to_val.items():
+            existing = session.query(orm_cls).filter(
+                orm_cls.company_id == company_id,
+                orm_cls.quarter_end == str(quarter_end),
+            ).one_or_none()
+            if existing is None:
+                session.add(
+                    orm_cls(
+                        company_id=company_id,
+                        quarter_end=str(quarter_end),
+                        **{orm_value_attr: float(val)},
+                    )
+                )
+            else:
+                setattr(existing, orm_value_attr, float(val))
+        session.commit()
+        return
+
+    cur = conn.cursor()
+    for quarter_end, val in quarter_to_val.items():
+        cur.execute(
+            f"""
+            INSERT INTO {table}(company_id, quarter_end, {value_col})
+            VALUES(?, ?, ?)
+            ON CONFLICT(company_id, quarter_end) DO UPDATE SET {value_col}=excluded.{value_col}
+            """,
+            (company_id, str(quarter_end), float(val)),
+        )
+    conn.commit()
+
+
+def upsert_quarterly_revenues(conn: sqlite3.Connection, company_id: int, quarter_to_val: Dict[str, float]) -> None:
+    _upsert_quarterly_metric_generic(
+        conn, company_id, quarter_to_val,
+        RevenuesQuarterly, "revenue",
+        "revenues_quarterly", "revenue",
+    )
+
+
+def upsert_quarterly_operating_income(conn: sqlite3.Connection, company_id: int, quarter_to_val: Dict[str, float]) -> None:
+    _upsert_quarterly_metric_generic(
+        conn, company_id, quarter_to_val,
+        OperatingIncomeQuarterly, "operating_income",
+        "operating_income_quarterly", "operating_income",
+    )
+
+
+def upsert_quarterly_deferred_revenue(conn: sqlite3.Connection, company_id: int, quarter_to_val: Dict[str, float]) -> None:
+    _upsert_quarterly_metric_generic(
+        conn, company_id, quarter_to_val,
+        DeferredRevenueQuarterly, "deferred_revenue",
+        "deferred_revenue_quarterly", "deferred_revenue",
+    )
+
+
+def upsert_quarterly_accounts_receivable(conn: sqlite3.Connection, company_id: int, quarter_to_val: Dict[str, float]) -> None:
+    _upsert_quarterly_metric_generic(
+        conn, company_id, quarter_to_val,
+        AccountsReceivableQuarterly, "accounts_receivable",
+        "accounts_receivable_quarterly", "accounts_receivable",
+    )
+
+
+def upsert_quarterly_capital_expenditures(conn: sqlite3.Connection, company_id: int, quarter_to_val: Dict[str, float]) -> None:
+    _upsert_quarterly_metric_generic(
+        conn, company_id, quarter_to_val,
+        CapitalExpendituresQuarterly, "capital_expenditures",
+        "capital_expenditures_quarterly", "capital_expenditures",
+    )
+
+
+def upsert_quarterly_operating_cash_flow(conn: sqlite3.Connection, company_id: int, quarter_to_val: Dict[str, float]) -> None:
+    _upsert_quarterly_metric_generic(
+        conn, company_id, quarter_to_val,
+        OperatingCashFlowQuarterly, "operating_cash_flow",
+        "operating_cash_flow_quarterly", "operating_cash_flow",
+    )
+
+
+def upsert_quarterly_business_trend_inputs(
+    conn,
+    company_id: int,
+    quarterly_inputs: Dict[str, Dict[str, float]],
+) -> Dict[str, int]:
+    upsert_quarterly_revenues(conn, company_id, quarterly_inputs.get("revenue", {}))
+    upsert_quarterly_operating_income(conn, company_id, quarterly_inputs.get("operating_income", {}))
+    upsert_quarterly_deferred_revenue(conn, company_id, quarterly_inputs.get("deferred_revenue", {}))
+    upsert_quarterly_accounts_receivable(conn, company_id, quarterly_inputs.get("accounts_receivable", {}))
+    upsert_quarterly_capital_expenditures(conn, company_id, quarterly_inputs.get("capital_expenditures", {}))
+    upsert_quarterly_operating_cash_flow(conn, company_id, quarterly_inputs.get("operating_cash_flow", {}))
+    return {key: len(value) for key, value in quarterly_inputs.items()}
+
+
+def _load_quarterly_metric_series(conn, table: str, value_col: str, company_id: int) -> Dict[str, float]:
+    sql = f"""
+        SELECT quarter_end, {value_col}
+        FROM {table}
+        WHERE company_id=?
+        ORDER BY quarter_end DESC
+    """
+    session = getattr(conn, "session", None)
+    if session is not None:
+        rows = execute(session, sql, (company_id,)).fetchall()
+    else:
+        rows = conn.execute(sql, (company_id,)).fetchall()
+    return {str(quarter_end): float(value) for quarter_end, value in rows}
+
+
+def get_quarterly_business_trend_inputs(conn, company_id: int) -> Dict[str, Dict[str, float]]:
+    return {
+        "revenue": _load_quarterly_metric_series(conn, "revenues_quarterly", "revenue", company_id),
+        "operating_income": _load_quarterly_metric_series(conn, "operating_income_quarterly", "operating_income", company_id),
+        "deferred_revenue": _load_quarterly_metric_series(conn, "deferred_revenue_quarterly", "deferred_revenue", company_id),
+        "accounts_receivable": _load_quarterly_metric_series(conn, "accounts_receivable_quarterly", "accounts_receivable", company_id),
+        "capital_expenditures": _load_quarterly_metric_series(conn, "capital_expenditures_quarterly", "capital_expenditures", company_id),
+        "operating_cash_flow": _load_quarterly_metric_series(conn, "operating_cash_flow_quarterly", "operating_cash_flow", company_id),
+    }
+
+
+def compute_business_quarter_trend_score_for_company(
+    conn,
+    company_id: int,
+    quarter_range: int = 16,
+) -> Optional[float]:
+    return calculate_business_quarter_trend_score(
+        get_quarterly_business_trend_inputs(conn, company_id),
+        quarter_range=quarter_range,
+        component_weights=get_business_quarter_trend_weight_map(conn),
+    )
 
 
 def upsert_annual_operating_cash_flow(conn: sqlite3.Connection, company_id: int, year_to_val: Dict[int, float]) -> None:
