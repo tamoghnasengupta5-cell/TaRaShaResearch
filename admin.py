@@ -840,7 +840,7 @@ def render_admin_tab():
         for c in ["India %", "China %", "Japan %", "US %", "UK %", "UAE %"]:
             display_df[c] = pd.to_numeric(display_df[c], errors="coerce").round(2)
 
-        edited_df = st.data_editor(
+        st.data_editor(
             display_df,
             use_container_width=True,
             hide_index=True,
@@ -1092,36 +1092,100 @@ def render_admin_tab():
         )
 
         if st.button("Save industry betas", type="primary"):
-            df = edited_df.copy()
+            existing_row_count = len(ib_df.index)
+            editor_state = st.session_state.get("industry_beta_editor", {})
+            edited_rows = {
+                int(idx): values
+                for idx, values in editor_state.get("edited_rows", {}).items()
+            }
+            added_rows = list(editor_state.get("added_rows", []))
+            deleted_rows = {int(idx) for idx in editor_state.get("deleted_rows", [])}
 
-            # Clean/normalize
-            for col in ["User's Industry Bucket", "Mapped Sector"]:
-                df[col] = df[col].astype(str).str.strip()
+            def _normalize_industry_beta_row(row):
+                bucket = str(row.get("User's Industry Bucket", "")).strip()
+                sector = str(row.get("Mapped Sector", "")).strip()
+                unlevered = pd.to_numeric(row.get("Unlevered Beta"), errors="coerce")
+                cash_adjusted = pd.to_numeric(row.get("Cash-Adjusted Beta"), errors="coerce")
+                if not bucket or not sector:
+                    raise ValueError("Every changed row must have a bucket and mapped sector.")
+                if pd.isna(unlevered) or pd.isna(cash_adjusted):
+                    raise ValueError("Both beta columns must be numeric for every changed row.")
+                return bucket, sector, float(unlevered), float(cash_adjusted)
 
-            df = df[(df["User's Industry Bucket"] != "") & (df["Mapped Sector"] != "")].copy()
+            delete_keys = []
+            upsert_rows = []
+            replaced_keys = []
+            validation_error = None
+            ts = datetime.utcnow().isoformat()
 
-            df["Unlevered Beta"] = pd.to_numeric(df["Unlevered Beta"], errors="coerce")
-            df["Cash-Adjusted Beta"] = pd.to_numeric(df["Cash-Adjusted Beta"], errors="coerce")
-
-            if df.empty:
-                st.error("Please provide at least one valid row (bucket + sector + betas).")
-            elif df[["Unlevered Beta", "Cash-Adjusted Beta"]].isna().any().any():
-                st.error("Both beta columns must be numeric for every row.")
-            elif df.duplicated(subset=["User's Industry Bucket", "Mapped Sector"]).any():
-                st.error("Duplicate bucket + sector combinations found. Please make them unique.")
-            else:
-                ts = datetime.utcnow().isoformat()
-                rows = [
+            original_keys = set()
+            for _, r in ib_df.iterrows():
+                original_keys.add(
                     (
-                        str(r["User's Industry Bucket"]),
-                        str(r["Mapped Sector"]),
-                        float(r["Unlevered Beta"]),
-                        float(r["Cash-Adjusted Beta"]),
-                        ts,
+                        str(r["User's Industry Bucket"]).strip(),
+                        str(r["Mapped Sector"]).strip(),
                     )
-                    for _, r in df.iterrows()
-                ]
-                replace_industry_betas(conn, rows)
+                )
+
+            for idx in deleted_rows:
+                if 0 <= idx < existing_row_count:
+                    r = ib_df.iloc[idx]
+                    delete_keys.append(
+                        (
+                            str(r["User's Industry Bucket"]).strip(),
+                            str(r["Mapped Sector"]).strip(),
+                        )
+                    )
+
+            try:
+                for idx, changes in edited_rows.items():
+                    if idx in deleted_rows or not (0 <= idx < existing_row_count):
+                        continue
+                    row = ib_df.iloc[idx].to_dict()
+                    row.update(changes)
+                    old_key = (
+                        str(ib_df.iloc[idx]["User's Industry Bucket"]).strip(),
+                        str(ib_df.iloc[idx]["Mapped Sector"]).strip(),
+                    )
+                    new_bucket, new_sector, unlevered, cash_adjusted = _normalize_industry_beta_row(row)
+                    new_key = (new_bucket, new_sector)
+                    replaced_keys.append(old_key)
+                    if old_key != new_key:
+                        delete_keys.append(old_key)
+                    upsert_rows.append((new_bucket, new_sector, unlevered, cash_adjusted, ts))
+
+                for row in added_rows:
+                    new_bucket, new_sector, unlevered, cash_adjusted = _normalize_industry_beta_row(row)
+                    upsert_rows.append((new_bucket, new_sector, unlevered, cash_adjusted, ts))
+            except ValueError as exc:
+                validation_error = str(exc)
+
+            final_keys = set(original_keys)
+            for key in delete_keys:
+                final_keys.discard(key)
+            for key in replaced_keys:
+                final_keys.discard(key)
+            for bucket, sector, *_ in upsert_rows:
+                key = (bucket, sector)
+                if key in final_keys:
+                    validation_error = (
+                        "Duplicate bucket + sector combinations found. Please make them unique."
+                    )
+                    break
+                final_keys.add(key)
+
+            max_delete_count = max(10, int(existing_row_count * 0.2))
+            if validation_error:
+                st.error(validation_error)
+            elif not upsert_rows and not delete_keys:
+                st.info("No Industry Beta changes to save.")
+            elif existing_row_count >= 20 and len(delete_keys) > max_delete_count:
+                st.error(
+                    "Industry beta save blocked because it would delete too many rows "
+                    f"({len(delete_keys)} of {existing_row_count}). Delete in smaller batches."
+                )
+            else:
+                save_industry_beta_changes(conn, upsert_rows, delete_keys)
                 refresh_valuation_derived_metrics_all_companies(conn, include_levered_beta=True)
                 st.success("Industry beta table saved.")
                 _rerun()
