@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { companies, learningCards, metricMeta } from "./data/demo";
-import { companySearch, formatMetric, latest, percentChange } from "./domain";
-import type { Company, MetricKey, Page, YearValue } from "./types";
+import { formatMetric, latest, percentChange } from "./domain";
+import { liveDataEnabled, MAX_SESSION_COMPANIES, MAX_YEAR_RANGE, pullCompanyResearch, searchCompanyCatalog } from "./liveData";
+import type { CatalogCompany, Company, MetricKey, Page, StatementFact, StatementGroup, YearValue } from "./types";
 import tarashaLogo from "./assets/tarasha-logo.png";
 
 const navItems: { page: Page; label: string; icon: string }[] = [
@@ -12,9 +13,15 @@ const navItems: { page: Page; label: string; icon: string }[] = [
   { page: "learn", label: "Learn", icon: "◫" },
 ];
 
+function pageFromHash(): Page {
+  const value = window.location.hash.replace(/^#\/?/, "") as Page;
+  return ["home", "discover", "compare", "watchlist", "learn"].includes(value) ? value : "home";
+}
+
 function App() {
-  const [page, setPage] = useState<Page>("home");
-  const [activeCompanyId, setActiveCompanyId] = useState(companies[0].id);
+  const [page, setPage] = useState<Page>(pageFromHash);
+  const [activeCompanyId, setActiveCompanyId] = useState<string | null>(null);
+  const [sessionCompanies, setSessionCompanies] = useState<Company[]>([]);
   const [watchlist, setWatchlist] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("tarasha-watchlist") ?? "[]");
@@ -24,9 +31,15 @@ function App() {
   });
 
   useEffect(() => localStorage.setItem("tarasha-watchlist", JSON.stringify(watchlist)), [watchlist]);
+  useEffect(() => {
+    const onHashChange = () => setPage(pageFromHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
 
   const navigate = (next: Page) => {
     setPage(next);
+    if (next !== "company") window.history.pushState(null, "", `#/${next}`);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -39,16 +52,23 @@ function App() {
     setWatchlist((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
   };
 
+  const addSessionCompany = (company: Company) => {
+    setSessionCompanies((current) => [...current.filter((item) => item.id !== company.id), company]);
+  };
+
+  const activeCompany = sessionCompanies.find((item) => item.id === activeCompanyId);
+
   return (
     <div className="app-shell">
       <BetaStrip />
       <Header page={page} navigate={navigate} />
       <main>
-        {page === "home" && <Home navigate={navigate} openCompany={openCompany} watchlist={watchlist} toggleWatch={toggleWatch} />}
-        {page === "discover" && <Discover openCompany={openCompany} watchlist={watchlist} toggleWatch={toggleWatch} />}
-        {page === "company" && <CompanyDetail company={companies.find((item) => item.id === activeCompanyId) ?? companies[0]} watched={watchlist.includes(activeCompanyId)} toggleWatch={toggleWatch} navigate={navigate} />}
-        {page === "compare" && <Compare openCompany={openCompany} />}
-        {page === "watchlist" && <Watchlist ids={watchlist} openCompany={openCompany} toggleWatch={toggleWatch} navigate={navigate} />}
+        {page === "home" && <Home navigate={navigate} openCompany={openCompany} sessionCompanies={sessionCompanies} watchlist={watchlist} toggleWatch={toggleWatch} />}
+        {page === "discover" && <Discover sessionCompanies={sessionCompanies} onResearchPulled={addSessionCompany} openCompany={openCompany} watchlist={watchlist} toggleWatch={toggleWatch} />}
+        {page === "company" && activeCompany && <CompanyDetail company={activeCompany} watched={watchlist.includes(activeCompany.id)} toggleWatch={toggleWatch} navigate={navigate} />}
+        {page === "company" && !activeCompany && <div className="page-wrap"><Empty title="No company research is active" text="Pull a company from Discover before opening its research dossier." /></div>}
+        {page === "compare" && <Compare companies={sessionCompanies} openCompany={openCompany} />}
+        {page === "watchlist" && <Watchlist companies={sessionCompanies} ids={watchlist} openCompany={openCompany} toggleWatch={toggleWatch} navigate={navigate} />}
         {page === "learn" && <Learn />}
       </main>
       <Footer navigate={navigate} />
@@ -58,7 +78,7 @@ function App() {
 }
 
 function BetaStrip() {
-  return <div className="beta-strip"><span>Private founding-user preview</span><span>Fictional companies · Illustrative data</span></div>;
+  return <div className="beta-strip"><span>Private founding-user preview</span><span>{liveDataEnabled ? "Live SEC filings · Transient session data" : "Preview mode · Illustrative data"}</span></div>;
 }
 
 function Brand() {
@@ -96,9 +116,10 @@ function MobileNav({ page, navigate }: { page: Page; navigate: (page: Page) => v
   );
 }
 
-function Home({ navigate, openCompany, watchlist, toggleWatch }: {
+function Home({ navigate, openCompany, sessionCompanies, watchlist, toggleWatch }: {
   navigate: (page: Page) => void;
   openCompany: (id: string) => void;
+  sessionCompanies: Company[];
   watchlist: string[];
   toggleWatch: (id: string) => void;
 }) {
@@ -138,12 +159,10 @@ function Home({ navigate, openCompany, watchlist, toggleWatch }: {
 
       <section className="content-section soft-section">
         <div className="section-heading-row">
-          <div><p className="eyebrow">Explore the demo</p><h2>Recently updated</h2></div>
-          <button className="text-button" onClick={() => navigate("discover")}>View all companies →</button>
+          <div><p className="eyebrow">Transient research shelf</p><h2>Your current session</h2></div>
+          <button className="text-button" onClick={() => navigate("discover")}>Pull company research →</button>
         </div>
-        <div className="company-grid">
-          {companies.slice(0, 3).map((company) => <CompanyCard key={company.id} company={company} openCompany={openCompany} watched={watchlist.includes(company.id)} toggleWatch={toggleWatch} />)}
-        </div>
+        {sessionCompanies.length ? <div className="company-grid">{sessionCompanies.map((company) => <CompanyCard key={company.id} company={company} openCompany={openCompany} watched={watchlist.includes(company.id)} toggleWatch={toggleWatch} />)}</div> : <SessionShelfEmpty navigate={navigate} />}
       </section>
 
       <section className="content-section learning-preview">
@@ -154,6 +173,10 @@ function Home({ navigate, openCompany, watchlist, toggleWatch }: {
       </section>
     </>
   );
+}
+
+function SessionShelfEmpty({ navigate }: { navigate: (page: Page) => void }) {
+  return <div className="session-shelf-empty"><span>∅</span><div><strong>No company data is loaded.</strong><p>Search the catalogue and pull up to {MAX_SESSION_COMPANIES} companies. Financial facts stay only in this browser session.</p></div><button className="button secondary" onClick={() => navigate("discover")}>Open Discover</button></div>;
 }
 
 function HeroCard() {
@@ -197,34 +220,67 @@ function QuestionCard({ number, color, title, text }: { number: string; color: s
   return <article className={`question-card ${color}`}><span>{number}</span><h3>{title}</h3><p>{text}</p></article>;
 }
 
-function Discover({ openCompany, watchlist, toggleWatch }: { openCompany: (id: string) => void; watchlist: string[]; toggleWatch: (id: string) => void }) {
+function Discover({ sessionCompanies, onResearchPulled, openCompany, watchlist, toggleWatch }: { sessionCompanies: Company[]; onResearchPulled: (company: Company) => void; openCompany: (id: string) => void; watchlist: string[]; toggleWatch: (id: string) => void }) {
   const [query, setQuery] = useState("");
-  const [sector, setSector] = useState("All sectors");
-  const sectors = ["All sectors", ...Array.from(new Set(companies.map((company) => company.sector)))];
-  const filtered = companies.filter((company) => companySearch(company, query, sector));
+  const [country, setCountry] = useState<"USA" | "India">("USA");
+  const currentYear = new Date().getFullYear();
+  const [fromYear, setFromYear] = useState(currentYear - 4);
+  const [toYear, setToYear] = useState(currentYear);
+  const [results, setResults] = useState<CatalogCompany[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [pullingId, setPullingId] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMessage(null);
+    if (query.trim().length < 2) { setResults([]); return; }
+    const timer = window.setTimeout(async () => {
+      setSearching(true);
+      try { setResults(await searchCompanyCatalog(query, country)); }
+      catch (error) { setMessage(error instanceof Error ? error.message : "Company search failed."); }
+      finally { setSearching(false); }
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [query, country]);
+
+  const pull = async (catalog: CatalogCompany) => {
+    if (!sessionCompanies.some((item) => item.id === catalog.id) && sessionCompanies.length >= MAX_SESSION_COMPANIES) {
+      setMessage(`This session already contains ${MAX_SESSION_COMPANIES} companies—the maximum allowed.`); return;
+    }
+    setPullingId(catalog.id); setMessage(null);
+    try { onResearchPulled(await pullCompanyResearch(catalog, fromYear, toYear)); setMessage(`${catalog.name} is now available in your session research shelf.`); }
+    catch (error) { setMessage(error instanceof Error ? error.message : "Research pull failed."); }
+    finally { setPullingId(null); }
+  };
+
   return (
     <div className="page-wrap">
-      <PageIntro eyebrow="Discover" title="Find a company. Follow the facts." text="Search by company, symbol or sector. Results are alphabetical—not ranked or recommended." />
+      <PageIntro eyebrow="Discover" title="Search the catalogue. Pull the filings." text={`Choose up to ${MAX_YEAR_RANGE} years. The application extracts filing facts into browser memory and never stores the financial statements.`} />
+      <div className="session-limit-banner"><span>{sessionCompanies.length} / {MAX_SESSION_COMPANIES}</span><div><strong>Session research capacity</strong><small>Closing or refreshing this browser session clears the pulled financial data.</small></div></div>
       <div className="search-panel">
         <label className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search company or symbol" /></label>
-        <select value={sector} onChange={(event) => setSector(event.target.value)} aria-label="Filter by sector">{sectors.map((item) => <option key={item}>{item}</option>)}</select>
+        <select value={country} onChange={(event) => setCountry(event.target.value as "USA" | "India")} aria-label="Choose market"><option>USA</option><option>India</option></select>
       </div>
-      <div className="result-meta"><strong>{filtered.length} illustrative companies</strong><span>Sorted A–Z</span></div>
-      {filtered.length ? <div className="company-grid wide">{filtered.sort((a, b) => a.name.localeCompare(b.name)).map((company) => <CompanyCard key={company.id} company={company} openCompany={openCompany} watched={watchlist.includes(company.id)} toggleWatch={toggleWatch} />)}</div> : <Empty title="No companies found" text="Try a different company name or choose all sectors." />}
+      <div className="year-range-panel"><div><strong>Reporting-year range</strong><small>Maximum {MAX_YEAR_RANGE} years</small></div><label>From<input type="number" min="1995" max={toYear} value={fromYear} onChange={(event) => setFromYear(Number(event.target.value))} /></label><span>—</span><label>To<input type="number" min={fromYear} max={currentYear} value={toYear} onChange={(event) => setToYear(Number(event.target.value))} /></label></div>
+      {country === "India" && <div className="market-notice"><strong>India catalogue and structured filings are not enabled yet.</strong><p>NSE publishes XBRL filings, but it does not offer the same free, officially supported public API as SEC EDGAR. TaRaSha will not scrape or redistribute exchange data without confirmed rights.</p></div>}
+      {message && <div className="data-message">{message}</div>}
+      {query.trim().length >= 2 && country === "USA" && <section className="catalog-results"><div className="result-meta"><strong>{searching ? "Searching catalogue…" : `${results.length} matches`}</strong><span>Search results are not company cards</span></div>{results.map((company) => <article key={company.id}><div className="company-monogram">{company.name[0]}</div><div><h3>{company.name}</h3><p>{company.ticker} · {company.exchange} · {company.provider}</p></div><button className="button secondary" disabled={pullingId === company.id} onClick={() => pull(company)}>{pullingId === company.id ? "Pulling filings…" : sessionCompanies.some((item) => item.id === company.id) ? "Refresh research" : "Pull research"}</button></article>)}</section>}
+      <section className="session-research-section"><div className="section-heading-row"><div><p className="eyebrow">Pulled in this browser session</p><h2>Research shelf</h2></div><span>{sessionCompanies.length} companies</span></div>{sessionCompanies.length ? <div className="company-grid wide">{sessionCompanies.map((company) => <CompanyCard key={company.id} company={company} openCompany={openCompany} watched={watchlist.includes(company.id)} toggleWatch={toggleWatch} />)}</div> : <Empty title="Your research shelf is empty" text="Search the catalogue above and pull a company to create its session card." />}</section>
     </div>
   );
 }
 
 function CompanyCard({ company, openCompany, watched, toggleWatch }: { company: Company; openCompany: (id: string) => void; watched: boolean; toggleWatch: (id: string) => void }) {
   const revenue = company.metrics.revenue;
-  const change = percentChange(revenue);
+  const change = revenue.length ? percentChange(revenue) : null;
+  const revenueText = revenue.length ? formatCompanyMetric(company, "revenue", latest(revenue).value) : "Not tagged";
   return (
     <article className="company-card">
       <button className={`watch-button ${watched ? "watched" : ""}`} onClick={() => toggleWatch(company.id)} aria-label={watched ? "Remove from watchlist" : "Add to watchlist"}>{watched ? "♥" : "♡"}</button>
       <button className="card-main" onClick={() => openCompany(company.id)}>
         <div className="company-heading"><span className="company-monogram">{company.name[0]}</span><div><h3>{company.name}</h3><span>{company.symbol} · {company.sector}</span></div></div>
         <p>{company.description}</p>
-        <div className="card-metric"><span>Latest reported revenue</span><strong>{formatMetric("revenue", latest(revenue).value)}</strong><small>{change === null ? "—" : `${change >= 0 ? "+" : ""}${change.toFixed(1)}%`} from prior year</small></div>
+        <div className="card-metric"><span>Latest reported revenue</span><strong>{revenueText}</strong><small>{change === null ? "Review filing facts" : `${change >= 0 ? "+" : ""}${change.toFixed(1)}%`} from prior year</small></div>
         <div className="card-footer"><span>Data through {company.reportingPeriod}</span><strong>View company →</strong></div>
       </button>
     </article>
@@ -232,39 +288,73 @@ function CompanyCard({ company, openCompany, watched, toggleWatch }: { company: 
 }
 
 function CompanyDetail({ company, watched, toggleWatch, navigate }: { company: Company; watched: boolean; toggleWatch: (id: string) => void; navigate: (page: Page) => void }) {
-  const [metric, setMetric] = useState<MetricKey>("revenue");
+  const availableMetrics = (Object.keys(metricMeta) as MetricKey[]).filter((key) => company.metrics[key].length);
+  const [metric, setMetric] = useState<MetricKey>(availableMetrics[0] ?? "revenue");
+  useEffect(() => { if (!company.metrics[metric].length && availableMetrics[0]) setMetric(availableMetrics[0]); }, [company.id, metric]);
   const series = company.metrics[metric];
   const notes: Record<MetricKey, string> = { revenue: company.notes.growth, operatingMargin: company.notes.profitability, freeCashFlow: company.notes.cash, netDebt: company.notes.debt };
   return (
     <div className="page-wrap company-page">
       <button className="back-button" onClick={() => navigate("discover")}>← Back to discover</button>
       <section className="company-profile">
-        <div className="company-title"><span className="company-monogram large">{company.name[0]}</span><div><p>{company.symbol} · Illustrative company</p><h1>{company.name}</h1><span>{company.sector}</span></div></div>
+        <div className="company-title"><span className="company-monogram large">{company.name[0]}</span><div><p>{company.symbol} · {company.dataMode === "sec-live" ? "Live SEC session" : "Illustrative preview"}</p><h1>{company.name}</h1><span>{company.sector}</span></div></div>
         <button className={`button ${watched ? "secondary" : "primary"}`} onClick={() => toggleWatch(company.id)}>{watched ? "♥ In your watchlist" : "♡ Add to watchlist"}</button>
       </section>
       <p className="company-description">{company.description}</p>
-      <div className="company-facts"><span>Founded <strong>{company.founded}</strong></span><span>Employees <strong>{company.employees}</strong></span><span>Latest period <strong>{company.reportingPeriod}</strong></span><span>Updated <strong>{company.updatedAt}</strong></span></div>
+      <div className="company-facts">{company.founded && <span>Founded <strong>{company.founded}</strong></span>}{company.employees && <span>Employees <strong>{company.employees}</strong></span>}<span>Latest period <strong>{company.reportingPeriod}</strong></span><span>Session pull <strong>{company.updatedAt}</strong></span><span>Persistence <strong>Browser memory only</strong></span></div>
 
       <ResearchDepthMap />
 
       <section className="metric-overview">
         <p className="eyebrow">Financial history · Layer III</p><h2>Interrogate the reported record</h2>
-        <div className="metric-tabs" role="tablist">
-          {(Object.keys(metricMeta) as MetricKey[]).map((key) => {
+        {availableMetrics.length ? <><div className="metric-tabs" role="tablist">
+          {availableMetrics.map((key) => {
             const itemSeries = company.metrics[key];
-            return <button role="tab" aria-selected={metric === key} className={metric === key ? "active" : ""} key={key} onClick={() => setMetric(key)}><small>{metricMeta[key].short}</small><strong>{formatMetric(key, latest(itemSeries).value)}</strong><span>{metricMeta[key].label}</span></button>;
+            return <button role="tab" aria-selected={metric === key} className={metric === key ? "active" : ""} key={key} onClick={() => setMetric(key)}><small>{metricMeta[key].short}</small><strong>{formatCompanyMetric(company, key, latest(itemSeries).value)}</strong><span>{metricMeta[key].label}</span></button>;
           })}
         </div>
         <div className="metric-detail">
           <div className="chart-column">
-            <div className="chart-title"><div><span>{metricMeta[metric].label}</span><strong>{formatMetric(metric, latest(series).value)}</strong></div><small>{company.currency} · Annual</small></div>
+            <div className="chart-title"><div><span>{metricMeta[metric].label}</span><strong>{formatCompanyMetric(company, metric, latest(series).value)}</strong></div><small>{company.currency} · Annual</small></div>
             <LineChart series={series} color={metric === "revenue" ? "#b58932" : metric === "operatingMargin" ? "#7d3f49" : metric === "freeCashFlow" ? "#5a6f78" : "#9b6741"} />
           </div>
-          <aside className="plain-insight"><span>In plain language</span><h3>{notes[metric]}</h3><p>{metricMeta[metric].explanation}</p><details><summary>How this metric is calculated</summary><p>This preview uses a simplified illustrative series. Production data will show the exact formula, source filing and any adjustments.</p></details></aside>
+          <aside className="plain-insight"><span>In plain language</span><h3>{notes[metric]}</h3><p>{metricMeta[metric].explanation}</p><details><summary>How this metric is calculated</summary><p>{company.dataMode === "sec-live" ? "This derived series uses the SEC XBRL tags described in the filing-facts section below. It appears only when the required tagged concepts are available." : "This preview uses a simplified illustrative series."}</p></details></aside>
         </div>
+        </> : <Empty title="No standard derived series found" text="Open the filing facts below. The issuer may use non-standard XBRL tags for these concepts." />}
       </section>
+      {company.statements && <StatementExplorer company={company} />}
       <DataTrust company={company} />
     </div>
+  );
+}
+
+function formatCompanyMetric(company: Company, key: MetricKey, value: number): string {
+  if (key === "operatingMargin") return `${value.toFixed(1)}%`;
+  if (company.currency.startsWith("US$")) return `${value < 0 ? "−" : ""}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 1 })}m`;
+  return formatMetric(key, value);
+}
+
+function formatStatementValue(fact: StatementFact, value: number): string {
+  if (fact.unit === "US$ per share") return `$${value.toFixed(2)}`;
+  if (fact.unit === "million shares") return `${value.toLocaleString("en-US", { maximumFractionDigits: 1 })}m`;
+  return `${value < 0 ? "−" : ""}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 1 })}m`;
+}
+
+function StatementExplorer({ company }: { company: Company }) {
+  const groups = (company.statements ?? []).filter((group) => group.facts.length);
+  const [activeKey, setActiveKey] = useState<StatementGroup["key"]>(groups[0]?.key ?? "income");
+  const active = groups.find((group) => group.key === activeKey) ?? groups[0];
+  const years = [...new Set(active?.facts.flatMap((fact) => fact.values.map((value) => value.year)) ?? [])].sort((a, b) => a - b);
+  return (
+    <section className="statement-explorer">
+      <div className="statement-heading"><div><p className="eyebrow">Directly extracted filing facts</p><h2>Open the statements</h2></div><span>Transient · SEC EDGAR</span></div>
+      <div className="statement-tabs">{groups.map((group) => <button className={group.key === active?.key ? "active" : ""} onClick={() => setActiveKey(group.key)} key={group.key}>{group.label}<small>{group.facts.length} facts</small></button>)}</div>
+      {active && <div className="statement-table-wrap"><table><thead><tr><th>Reported fact</th>{years.map((year) => <th key={year}>FY {year}</th>)}</tr></thead><tbody>{active.facts.map((fact) => { const values = new Map(fact.values.map((value) => [value.year, value.value])); return <tr key={fact.key}><td><strong>{fact.label}</strong><small>{fact.description}<br />{fact.unit}</small></td>{years.map((year) => <td key={year}>{values.has(year) ? formatStatementValue(fact, values.get(year)!) : "—"}</td>)}</tr>; })}</tbody></table></div>}
+      <div className="filing-and-limits">
+        <div><h3>Source filings</h3>{company.filings?.length ? <div className="filing-list">{company.filings.slice(0, 12).map((filing) => <a href={filing.url} target="_blank" rel="noreferrer" key={filing.accession}><span>{filing.form}</span><div><strong>{filing.title}</strong><small>Filed {filing.filed} · Period {filing.period || "not stated"}</small></div><b>↗</b></a>)}</div> : <p>No matching recent 10-K, 10-Q or earnings-related 8-K links were returned for this range.</p>}</div>
+        <aside><h3>Read with these limits</h3><ul>{company.limitations?.map((item) => <li key={item}>{item}</li>)}</ul></aside>
+      </div>
+    </section>
   );
 }
 
@@ -279,6 +369,7 @@ function ResearchDepthMap() {
 }
 
 function LineChart({ series, color, compact = false }: { series: YearValue[]; color: string; compact?: boolean }) {
+  if (!series.length) return <div className="empty-chart">No comparable annual series was tagged.</div>;
   const width = 520;
   const height = compact ? 140 : 240;
   const pad = compact ? 12 : 28;
@@ -286,7 +377,7 @@ function LineChart({ series, color, compact = false }: { series: YearValue[]; co
   const min = Math.min(...values);
   const max = Math.max(...values);
   const spread = max - min || 1;
-  const points = series.map((item, index) => ({ x: pad + (index * (width - pad * 2)) / (series.length - 1), y: height - pad - ((item.value - min) / spread) * (height - pad * 2), ...item }));
+  const points = series.map((item, index) => ({ x: series.length === 1 ? width / 2 : pad + (index * (width - pad * 2)) / (series.length - 1), y: height - pad - ((item.value - min) / spread) * (height - pad * 2), ...item }));
   const line = points.map((point) => `${point.x},${point.y}`).join(" ");
   const area = `${pad},${height - pad} ${line} ${width - pad},${height - pad}`;
   return (
@@ -306,19 +397,20 @@ function LineChart({ series, color, compact = false }: { series: YearValue[]; co
 function DataTrust({ company }: { company: Company }) {
   return (
     <section className="data-trust">
-      <div className="trust-icon">✓</div><div><p className="eyebrow">Know where the number came from</p><h2>Data you can trace</h2><p>This initial version uses fictional companies and illustrative numbers. Production company pages will link every figure to its source filing and preserve revisions.</p></div>
-      <div className="source-card"><span>Dataset</span><strong>TaRaSha illustrative preview</strong><span>Reporting period</span><strong>{company.reportingPeriod}</strong><span>Last refreshed</span><strong>{company.updatedAt}</strong></div>
+      <div className="trust-icon">✓</div><div><p className="eyebrow">Know where the number came from</p><h2>Data you can trace</h2><p>{company.dataMode === "sec-live" ? "Facts were extracted from SEC EDGAR in this browser session. Filing links remain available for verification; the extracted numbers are not saved by TaRaSha." : "This review mode uses fictional companies and illustrative numbers."}</p></div>
+      <div className="source-card"><span>Dataset</span><strong>{company.dataMode === "sec-live" ? "SEC EDGAR XBRL" : "Illustrative preview"}</strong><span>Persistence</span><strong>{company.dataMode === "sec-live" ? "Session memory only" : "Local demo module"}</strong><span>Session pull</span><strong>{company.updatedAt}</strong></div>
     </section>
   );
 }
 
-function Compare({ openCompany }: { openCompany: (id: string) => void }) {
-  const [selected, setSelected] = useState<string[]>(companies.slice(0, 3).map((company) => company.id));
+function Compare({ companies, openCompany }: { companies: Company[]; openCompany: (id: string) => void }) {
+  const [selected, setSelected] = useState<string[]>([]);
   const selectedCompanies = companies.filter((company) => selected.includes(company.id));
   const toggle = (id: string) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : current.length < 3 ? [...current, id] : current);
   return (
     <div className="page-wrap">
       <PageIntro eyebrow="Compare" title="Put the same facts side by side." text="Choose up to three companies. We use matching periods and definitions wherever possible." />
+      {!companies.length && <div className="market-notice"><strong>Nothing to compare yet.</strong><p>Pull two or more companies into the current session from Discover.</p></div>}
       <div className="compare-picker">{companies.map((company) => <button className={selected.includes(company.id) ? "selected" : ""} disabled={!selected.includes(company.id) && selected.length >= 3} onClick={() => toggle(company.id)} key={company.id}><span>{selected.includes(company.id) ? "✓" : "+"}</span>{company.name}</button>)}</div>
       {selectedCompanies.length < 2 ? <Empty title="Choose at least two companies" text="Comparison becomes available after you select a second company." /> : <ComparisonTable companies={selectedCompanies} openCompany={openCompany} />}
     </div>
@@ -331,18 +423,18 @@ function ComparisonTable({ companies: selected, openCompany }: { companies: Comp
       <div className="comparison-note"><strong>Remember:</strong> A comparison describes differences. It does not decide which company is suitable for anyone.</div>
       <div className="comparison-table" style={{ "--company-count": selected.length } as React.CSSProperties}>
         <div className="comparison-row company-row"><span>Company</span>{selected.map((company) => <button key={company.id} onClick={() => openCompany(company.id)}><span className="company-monogram">{company.name[0]}</span><strong>{company.name}</strong><small>{company.sector}</small></button>)}</div>
-        {(Object.keys(metricMeta) as MetricKey[]).map((key) => <div className="comparison-row" key={key}><span><strong>{metricMeta[key].label}</strong><small>{metricMeta[key].explanation}</small></span>{selected.map((company) => { const value = latest(company.metrics[key]); return <div key={company.id}><strong>{formatMetric(key, value.value)}</strong><small>{company.reportingPeriod}</small></div>; })}</div>)}
+        {(Object.keys(metricMeta) as MetricKey[]).map((key) => <div className="comparison-row" key={key}><span><strong>{metricMeta[key].label}</strong><small>{metricMeta[key].explanation}</small></span>{selected.map((company) => { const series = company.metrics[key]; return <div key={company.id}><strong>{series.length ? formatCompanyMetric(company, key, latest(series).value) : "—"}</strong><small>{series.length ? company.reportingPeriod : "Tag unavailable"}</small></div>; })}</div>)}
       </div>
     </div>
   );
 }
 
-function Watchlist({ ids, openCompany, toggleWatch, navigate }: { ids: string[]; openCompany: (id: string) => void; toggleWatch: (id: string) => void; navigate: (page: Page) => void }) {
+function Watchlist({ companies, ids, openCompany, toggleWatch, navigate }: { companies: Company[]; ids: string[]; openCompany: (id: string) => void; toggleWatch: (id: string) => void; navigate: (page: Page) => void }) {
   const watched = companies.filter((company) => ids.includes(company.id));
   return (
     <div className="page-wrap">
       <PageIntro eyebrow="Watchlist" title="Keep the companies you follow in one place." text="This list organises factual updates. It does not generate alerts to buy, sell or hold." />
-      {!watched.length ? <div className="large-empty"><span>♡</span><h2>Your watchlist is empty</h2><p>Add an illustrative company to see its latest reported period here.</p><button className="button primary" onClick={() => navigate("discover")}>Discover companies</button></div> : <><div className="watch-summary"><strong>{watched.length} of 10 beta watchlist places used</strong><span>Saved only on this device in the initial preview</span></div><div className="company-grid wide">{watched.map((company) => <CompanyCard key={company.id} company={company} openCompany={openCompany} watched toggleWatch={toggleWatch} />)}</div></>}
+      {!watched.length ? <div className="large-empty"><span>♡</span><h2>No watched company is active</h2><p>Pull company research in this session, then add its card to the watchlist.</p><button className="button primary" onClick={() => navigate("discover")}>Discover companies</button></div> : <><div className="watch-summary"><strong>{watched.length} active watched companies</strong><span>Company facts vanish when the current browser session ends</span></div><div className="company-grid wide">{watched.map((company) => <CompanyCard key={company.id} company={company} openCompany={openCompany} watched toggleWatch={toggleWatch} />)}</div></>}
     </div>
   );
 }

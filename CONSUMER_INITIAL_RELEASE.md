@@ -15,22 +15,24 @@ The consumer application lives under `consumer/` on `agent/consumer-friendly-ini
 ## Review walkthrough
 
 1. Start on Home and assess whether the value proposition is understandable without financial knowledge.
-2. Open Discover and search for a fictional company or filter by sector.
-3. Open a company and switch between Sales, Profitability, Cash and Debt.
-4. Add companies to the watchlist, then open Watchlist.
-5. Compare two or three companies.
-6. Open a learning card and the glossary.
-7. Resize the browser to a mobile width and review the bottom navigation.
+2. Open Discover, search for a company and choose a reporting-year range.
+3. Pull research and confirm that the company card appears only on the transient research shelf.
+4. Open a company, switch between derived trends, inspect the statement tables and open source-filing links.
+5. Add active session companies to the watchlist, then open Watchlist.
+6. Compare two or three pulled companies.
+7. Open a learning card and the glossary.
+8. Resize the browser to a mobile width and review the bottom navigation.
 
 ## Intentional limitations
 
-- Fictional data only
+- Fictional data in credential-free review mode; official SEC data after the zero-cost Cloudflare setup
 - No real authentication yet
 - Watchlist stored on the current device
 - No payment collection
 - No email notifications
 - No market-price data
-- No production deployment configured until the interface is approved
+- No earnings-call transcripts because SEC EDGAR does not provide them
+- No India filing extraction until a lawful zero-cost structured source is confirmed
 
 ## Suggested next review decisions
 

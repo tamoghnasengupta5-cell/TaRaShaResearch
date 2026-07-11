@@ -11,9 +11,9 @@ export interface Company {
   symbol: string;
   sector: string;
   description: string;
-  founded: number;
-  employees: string;
-  currency: "₹ crore";
+  founded?: number;
+  employees?: string;
+  currency: string;
   reportingPeriod: string;
   updatedAt: string;
   metrics: Record<MetricKey, YearValue[]>;
@@ -23,6 +23,44 @@ export interface Company {
     cash: string;
     debt: string;
   };
+  statements?: StatementGroup[];
+  filings?: FilingDocument[];
+  limitations?: string[];
+  dataMode?: "illustrative" | "sec-live";
+}
+
+export interface CatalogCompany {
+  id: string;
+  cik: string | null;
+  name: string;
+  ticker: string;
+  exchange: string;
+  country: "USA" | "India";
+  provider: string;
+  research_available: number;
+}
+
+export interface StatementFact {
+  key: string;
+  label: string;
+  description: string;
+  unit: string;
+  values: YearValue[];
+}
+
+export interface StatementGroup {
+  key: "income" | "balance" | "cash" | "shares";
+  label: string;
+  facts: StatementFact[];
+}
+
+export interface FilingDocument {
+  accession: string;
+  form: "10-K" | "10-Q" | "8-K";
+  filed: string;
+  period: string;
+  title: string;
+  url: string;
 }
 
 export type Page = "home" | "discover" | "company" | "compare" | "watchlist" | "learn";
