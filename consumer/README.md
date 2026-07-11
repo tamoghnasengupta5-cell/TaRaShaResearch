@@ -33,6 +33,16 @@ npm run dev
 
 Open the local URL shown by Vite. No account, API key or external service is required in review mode. Search for an illustrative company, pull it, and confirm that cards appear only on the session research shelf.
 
+To use the already-provisioned live US catalogue from localhost, create `.env.local` with:
+
+```text
+VITE_DATA_MODE=live
+VITE_API_BASE_URL=
+DEV_API_TARGET=https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
+```
+
+`npm run dev` will then proxy same-origin `/api` requests from port 5173 to the Cloudflare preview. `.env.local` is git-ignored. Restart Vite after changing it because these values are loaded when the development server starts.
+
 ## Validate
 
 ```bash

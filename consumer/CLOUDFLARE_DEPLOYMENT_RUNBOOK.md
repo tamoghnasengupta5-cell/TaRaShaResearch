@@ -33,6 +33,18 @@ The production branch marker intentionally differs from the consumer branch so d
 
 No secret values are committed to Git.
 
+## Use the live catalogue on localhost
+
+The local Vite server does not run Pages Functions or D1. The checked-in Vite configuration can proxy local `/api` requests to the deployed preview. Create the git-ignored `.env.local` file:
+
+```text
+VITE_DATA_MODE=live
+VITE_API_BASE_URL=
+DEV_API_TARGET=https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
+```
+
+Then restart `npm run dev` and open <http://localhost:5173/#/discover>. Leaving `VITE_API_BASE_URL` empty is intentional: browser requests remain same-origin and Vite performs the development-only proxying.
+
 ## Deploy a future consumer update
 
 From the consumer worktree:
