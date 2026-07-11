@@ -4,6 +4,10 @@
 
 Help a non-specialist understand what a company reports without turning the application into a recommendation or suitability service.
 
+## Visual direction
+
+The second design pass reuses the illuminated signature logo from the private research platform and establishes a gold, ivory, charcoal and burgundy visual system. The interface presents company research as a layered dossier: six connected lenses lead from the business model and operating engine through financial history, cash conversion, capital allocation and industry context.
+
 ## Branch isolation
 
 The consumer application lives under `consumer/` on `agent/consumer-friendly-initial`. The branch was created in a separate Git worktree from committed `Local_Test` HEAD `c5b421c`. No uncommitted research files were copied, staged or modified.

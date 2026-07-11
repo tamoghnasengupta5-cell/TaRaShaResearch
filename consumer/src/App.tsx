@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { companies, learningCards, metricMeta } from "./data/demo";
 import { companySearch, formatMetric, latest, percentChange } from "./domain";
 import type { Company, MetricKey, Page, YearValue } from "./types";
+import tarashaLogo from "./assets/tarasha-logo.png";
 
 const navItems: { page: Page; label: string; icon: string }[] = [
   { page: "home", label: "Home", icon: "⌂" },
@@ -63,8 +64,8 @@ function BetaStrip() {
 function Brand() {
   return (
     <div className="brand" aria-label="TaRaSha home">
-      <span className="brand-mark">T</span>
-      <span><strong>TaRaSha</strong><small>Company Lens</small></span>
+      <span className="brand-logo-window"><img src={tarashaLogo} alt="TaRaSha" /></span>
+      <span className="brand-edition">Company Lens</span>
     </div>
   );
 }
@@ -105,15 +106,15 @@ function Home({ navigate, openCompany, watchlist, toggleWatch }: {
     <>
       <section className="hero">
         <div className="hero-copy">
-          <p className="eyebrow">Company fundamentals, made human</p>
-          <h1>Understand the business behind the numbers.</h1>
-          <p className="hero-text">Explore reported sales, profitability, cash and debt in language that does not require a finance degree.</p>
+          <p className="eyebrow">Enter the architecture of a business</p>
+          <h1>Go beyond the numbers. <em>Understand the enterprise.</em></h1>
+          <p className="hero-text">Trace the full research chain—from the operating engine and industry structure to cash conversion, balance-sheet resilience and capital allocation.</p>
           <div className="hero-actions">
-            <button className="button primary" onClick={() => navigate("discover")}>Explore companies <span>→</span></button>
-            <button className="button secondary" onClick={() => navigate("learn")}>Learn the basics</button>
+            <button className="button primary" onClick={() => navigate("discover")}>Enter company research <span>→</span></button>
+            <button className="button secondary" onClick={() => navigate("learn")}>Explore the research method</button>
           </div>
           <div className="trust-row">
-            <span>✓ No stock tips</span><span>✓ No price targets</span><span>✓ Sources shown</span>
+            <span>Source-linked facts</span><span>Multi-year context</span><span>No stock calls</span>
           </div>
         </div>
         <HeroCard />
@@ -121,10 +122,10 @@ function Home({ navigate, openCompany, watchlist, toggleWatch }: {
 
       <section className="content-section intro-section">
         <div>
-          <p className="eyebrow">Start with four simple questions</p>
-          <h2>A clearer way to read a company</h2>
+          <p className="eyebrow">The first analytical lens</p>
+          <h2>Begin with four questions. Then follow the evidence.</h2>
         </div>
-        <p className="section-lede">We organise reported numbers around the questions people naturally ask—not around accounting statements.</p>
+        <p className="section-lede">A financial statement is a map, not the destination. Each lens opens into historical detail, definitions, source filings and the operating context behind the reported result.</p>
         <div className="question-grid">
           <QuestionCard number="01" color="mint" title="Is the business growing?" text="Follow sales over time, not a single quarter." />
           <QuestionCard number="02" color="gold" title="Is it profitable?" text="See how much of every ₹100 remains after operating costs." />
@@ -132,6 +133,8 @@ function Home({ navigate, openCompany, watchlist, toggleWatch }: {
           <QuestionCard number="04" color="coral" title="How much pressure does debt add?" text="View borrowings alongside cash and the direction of travel." />
         </div>
       </section>
+
+      <ResearchArchitecture />
 
       <section className="content-section soft-section">
         <div className="section-heading-row">
@@ -144,7 +147,7 @@ function Home({ navigate, openCompany, watchlist, toggleWatch }: {
       </section>
 
       <section className="content-section learning-preview">
-        <div><p className="eyebrow">Learn as you explore</p><h2>Small lessons. Useful context.</h2><p>Every metric includes a plain-language explanation, and the learning library goes one step deeper.</p><button className="button secondary" onClick={() => navigate("learn")}>Visit learning library</button></div>
+        <div><p className="eyebrow">Build your research vocabulary</p><h2>Every number has a story—and a limitation.</h2><p>Move from a plain-language introduction to the mechanics, accounting definition and questions that deserve a closer look.</p><button className="button secondary" onClick={() => navigate("learn")}>Enter the knowledge library</button></div>
         <div className="mini-lessons">
           {learningCards.slice(0, 3).map((card, index) => <div className="mini-lesson" key={card.id}><span>0{index + 1}</span><div><small>{card.time} read</small><strong>{card.title}</strong></div></div>)}
         </div>
@@ -157,11 +160,36 @@ function HeroCard() {
   const series = companies[0].metrics.revenue;
   return (
     <div className="hero-card">
+      <div className="hero-card-kicker"><span>Research dossier</span><span>01 / 06</span></div>
       <div className="hero-card-head"><span className="company-monogram">A</span><div><strong>Aarohan Consumer</strong><small>Illustrative company</small></div><span className="fresh-badge">Updated</span></div>
       <div className="hero-metric"><span>Revenue</span><strong>₹5,780 cr</strong><small>FY 2026</small></div>
       <LineChart series={series} color="#f2bb62" compact />
-      <div className="hero-insight"><span>In plain language</span><p>Sales increased in each of the last five reported years.</p></div>
+      <div className="hero-insight"><span>First observation</span><p>Sales increased in each of the last five reported years.</p></div>
+      <div className="dossier-progress"><span className="complete">Business</span><span className="complete">Financials</span><span>Cash</span><span>Capital</span></div>
     </div>
+  );
+}
+
+function ResearchArchitecture() {
+  const layers = [
+    { number: "I", title: "Business model", text: "How the company earns, who pays it, and what must go right." },
+    { number: "II", title: "Operating engine", text: "Volumes, pricing, margins and the mechanics behind reported growth." },
+    { number: "III", title: "Financial history", text: "A multi-year view across income statement, balance sheet and cash flow." },
+    { number: "IV", title: "Cash conversion", text: "Whether accounting profit travels through working capital into cash." },
+    { number: "V", title: "Capital allocation", text: "Where retained cash goes: reinvestment, debt, distributions or acquisitions." },
+    { number: "VI", title: "Industry context", text: "The structural forces, peers and disclosures needed to interpret the facts." },
+  ];
+  return (
+    <section className="research-architecture">
+      <div className="architecture-intro">
+        <p className="eyebrow">Six layers of inquiry</p>
+        <h2>Research is not a score.<br />It is a chain of understanding.</h2>
+        <p>Company Lens is designed to let curiosity travel deeper. Start with a simple observation, inspect the history, open the calculation and continue into the business mechanics beneath it.</p>
+      </div>
+      <div className="architecture-layers">
+        {layers.map((layer) => <article key={layer.number}><span>{layer.number}</span><div><h3>{layer.title}</h3><p>{layer.text}</p></div><strong>＋</strong></article>)}
+      </div>
+    </section>
   );
 }
 
@@ -217,8 +245,10 @@ function CompanyDetail({ company, watched, toggleWatch, navigate }: { company: C
       <p className="company-description">{company.description}</p>
       <div className="company-facts"><span>Founded <strong>{company.founded}</strong></span><span>Employees <strong>{company.employees}</strong></span><span>Latest period <strong>{company.reportingPeriod}</strong></span><span>Updated <strong>{company.updatedAt}</strong></span></div>
 
+      <ResearchDepthMap />
+
       <section className="metric-overview">
-        <p className="eyebrow">The four-question view</p><h2>What do the reported numbers show?</h2>
+        <p className="eyebrow">Financial history · Layer III</p><h2>Interrogate the reported record</h2>
         <div className="metric-tabs" role="tablist">
           {(Object.keys(metricMeta) as MetricKey[]).map((key) => {
             const itemSeries = company.metrics[key];
@@ -228,13 +258,23 @@ function CompanyDetail({ company, watched, toggleWatch, navigate }: { company: C
         <div className="metric-detail">
           <div className="chart-column">
             <div className="chart-title"><div><span>{metricMeta[metric].label}</span><strong>{formatMetric(metric, latest(series).value)}</strong></div><small>{company.currency} · Annual</small></div>
-            <LineChart series={series} color={metric === "revenue" ? "#146c5b" : metric === "operatingMargin" ? "#c98722" : metric === "freeCashFlow" ? "#397ca8" : "#ce6f59"} />
+            <LineChart series={series} color={metric === "revenue" ? "#b58932" : metric === "operatingMargin" ? "#7d3f49" : metric === "freeCashFlow" ? "#5a6f78" : "#9b6741"} />
           </div>
           <aside className="plain-insight"><span>In plain language</span><h3>{notes[metric]}</h3><p>{metricMeta[metric].explanation}</p><details><summary>How this metric is calculated</summary><p>This preview uses a simplified illustrative series. Production data will show the exact formula, source filing and any adjustments.</p></details></aside>
         </div>
       </section>
       <DataTrust company={company} />
     </div>
+  );
+}
+
+function ResearchDepthMap() {
+  const layers = ["Enterprise", "Revenue engine", "Profit structure", "Cash conversion", "Financial resilience", "Capital allocation"];
+  return (
+    <section className="depth-map">
+      <div><p className="eyebrow">Research depth map</p><h2>One company. Six connected lenses.</h2><p>The first preview opens the financial-history lens. Future iterations will connect every observation to the business and industry context around it.</p></div>
+      <ol>{layers.map((layer, index) => <li className={index === 2 ? "active" : index < 2 ? "available" : ""} key={layer}><span>{String(index + 1).padStart(2, "0")}</span><strong>{layer}</strong><small>{index <= 2 ? "Explore" : "In development"}</small></li>)}</ol>
+    </section>
   );
 }
 
@@ -331,7 +371,7 @@ function Empty({ title, text }: { title: string; text: string }) {
 function Footer({ navigate }: { navigate: (page: Page) => void }) {
   return (
     <footer>
-      <div><Brand /><p>Plain-language company fundamentals for curious investors.</p></div>
+      <div><Brand /><p>Go as deep as curiosity demands. Follow the business, the history and the source.</p></div>
       <div><strong>Explore</strong><button onClick={() => navigate("discover")}>Companies</button><button onClick={() => navigate("compare")}>Compare</button><button onClick={() => navigate("learn")}>Learn</button></div>
       <div><strong>Important</strong><p>TaRaSha Company Lens is an educational information platform, not an investment adviser or research analyst. It does not provide recommendations, price targets or suitability assessments.</p></div>
       <div className="footer-bottom"><span>© 2026 TaRaSha · Founding-user preview</span><span>Illustrative data · Not for investment decisions</span></div>
