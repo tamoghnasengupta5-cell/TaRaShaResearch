@@ -2,6 +2,8 @@
 
 Consumer-facing founding-user application. It is intentionally separate from the Streamlit research application. Review mode uses fictional data; live mode searches a lightweight catalogue and extracts US filing facts into browser memory without storing company financials.
 
+The zero-cost Cloudflare live preview has now been provisioned and its US SEC catalogue populated. See `CLOUDFLARE_DEPLOYMENT_RUNBOOK.md` for the actual resource names, deployment URL, catalogue-refresh command and verification procedure.
+
 ## Included
 
 - Responsive landing page and navigation
