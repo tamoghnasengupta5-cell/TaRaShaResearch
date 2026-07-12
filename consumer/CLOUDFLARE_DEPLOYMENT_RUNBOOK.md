@@ -92,6 +92,8 @@ npx wrangler d1 execute tarasha-consumer-catalog --remote \
 
 Expected tickers are `MSFT` and `ANET`; the initial catalogue count is 9,304.
 
+If SEC traffic is temporarily refused, the Pages Function automatically retries up to five times with backoff. Do not remove this control or parallelize the Company Facts and Submissions requests; the SEC limits automated access to ten requests per second.
+
 ## Secret rotation
 
 To rotate the admin key, generate a new value, replace the Keychain entry, and upload the same value to the Pages project before the next catalogue sync. Never place it in `.env.local`, a `VITE_*` variable, a shell-history command, or Git.

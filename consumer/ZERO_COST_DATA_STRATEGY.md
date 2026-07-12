@@ -36,6 +36,8 @@ The idea is partially feasible at zero infrastructure cost.
 
 Three companies is a deliberate founding-user limit. Each live company requires one SEC Company Facts response and one Submissions response; large filers can return several megabytes of XBRL history. Three keeps browser memory, SEC traffic and free-tier bandwidth predictable while still enabling a useful comparison.
 
+The SEC caps automated access at ten requests per second and may temporarily reject traffic. The Function retries transient SEC 403/429/5xx responses up to five times with exponential backoff and jitter, while the browser spaces Company Facts and Submissions calls. A rejected upstream response is never exposed to users as a raw 403.
+
 ## Founding-user access
 
 The live beta is deployed as a Cloudflare Pages branch preview with its preview access policy enabled and only the first ten subscriber emails allowed. This is important: Cloudflare documents that the Pages switch protects preview deployments, not the production `*.pages.dev` hostname. The administrator's catalogue sync uses an Access service token in addition to `ADMIN_SYNC_KEY`.

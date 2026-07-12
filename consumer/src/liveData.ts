@@ -7,6 +7,7 @@ export const MAX_YEAR_RANGE = 5;
 export const liveDataEnabled = import.meta.env.VITE_DATA_MODE === "live";
 const apiBase = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const sessionId = `${crypto.randomUUID().replace(/-/g, "")}${Date.now().toString(36)}`;
+const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const demoCatalog: CatalogCompany[] = demoCompanies.map((company) => ({
   id: company.id,
@@ -21,7 +22,7 @@ const demoCatalog: CatalogCompany[] = demoCompanies.map((company) => ({
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBase}${path}`, init);
-  const payload = await response.json().catch(() => ({}));
+  const payload = await response.json().catch(() => ({})) as { error?: string };
   if (!response.ok) throw new Error(payload.error || `Data request failed with status ${response.status}.`);
   return payload as T;
 }
@@ -55,6 +56,7 @@ export async function pullCompanyResearch(catalog: CatalogCompany, fromYear: num
   // Keep upstream SEC requests sequential. This is slightly slower for one user,
   // but makes aggregate traffic more predictable during the founding-user phase.
   const facts = await requestJson<SecCompanyFacts>(`/api/sec/companyfacts?${params}`);
+  await wait(350);
   const submissions = await requestJson<SecSubmissions>(`/api/sec/submissions?${params}`);
   return normalizeSecResearch(catalog, facts, submissions, fromYear, toYear);
 }

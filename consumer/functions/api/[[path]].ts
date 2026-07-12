@@ -27,6 +27,8 @@ interface AdminCatalogRow {
 const MAX_SESSION_COMPANIES = 3;
 const MAX_YEAR_RANGE = 5;
 const SESSION_HOURS = 12;
+const SEC_MAX_ATTEMPTS = 5;
+const SEC_RETRYABLE_STATUSES = new Set([403, 429, 500, 502, 503, 504]);
 
 const json = (data: unknown, status = 200, extraHeaders: HeadersInit = {}) => new Response(JSON.stringify(data), {
   status,
@@ -34,6 +36,32 @@ const json = (data: unknown, status = 200, extraHeaders: HeadersInit = {}) => ne
 });
 
 const error = (message: string, status = 400) => json({ error: message }, status);
+
+const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function secRetryDelay(response: Response, attempt: number): number {
+  const retryAfter = Number(response.headers.get("retry-after"));
+  if (Number.isFinite(retryAfter) && retryAfter > 0) return Math.min(retryAfter * 1000, 5_000);
+  return Math.min(250 * (2 ** attempt) + Math.floor(Math.random() * 200), 4_000);
+}
+
+export async function fetchSecWithBackoff(url: string, userAgent: string): Promise<Response> {
+  let response: Response | undefined;
+  for (let attempt = 0; attempt < SEC_MAX_ATTEMPTS; attempt += 1) {
+    response = await fetch(url, {
+      headers: {
+        "User-Agent": userAgent,
+        "Accept-Encoding": "gzip, deflate",
+        Accept: "application/json",
+      },
+    });
+    if (response.ok || !SEC_RETRYABLE_STATUSES.has(response.status) || attempt === SEC_MAX_ATTEMPTS - 1) return response;
+    const delay = secRetryDelay(response, attempt);
+    await response.body?.cancel().catch(() => undefined);
+    await wait(delay);
+  }
+  return response as Response;
+}
 
 function pathParts(request: Request): string[] {
   const pathname = new URL(request.url).pathname.replace(/^\/api\/?/, "");
@@ -135,8 +163,14 @@ async function secProxy(request: Request, env: Env, resource: "companyfacts" | "
   const secUrl = resource === "companyfacts"
     ? `https://data.sec.gov/api/xbrl/companyfacts/CIK${claim.cik}.json`
     : `https://data.sec.gov/submissions/CIK${claim.cik}.json`;
-  const upstream = await fetch(secUrl, { headers: { "User-Agent": env.SEC_USER_AGENT, "Accept-Encoding": "gzip, deflate", Accept: "application/json" } });
-  if (!upstream.ok || !upstream.body) return error(`SEC EDGAR returned ${upstream.status}. Please try again later.`, upstream.status === 429 ? 429 : 502);
+  const upstream = await fetchSecWithBackoff(secUrl, env.SEC_USER_AGENT);
+  if (!upstream.ok || !upstream.body) {
+    const temporary = SEC_RETRYABLE_STATUSES.has(upstream.status);
+    return error(
+      temporary ? "SEC EDGAR is temporarily rate-limiting automated access. Please try again shortly." : "The requested SEC filing data is currently unavailable.",
+      temporary ? 503 : 502,
+    );
+  }
   return new Response(upstream.body, {
     status: 200,
     headers: {
