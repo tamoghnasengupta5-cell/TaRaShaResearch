@@ -20,3 +20,6 @@ Thumbs.db
 
 # Local bulk upload workspace
 /Bulk_Upload_Financials/
+
+# Supabase CLI machine-specific link state
+/supabase/.temp/
