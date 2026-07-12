@@ -36,6 +36,8 @@ The production branch marker intentionally differs from the consumer branch so d
 12. Added the encrypted `SHARED_RESEARCH_SERVICE_KEY`, `SHARED_RESEARCH_URL`, and `DATA_PROVIDER=research-db` to the preview environment.
 13. Switched company search and Pull Research to the shared Research PostgreSQL views. SEC remains the fallback provider.
 
+`DATA_PROVIDER` and `SHARED_RESEARCH_URL` are deliberately checked into `wrangler.jsonc` because they are non-secret deployment configuration. `SHARED_RESEARCH_SERVICE_KEY` must remain an encrypted Pages secret. Wrangler treats the checked-in file as authoritative and will remove dashboard-only plain variables during a direct upload.
+
 No secret values are committed to Git.
 
 ## Use the live catalogue on localhost

@@ -3,6 +3,10 @@
   "name": "tarasha-consumer-platform",
   "pages_build_output_dir": "./dist",
   "compatibility_date": "2026-07-11",
+  "vars": {
+    "DATA_PROVIDER": "research-db",
+    "SHARED_RESEARCH_URL": "https://fgmijnuwplxasztyjfqr.supabase.co"
+  },
   "d1_databases": [
     {
       "binding": "DB",
