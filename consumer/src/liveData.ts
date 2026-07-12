@@ -46,6 +46,10 @@ export async function pullCompanyResearch(catalog: CatalogCompany, fromYear: num
     await new Promise((resolve) => setTimeout(resolve, 350));
     return { ...demo, dataMode: "illustrative", limitations: ["This is fictional preview data. Enable the SEC/Cloudflare configuration for live US filings."] };
   }
+  if (catalog.data_access === "normalized") {
+    const params = new URLSearchParams({ companyId: catalog.id, fromYear: String(fromYear), toYear: String(toYear) });
+    return requestJson<Company>(`/api/research/company?${params}`);
+  }
   if (catalog.country !== "USA" || !catalog.research_available) throw new Error("A lawful free structured filing source is not available for this market yet.");
   await requestJson("/api/session/claim", {
     method: "POST",

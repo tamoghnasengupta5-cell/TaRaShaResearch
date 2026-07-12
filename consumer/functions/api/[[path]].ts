@@ -1,9 +1,12 @@
 /// <reference types="@cloudflare/workers-types" />
 
-interface Env {
+import { pullResearchCompany, researchProviderEnabled, searchResearchCompanies, type ResearchProviderEnv } from "../researchProvider";
+
+interface Env extends ResearchProviderEnv {
   DB: D1Database;
   ADMIN_SYNC_KEY: string;
   SEC_USER_AGENT: string;
+  DATA_PROVIDER?: string;
 }
 
 interface CatalogRow {
@@ -85,6 +88,13 @@ async function searchCompanies(request: Request, env: Env): Promise<Response> {
   const query = cleanText(url.searchParams.get("query"), 80);
   const country = url.searchParams.get("country") === "India" ? "India" : "USA";
   if (query.length < 2) return json({ companies: [] });
+  if (researchProviderEnabled(env)) {
+    try {
+      return json({ companies: await searchResearchCompanies(env, query, country) });
+    } catch (cause) {
+      return error(cause instanceof Error ? cause.message : "Shared Research company search failed.", 502);
+    }
+  }
   const pattern = `%${query.replace(/[%_]/g, "")}%`;
   const result = await env.DB.prepare(`
     select id, cik, name, ticker, exchange, country, provider, research_available
@@ -94,6 +104,24 @@ async function searchCompanies(request: Request, env: Env): Promise<Response> {
     limit 30
   `).bind(country, pattern, query).all<CatalogRow>();
   return json({ companies: result.results ?? [] });
+}
+
+async function researchCompany(request: Request, env: Env): Promise<Response> {
+  if (!researchProviderEnabled(env)) return error("The shared Research provider is not active.", 404);
+  const url = new URL(request.url);
+  const companyId = cleanText(url.searchParams.get("companyId"), 100);
+  const fromYear = Number(url.searchParams.get("fromYear"));
+  const toYear = Number(url.searchParams.get("toYear"));
+  const currentYear = new Date().getUTCFullYear();
+  if (!Number.isInteger(fromYear) || !Number.isInteger(toYear) || fromYear > toYear || toYear > currentYear || fromYear < 1995 || toYear - fromYear + 1 > MAX_YEAR_RANGE) {
+    return error(`Select no more than ${MAX_YEAR_RANGE} reporting years.`);
+  }
+  try {
+    const company = await pullResearchCompany(env, companyId, fromYear, toYear);
+    return company ? json(company) : error("Company was not found in TaRaSha Research.", 404);
+  } catch (cause) {
+    return error(cause instanceof Error ? cause.message : "Shared Research pull failed.", 502);
+  }
 }
 
 async function adminCatalogBatch(request: Request, env: Env): Promise<Response> {
@@ -184,8 +212,9 @@ async function secProxy(request: Request, env: Env, resource: "companyfacts" | "
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
   const [first, second, third] = pathParts(request);
-  if (request.method === "GET" && first === "health") return json({ ok: true, storage: "catalogue-and-session-claims-only" });
+  if (request.method === "GET" && first === "health") return json({ ok: true, provider: researchProviderEnabled(env) ? "research-db" : "sec", financialStorage: "browser-session-only" });
   if (request.method === "GET" && first === "companies") return searchCompanies(request, env);
+  if (request.method === "GET" && first === "research" && second === "company") return researchCompany(request, env);
   if (request.method === "POST" && first === "admin" && second === "catalog" && third === "batch") return adminCatalogBatch(request, env);
   if (request.method === "POST" && first === "session" && second === "claim") return claimCompany(request, env);
   if (request.method === "GET" && first === "sec" && second === "companyfacts") return secProxy(request, env, "companyfacts");

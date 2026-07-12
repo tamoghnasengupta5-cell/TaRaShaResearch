@@ -14,6 +14,9 @@ Created on 2026-07-11 in the authenticated Cloudflare account:
 | D1 database ID | `1f4f4171-938f-4f9d-adbe-6ac8f940df67` |
 | D1 region | Eastern North America (`ENAM`) |
 | D1 binding | `DB` |
+| Shared Research project | `TaRaSha Shared Research` |
+| Shared Research project ref | `fgmijnuwplxasztyjfqr` |
+| Active provider | `research-db` |
 
 The production branch marker intentionally differs from the consumer branch so direct uploads of the consumer branch remain preview deployments.
 
@@ -30,6 +33,8 @@ The production branch marker intentionally differs from the consumer branch so d
 9. Built the frontend with `VITE_DATA_MODE=live` and deployed the consumer branch preview.
 10. Ran the SEC catalogue sync. It inserted 9,304 ticker/exchange associations.
 11. Verified `MSFT`, `ANET`, the session-claim endpoint and Microsoft's live SEC Company Facts response.
+12. Added the encrypted `SHARED_RESEARCH_SERVICE_KEY`, `SHARED_RESEARCH_URL`, and `DATA_PROVIDER=research-db` to the preview environment.
+13. Switched company search and Pull Research to the shared Research PostgreSQL views. SEC remains the fallback provider.
 
 No secret values are committed to Git.
 
@@ -91,6 +96,16 @@ npx wrangler d1 execute tarasha-consumer-catalog --remote \
 ```
 
 Expected tickers are `MSFT` and `ANET`; the initial catalogue count is 9,304.
+
+With `DATA_PROVIDER=research-db`, verify the active provider and both markets:
+
+```bash
+curl -fsS "$BASE/api/health"
+curl -fsS "$BASE/api/companies?query=Microsoft&country=USA"
+curl -fsS "$BASE/api/companies?query=Reliance&country=India"
+```
+
+The health response must report `provider: research-db`. D1's older SEC catalogue remains only for rollback and is not queried by the active provider.
 
 If SEC traffic is temporarily refused, the Pages Function automatically retries up to five times with backoff. Do not remove this control or parallelize the Company Facts and Submissions requests; the SEC limits automated access to ten requests per second.
 

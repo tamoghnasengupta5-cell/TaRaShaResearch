@@ -78,7 +78,7 @@ function App() {
 }
 
 function BetaStrip() {
-  return <div className="beta-strip"><span>Private founding-user preview</span><span>{liveDataEnabled ? "Live SEC filings · Transient session data" : "Preview mode · Illustrative data"}</span></div>;
+  return <div className="beta-strip"><span>Private non-commercial preview</span><span>{liveDataEnabled ? "Live research provider · Browser-session data" : "Preview mode · Illustrative data"}</span></div>;
 }
 
 function Brand() {
@@ -255,16 +255,16 @@ function Discover({ sessionCompanies, onResearchPulled, openCompany, watchlist, 
 
   return (
     <div className="page-wrap">
-      <PageIntro eyebrow="Discover" title="Search the catalogue. Pull the filings." text={`Choose up to ${MAX_YEAR_RANGE} years. The application extracts filing facts into browser memory and never stores the financial statements.`} />
+      <PageIntro eyebrow="Discover" title="Search the catalogue. Pull the research." text={`Choose up to ${MAX_YEAR_RANGE} years. The application retrieves approved financial history into browser memory and stores no separate Consumer copy.`} />
       <div className="session-limit-banner"><span>{sessionCompanies.length} / {MAX_SESSION_COMPANIES}</span><div><strong>Session research capacity</strong><small>Closing or refreshing this browser session clears the pulled financial data.</small></div></div>
+      <div className="market-notice"><strong>Private evaluation data source</strong><p>Companies with TaRaSha Research coverage use financial spreadsheets downloaded through StockAnalysis.com and bulk-uploaded into the private Research platform. This preview is non-commercial; source-provider permission is required before paid distribution.</p></div>
       <div className="search-panel">
         <label className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search company or symbol" /></label>
         <select value={country} onChange={(event) => setCountry(event.target.value as "USA" | "India")} aria-label="Choose market"><option>USA</option><option>India</option></select>
       </div>
       <div className="year-range-panel"><div><strong>Reporting-year range</strong><small>Maximum {MAX_YEAR_RANGE} years</small></div><label>From<input type="number" min="1995" max={toYear} value={fromYear} onChange={(event) => setFromYear(Number(event.target.value))} /></label><span>—</span><label>To<input type="number" min={fromYear} max={currentYear} value={toYear} onChange={(event) => setToYear(Number(event.target.value))} /></label></div>
-      {country === "India" && <div className="market-notice"><strong>India catalogue and structured filings are not enabled yet.</strong><p>NSE publishes XBRL filings, but it does not offer the same free, officially supported public API as SEC EDGAR. TaRaSha will not scrape or redistribute exchange data without confirmed rights.</p></div>}
       {message && <div className="data-message">{message}</div>}
-      {query.trim().length >= 2 && country === "USA" && <section className="catalog-results"><div className="result-meta"><strong>{searching ? "Searching catalogue…" : `${results.length} matches`}</strong><span>Search results are not company cards</span></div>{results.map((company) => <article key={company.id}><div className="company-monogram">{company.name[0]}</div><div><h3>{company.name}</h3><p>{company.ticker} · {company.exchange} · {company.provider}</p></div><button className="button secondary" disabled={pullingId === company.id} onClick={() => pull(company)}>{pullingId === company.id ? "Pulling filings…" : sessionCompanies.some((item) => item.id === company.id) ? "Refresh research" : "Pull research"}</button></article>)}</section>}
+      {query.trim().length >= 2 && <section className="catalog-results"><div className="result-meta"><strong>{searching ? "Searching catalogue…" : `${results.length} matches`}</strong><span>Search results are not company cards</span></div>{results.map((company) => <article key={company.id}><div className="company-monogram">{company.name[0]}</div><div><h3>{company.name}</h3><p>{company.ticker} · {company.exchange} · {company.provider}</p></div><button className="button secondary" disabled={pullingId === company.id} onClick={() => pull(company)}>{pullingId === company.id ? "Pulling research…" : sessionCompanies.some((item) => item.id === company.id) ? "Refresh research" : "Pull research"}</button></article>)}</section>}
       <section className="session-research-section"><div className="section-heading-row"><div><p className="eyebrow">Pulled in this browser session</p><h2>Research shelf</h2></div><span>{sessionCompanies.length} companies</span></div>{sessionCompanies.length ? <div className="company-grid wide">{sessionCompanies.map((company) => <CompanyCard key={company.id} company={company} openCompany={openCompany} watched={watchlist.includes(company.id)} toggleWatch={toggleWatch} />)}</div> : <Empty title="Your research shelf is empty" text="Search the catalogue above and pull a company to create its session card." />}</section>
     </div>
   );
@@ -297,7 +297,7 @@ function CompanyDetail({ company, watched, toggleWatch, navigate }: { company: C
     <div className="page-wrap company-page">
       <button className="back-button" onClick={() => navigate("discover")}>← Back to discover</button>
       <section className="company-profile">
-        <div className="company-title"><span className="company-monogram large">{company.name[0]}</span><div><p>{company.symbol} · {company.dataMode === "sec-live" ? "Live SEC session" : "Illustrative preview"}</p><h1>{company.name}</h1><span>{company.sector}</span></div></div>
+        <div className="company-title"><span className="company-monogram large">{company.name[0]}</span><div><p>{company.symbol} · {company.dataMode === "research-db" ? "Private Research database session" : company.dataMode === "sec-live" ? "Live SEC session" : "Illustrative preview"}</p><h1>{company.name}</h1><span>{company.sector}</span></div></div>
         <button className={`button ${watched ? "secondary" : "primary"}`} onClick={() => toggleWatch(company.id)}>{watched ? "♥ In your watchlist" : "♡ Add to watchlist"}</button>
       </section>
       <p className="company-description">{company.description}</p>
@@ -318,7 +318,7 @@ function CompanyDetail({ company, watched, toggleWatch, navigate }: { company: C
             <div className="chart-title"><div><span>{metricMeta[metric].label}</span><strong>{formatCompanyMetric(company, metric, latest(series).value)}</strong></div><small>{company.currency} · Annual</small></div>
             <LineChart series={series} color={metric === "revenue" ? "#b58932" : metric === "operatingMargin" ? "#7d3f49" : metric === "freeCashFlow" ? "#5a6f78" : "#9b6741"} />
           </div>
-          <aside className="plain-insight"><span>In plain language</span><h3>{notes[metric]}</h3><p>{metricMeta[metric].explanation}</p><details><summary>How this metric is calculated</summary><p>{company.dataMode === "sec-live" ? "This derived series uses the SEC XBRL tags described in the filing-facts section below. It appears only when the required tagged concepts are available." : "This preview uses a simplified illustrative series."}</p></details></aside>
+          <aside className="plain-insight"><span>In plain language</span><h3>{notes[metric]}</h3><p>{metricMeta[metric].explanation}</p><details><summary>How this metric is calculated</summary><p>{company.dataMode === "research-db" ? "This series is calculated from approved fields retrieved from the shared TaRaSha Research database for the selected years." : company.dataMode === "sec-live" ? "This derived series uses the SEC XBRL tags described in the filing-facts section below. It appears only when the required tagged concepts are available." : "This preview uses a simplified illustrative series."}</p></details></aside>
         </div>
         </> : <Empty title="No standard derived series found" text="Open the filing facts below. The issuer may use non-standard XBRL tags for these concepts." />}
       </section>
@@ -334,9 +334,11 @@ function formatCompanyMetric(company: Company, key: MetricKey, value: number): s
   return formatMetric(key, value);
 }
 
-function formatStatementValue(fact: StatementFact, value: number): string {
+function formatStatementValue(company: Company, fact: StatementFact, value: number): string {
   if (fact.unit === "US$ per share") return `$${value.toFixed(2)}`;
   if (fact.unit === "million shares") return `${value.toLocaleString("en-US", { maximumFractionDigits: 1 })}m`;
+  if (fact.unit === "₹ crore") return `${value < 0 ? "−" : ""}₹${Math.abs(value).toLocaleString("en-IN", { maximumFractionDigits: 1 })} cr`;
+  if (!company.currency.startsWith("US$")) return `${value.toLocaleString("en-IN", { maximumFractionDigits: 1 })}`;
   return `${value < 0 ? "−" : ""}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 1 })}m`;
 }
 
@@ -347,11 +349,11 @@ function StatementExplorer({ company }: { company: Company }) {
   const years = [...new Set(active?.facts.flatMap((fact) => fact.values.map((value) => value.year)) ?? [])].sort((a, b) => a - b);
   return (
     <section className="statement-explorer">
-      <div className="statement-heading"><div><p className="eyebrow">Directly extracted filing facts</p><h2>Open the statements</h2></div><span>Transient · SEC EDGAR</span></div>
+      <div className="statement-heading"><div><p className="eyebrow">{company.dataMode === "research-db" ? "Imported historical financial facts" : "Directly extracted filing facts"}</p><h2>Open the statements</h2></div><span>{company.dataMode === "research-db" ? "Transient · Shared Research DB" : "Transient · SEC EDGAR"}</span></div>
       <div className="statement-tabs">{groups.map((group) => <button className={group.key === active?.key ? "active" : ""} onClick={() => setActiveKey(group.key)} key={group.key}>{group.label}<small>{group.facts.length} facts</small></button>)}</div>
-      {active && <div className="statement-table-wrap"><table><thead><tr><th>Reported fact</th>{years.map((year) => <th key={year}>FY {year}</th>)}</tr></thead><tbody>{active.facts.map((fact) => { const values = new Map(fact.values.map((value) => [value.year, value.value])); return <tr key={fact.key}><td><strong>{fact.label}</strong><small>{fact.description}<br />{fact.unit}</small></td>{years.map((year) => <td key={year}>{values.has(year) ? formatStatementValue(fact, values.get(year)!) : "—"}</td>)}</tr>; })}</tbody></table></div>}
+      {active && <div className="statement-table-wrap"><table><thead><tr><th>Reported fact</th>{years.map((year) => <th key={year}>FY {year}</th>)}</tr></thead><tbody>{active.facts.map((fact) => { const values = new Map(fact.values.map((value) => [value.year, value.value])); return <tr key={fact.key}><td><strong>{fact.label}</strong><small>{fact.description}<br />{fact.unit}</small></td>{years.map((year) => <td key={year}>{values.has(year) ? formatStatementValue(company, fact, values.get(year)!) : "—"}</td>)}</tr>; })}</tbody></table></div>}
       <div className="filing-and-limits">
-        <div><h3>Source filings</h3>{company.filings?.length ? <div className="filing-list">{company.filings.slice(0, 12).map((filing) => <a href={filing.url} target="_blank" rel="noreferrer" key={filing.accession}><span>{filing.form}</span><div><strong>{filing.title}</strong><small>Filed {filing.filed} · Period {filing.period || "not stated"}</small></div><b>↗</b></a>)}</div> : <p>No matching recent 10-K, 10-Q or earnings-related 8-K links were returned for this range.</p>}</div>
+        <div><h3>{company.dataMode === "research-db" ? "Source provenance" : "Source filings"}</h3>{company.dataMode === "research-db" ? <p>Retrieved from the shared TaRaSha Research database. The underlying figures were bulk-uploaded from financial spreadsheets downloaded through <a href="https://stockanalysis.com/" target="_blank" rel="noreferrer">StockAnalysis.com</a>. No spreadsheet or financial payload is stored separately by TaRaSha Consumer.</p> : company.filings?.length ? <div className="filing-list">{company.filings.slice(0, 12).map((filing) => <a href={filing.url} target="_blank" rel="noreferrer" key={filing.accession}><span>{filing.form}</span><div><strong>{filing.title}</strong><small>Filed {filing.filed} · Period {filing.period || "not stated"}</small></div><b>↗</b></a>)}</div> : <p>No matching recent 10-K, 10-Q or earnings-related 8-K links were returned for this range.</p>}</div>
         <aside><h3>Read with these limits</h3><ul>{company.limitations?.map((item) => <li key={item}>{item}</li>)}</ul></aside>
       </div>
     </section>
@@ -397,8 +399,8 @@ function LineChart({ series, color, compact = false }: { series: YearValue[]; co
 function DataTrust({ company }: { company: Company }) {
   return (
     <section className="data-trust">
-      <div className="trust-icon">✓</div><div><p className="eyebrow">Know where the number came from</p><h2>Data you can trace</h2><p>{company.dataMode === "sec-live" ? "Facts were extracted from SEC EDGAR in this browser session. Filing links remain available for verification; the extracted numbers are not saved by TaRaSha." : "This review mode uses fictional companies and illustrative numbers."}</p></div>
-      <div className="source-card"><span>Dataset</span><strong>{company.dataMode === "sec-live" ? "SEC EDGAR XBRL" : "Illustrative preview"}</strong><span>Persistence</span><strong>{company.dataMode === "sec-live" ? "Session memory only" : "Local demo module"}</strong><span>Session pull</span><strong>{company.updatedAt}</strong></div>
+      <div className="trust-icon">✓</div><div><p className="eyebrow">Know where the number came from</p><h2>Data you can trace</h2><p>{company.dataMode === "research-db" ? "Facts were retrieved from the shared TaRaSha Research database. They originate in financial spreadsheets downloaded through StockAnalysis.com and bulk-uploaded by the Research administrator. Consumer keeps them only in this browser session." : company.dataMode === "sec-live" ? "Facts were extracted from SEC EDGAR in this browser session. Filing links remain available for verification; the extracted numbers are not saved by TaRaSha." : "This review mode uses fictional companies and illustrative numbers."}</p></div>
+      <div className="source-card"><span>Dataset</span><strong>{company.source?.dataset ?? (company.dataMode === "sec-live" ? "SEC EDGAR XBRL" : "Illustrative preview")}</strong><span>Upstream</span><strong>{company.source?.upstream ?? (company.dataMode === "sec-live" ? "Issuer SEC filings" : "TaRaSha demo")}</strong><span>Persistence</span><strong>{company.source?.persistence ?? (company.dataMode === "sec-live" ? "Session memory only" : "Local demo module")}</strong><span>Use</span><strong>{company.source?.usage ?? "Educational research"}</strong><span>Session pull</span><strong>{company.updatedAt}</strong></div>
     </section>
   );
 }

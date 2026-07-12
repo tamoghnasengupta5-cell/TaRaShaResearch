@@ -1,6 +1,6 @@
 # TaRaSha Company Lens
 
-Consumer-facing founding-user application. It is intentionally separate from the Streamlit research application. Review mode uses fictional data; live mode searches a lightweight catalogue and extracts US filing facts into browser memory without storing company financials.
+Consumer-facing founding-user application. It is intentionally separate from the Streamlit research interface while reading an approved, read-only contract from the same PostgreSQL database. Review mode uses fictional data; live private-preview mode retrieves bulk-uploaded Research facts into browser memory without storing a Consumer copy.
 
 The zero-cost Cloudflare live preview has now been provisioned and its US SEC catalogue populated. See `CLOUDFLARE_DEPLOYMENT_RUNBOOK.md` for the actual resource names, deployment URL, catalogue-refresh command and verification procedure.
 
@@ -8,17 +8,17 @@ The zero-cost Cloudflare live preview has now been provisioned and its US SEC ca
 
 - Responsive landing page and navigation
 - Searchable company catalogue without recommendations or rankings
-- On-demand SEC 10-K/10-Q XBRL extraction for a user-selected range of up to five years
+- On-demand shared Research database retrieval for a user-selected range of up to five years
 - Three-company transient research shelf; a refresh or closed tab clears the financial facts
 - Full income-statement, balance-sheet, cash-flow and share-fact tables when standard tags exist
-- Direct links to 10-K, 10-Q and identifiable earnings-related 8-K filings
+- Provider-neutral server adapter; the legacy SEC provider remains available as a fallback
 - Plain-language company pages organised around growth, profitability, cash and debt
 - Side-by-side comparison for up to three companies
 - Device-local watchlist
 - Learning library and glossary
 - Data-source/freshness treatment
 - Explicit founding-user, data-source and persistence labelling
-- Cloudflare Pages Function and D1 catalogue/session-limit foundation
+- Cloudflare Pages Function provider boundary; shared-database credentials remain server-only
 - Supabase free-tier schema with invite, profile, watchlist, consent and row-level security foundations
 
 ## Run locally
@@ -61,8 +61,12 @@ npm run check
 8. Add encrypted preview Function secrets:
    - `ADMIN_SYNC_KEY`: a long random value used only for catalogue refreshes
    - `SEC_USER_AGENT`: `TaRaSha Company Lens your-admin-email@example.com`
-9. Add the preview build variable `VITE_DATA_MODE=live` and redeploy.
-10. Create a Cloudflare Access service token and a Service Auth policy for the preview application so the admin sync script can pass the login gate.
+   - `SHARED_RESEARCH_SERVICE_KEY`: the server-only Supabase service-role key
+9. Add preview Function variables:
+   - `DATA_PROVIDER=research-db`
+   - `SHARED_RESEARCH_URL=https://<project-ref>.supabase.co`
+10. Add the preview build variable `VITE_DATA_MODE=live` and redeploy.
+11. Create a Cloudflare Access service token and a Service Auth policy for the preview application so the admin sync script can pass the login gate.
 
 The included `_headers` file applies baseline browser security headers. This branch-preview arrangement keeps the first ten users invite-only without adding a paid authentication service or buying a domain. Pages Functions share the Workers Free allowance, while D1 Free currently includes far more reads, writes and storage than a ten-user catalogue requires.
 
@@ -84,7 +88,7 @@ The Cloudflare Access values are required when the preview is protected; keep th
 
 ## Optional future in-app identity preparation
 
-Financial data never enters Supabase. The existing schema is only an optional foundation for invite-only accounts and watchlists:
+The existing Consumer-auth schema is optional and separate from the shared Research tables. It is only a foundation for invite-only accounts and watchlists:
 
 1. Create a new Supabase project dedicated to Company Lens.
 2. Run `supabase/001_initial_schema.sql` in its SQL editor.
@@ -92,16 +96,16 @@ Financial data never enters Supabase. The existing schema is only an optional fo
 4. Add the public project URL and anonymous key to `.env.local` using `.env.example`.
 5. Add the authentication screens before moving away from the Access-protected preview; the schema already rejects uninvited users and an eleventh profile.
 
-Never reuse the research application database or expose a Supabase service-role key in the browser.
+Never expose the shared Research service-role key in the browser. Only the Pages Function may use it, and only the `consumer_companies` and `consumer_financial_facts` views are queried.
 
 ## Data-source boundary
 
-- **US company directory:** SEC ticker/exchange associations, refreshed by an administrator.
-- **US financial facts:** SEC Company Facts XBRL response streamed through the Function and normalized in the browser.
-- **US filings:** SEC Submissions API links to 10-K, 10-Q and earnings-related 8-K documents.
-- **Earnings-call transcripts:** not available from SEC EDGAR and therefore not presented as available.
-- **Share information:** shares outstanding and related tagged facts, not a full shareholder ownership register.
-- **India:** disabled until a lawful structured source and catalogue-redistribution right can be confirmed at zero cost. Public NSE/BSE webpages are not treated as permission for commercial scraping.
+- **Private-preview directory:** companies already present in TaRaSha Research, for USA and India.
+- **Financial facts:** approved annual fields retrieved from the shared Research PostgreSQL views.
+- **Upstream source:** spreadsheets downloaded through StockAnalysis.com and bulk-uploaded by the Research administrator. StockAnalysis.com may source downloads from third-party providers.
+- **Persistence:** Consumer keeps the response only in browser session memory and stores no separate financial copy.
+- **Commercial boundary:** private non-commercial evaluation only. Obtain explicit source-provider redistribution permission or switch to a licensed API before paid distribution.
+- **Fallback:** the prior SEC EDGAR provider remains in the backend and can be restored with `DATA_PROVIDER=sec`.
 
 See `ZERO_COST_DATA_STRATEGY.md` for feasibility details and source links.
 

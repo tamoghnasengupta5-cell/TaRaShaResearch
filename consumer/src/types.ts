@@ -26,7 +26,13 @@ export interface Company {
   statements?: StatementGroup[];
   filings?: FilingDocument[];
   limitations?: string[];
-  dataMode?: "illustrative" | "sec-live";
+  dataMode?: "illustrative" | "sec-live" | "research-db";
+  source?: {
+    dataset: string;
+    upstream: string;
+    usage: string;
+    persistence: string;
+  };
 }
 
 export interface CatalogCompany {
@@ -38,6 +44,7 @@ export interface CatalogCompany {
   country: "USA" | "India";
   provider: string;
   research_available: number;
+  data_access?: "sec" | "normalized";
 }
 
 export interface StatementFact {
