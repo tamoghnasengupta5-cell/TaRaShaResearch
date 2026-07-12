@@ -29,3 +29,7 @@ Create a repo secret:
 3) (Optional) Migrate existing SQLite data to Postgres:
    - $env:POSTGRES_URL="postgresql+psycopg://user:password@localhost:5432/tarasha"
    - python scripts/migrate_sqlite_to_postgres.py --sqlite-path app.db --truncate
+
+## Shared Research database
+
+The owner's local Research application now reads its shared PostgreSQL URL from macOS Keychain when `TARASHA_DB_URL` is not explicitly set. Bulk uploads made through that local application become available to the private Consumer preview through restricted read-only views. See `SHARED_DATABASE_RUNBOOK.md` for resource details, migration commands, Azure cutover cautions and the future licensed-provider boundary.

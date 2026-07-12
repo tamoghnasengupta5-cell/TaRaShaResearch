@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -27,6 +29,32 @@ def get_db_url() -> str:
     url = (os.environ.get("TARASHA_DB_URL") or "").strip()
     if url:
         return url
+
+    # On the owner's Mac, use the shared PostgreSQL URL from Keychain when it
+    # has been provisioned. Other machines and Azure retain the documented
+    # environment-variable/SQLite fallback behavior.
+    if sys.platform == "darwin" and not _is_azure_app_service():
+        try:
+            keychain = subprocess.run(
+                [
+                    "security",
+                    "find-generic-password",
+                    "-a",
+                    "TaRaShaResearch",
+                    "-s",
+                    "TaRaSha Shared Database URL",
+                    "-w",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            keychain_url = keychain.stdout.strip()
+            if keychain.returncode == 0 and keychain_url:
+                return keychain_url
+        except (OSError, subprocess.SubprocessError):
+            pass
 
     sqlite_path = get_sqlite_path().resolve()
     return f"sqlite:///{sqlite_path.as_posix()}"

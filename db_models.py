@@ -1066,3 +1066,58 @@ app_backfill_state = Table(
     Column("completed_at", Text),
     Column("source_signature", Text),
 )
+
+# These tables were historically created by feature modules at runtime. Keeping
+# them in shared metadata makes SQLite-to-PostgreSQL migrations complete.
+price_annual = Table(
+    "price_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("price_change", Float, nullable=False),
+)
+
+relative_valuation_market_metrics = Table(
+    "relative_valuation_market_metrics",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("enterprise_value", Float),
+    Column("enterprise_value_source", Text),
+    Column("enterprise_value_as_of", Text),
+    Column("enterprise_value_detail", Text),
+    Column("trailing_pe", Float),
+    Column("trailing_pe_source", Text),
+    Column("trailing_pe_as_of", Text),
+    Column("trailing_pe_detail", Text),
+    Column("forward_pe", Float),
+    Column("forward_pe_source", Text),
+    Column("forward_pe_as_of", Text),
+    Column("forward_pe_detail", Text),
+    Column("updated_at", Text),
+)
+
+ttc_score_formula = Table(
+    "ttc_score_formula",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("score_type", Text, nullable=False),
+    Column("component", Text, nullable=False),
+    Column("weight", Float, nullable=False),
+    Column("threshold", Float, nullable=False),
+    Column("mode", Text, nullable=False),
+    Column("sort_order", Integer, nullable=False),
+    UniqueConstraint("score_type", "component", name="uq_ttc_score_formula_type_component"),
+)
+
+valuation_saved_dashboards = Table(
+    "valuation_saved_dashboards",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", Text, nullable=False, unique=True),
+    Column("company_ids_json", Text, nullable=False),
+    Column("result_json", Text),
+    Column("score_year_range", Text),
+    Column("terminal_year", Integer),
+    Column("created_at", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
+)
