@@ -30,12 +30,12 @@ The private-preview strategy is implemented at zero additional infrastructure co
 
 ## Limits
 
-- Maximum three distinct companies per browser session.
-- Maximum five reporting years per company pull.
+- Maximum fifty distinct companies per browser session.
+- Maximum seven reporting years per company pull.
 - Refreshing or closing the application clears all extracted financial facts because they are React memory only.
 - Search results are compact catalogue rows. A full company card is created only after a successful research pull.
 
-Three companies is a deliberate founding-user limit. Each pull returns only approved fields and at most five years, keeping browser memory and free-tier egress predictable while still enabling comparison.
+Fifty companies and seven reporting years support a meaningful personal research shelf while each pull remains restricted to approved fields. Financial payloads remain transient in browser memory; monitor Supabase free-tier egress as founding-user activity grows.
 
 The SEC caps automated access at ten requests per second and may temporarily reject traffic. The Function retries transient SEC 403/429/5xx responses up to five times with exponential backoff and jitter, while the browser spaces Company Facts and Submissions calls. A rejected upstream response is never exposed to users as a raw 403.
 

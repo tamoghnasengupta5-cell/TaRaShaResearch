@@ -118,6 +118,34 @@ h1, h2 { font-family: "Cormorant Garamond", Georgia, serif; letter-spacing: -.02
 .card-metric small { color: var(--green); font-size: 10px; }
 .card-footer { display: flex; justify-content: space-between; margin-top: 17px; font-size: 10px; color: var(--muted); }
 .card-footer strong { color: var(--green); }
+.research-story-card { grid-column: 1 / -1; padding: 29px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; overflow: visible; }
+.research-story-card:hover { transform: none; }
+.story-card-head { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding: 0 46px 22px 0; border-bottom: 1px solid #cdb77f; }
+.story-card-head .company-heading { display: flex; align-items: center; gap: 13px; }
+.story-card-head .company-heading h3 { font: 600 30px/1.05 "Cormorant Garamond", serif; margin: 0 0 5px; }
+.story-card-head .company-heading div > span { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.story-badge { color: #6d501c; background: #f0dfb5; border: 1px solid #d2b66f; padding: 7px 10px; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .12em; }
+.story-chapter { padding: 25px 27px 22px 0; border-bottom: 1px solid #e1d5bd; }
+.story-chapter:nth-of-type(even) { padding-left: 27px; padding-right: 0; border-left: 1px solid #e1d5bd; }
+.story-chapter-title { display: grid; grid-template-columns: 31px 1fr; gap: 10px; align-items: start; }
+.story-chapter-title > span { color: #af842e; font: 600 20px/1 "Cormorant Garamond", serif; }
+.story-chapter-title div { display: flex; flex-direction: column; gap: 3px; }
+.story-chapter-title small { color: #9a772f; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .12em; }
+.story-chapter-title strong { font: 600 20px/1.12 "Cormorant Garamond", serif; }
+.story-chapter > p { min-height: 58px; margin: 13px 0 16px 41px; color: var(--muted); font-size: 11px; line-height: 1.58; }
+.story-stat-pair { margin-left: 41px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+.story-stat-pair > div { padding: 11px 12px; background: #f4ecdc; border-left: 2px solid #b68a32; display: flex; flex-direction: column; gap: 3px; }
+.story-stat-pair span { color: var(--muted); font-size: 8px; text-transform: uppercase; letter-spacing: .06em; }
+.story-stat-pair strong { font: 600 21px/1.1 "Cormorant Garamond", serif; }
+.year-ribbon { margin-left: 41px; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid #d8c8a7; }
+.year-ribbon > div { min-width: 0; padding: 9px 4px; border-right: 1px solid #ded1b8; text-align: center; display: flex; flex-direction: column; gap: 4px; background: #fffaf0; }
+.year-ribbon > div:last-child { border-right: 0; }
+.year-ribbon span { color: var(--muted); font-size: 7px; text-transform: uppercase; }
+.year-ribbon strong { font: 600 13px/1.1 "Cormorant Garamond", serif; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.year-ribbon .negative strong { color: #8b4149; }
+.year-ribbon .missing { color: #948a7e; background: #f2eee6; }
+.story-footer { grid-column: 1 / -1; align-items: center; margin-top: 20px; }
+.story-footer .text-button { font-size: 10px; }
 .learning-preview { display: grid; grid-template-columns: .9fr 1.1fr; gap: 100px; align-items: center; }
 .learning-preview > div:first-child > p:not(.eyebrow) { color: var(--muted); line-height: 1.7; max-width: 480px; }
 .learning-preview .button { margin-top: 12px; }
@@ -337,6 +365,13 @@ footer > div > strong { font-size: 10px; text-transform: uppercase; letter-spaci
   .intro-section { grid-template-columns: 1fr; }
   .section-lede { margin-top: 15px; }
   .question-grid, .company-grid, .company-grid.wide, .lesson-grid { grid-template-columns: 1fr; }
+  .research-story-card { grid-template-columns: 1fr; padding: 21px 17px; }
+  .story-card-head { align-items: flex-start; flex-direction: column; gap: 12px; }
+  .story-chapter, .story-chapter:nth-of-type(even) { padding: 21px 0; border-left: 0; }
+  .story-chapter > p, .story-stat-pair, .year-ribbon { margin-left: 0; }
+  .story-chapter > p { min-height: 0; }
+  .year-ribbon { overflow-x: auto; grid-template-columns: repeat(7, minmax(70px, 1fr)); }
+  .story-footer { align-items: flex-start; flex-direction: column; gap: 11px; }
   .question-card { min-height: 170px; }
   .question-card h3 { margin-top: 30px; }
   .soft-section { width: 100%; padding-left: 17px; padding-right: 17px; }

@@ -2,8 +2,8 @@ import { companies as demoCompanies } from "./data/demo";
 import { normalizeSecResearch, type SecCompanyFacts, type SecSubmissions } from "./sec";
 import type { CatalogCompany, Company } from "./types";
 
-export const MAX_SESSION_COMPANIES = 3;
-export const MAX_YEAR_RANGE = 5;
+export const MAX_SESSION_COMPANIES = 50;
+export const MAX_YEAR_RANGE = 7;
 export const liveDataEnabled = import.meta.env.VITE_DATA_MODE === "live";
 const apiBase = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 const sessionId = `${crypto.randomUUID().replace(/-/g, "")}${Date.now().toString(36)}`;

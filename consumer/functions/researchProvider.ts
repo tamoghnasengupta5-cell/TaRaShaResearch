@@ -20,9 +20,33 @@ interface ResearchFactRow {
   value: number;
 }
 
+interface ResearchAnalysisRow {
+  company_id: number;
+  metric_key: "roic" | "wacc" | "spread" | "fcff";
+  unit_kind: "amount" | "percent";
+  fiscal_year: number;
+  value: number;
+}
+
 interface YearValue {
   year: number;
   value: number;
+}
+
+interface NullableYearValue {
+  year: number;
+  value: number | null;
+}
+
+export interface GrowthStatistics {
+  median: number | null;
+  standardDeviation: number | null;
+  observations: number;
+  startYear: number | null;
+  endYear: number | null;
+  startValue: number | null;
+  endValue: number | null;
+  totalChange: number | null;
 }
 
 const factDescriptions: Record<string, string> = {
@@ -107,7 +131,55 @@ export async function searchResearchCompanies(env: ResearchProviderEnv, query: s
 }
 
 function seriesFor(facts: ResearchFactRow[], key: string): YearValue[] {
-  return facts.filter((fact) => fact.fact_key === key).map((fact) => ({ year: fact.fiscal_year, value: fact.value }));
+  return facts.filter((fact) => fact.fact_key === key)
+    .map((fact) => ({ year: fact.fiscal_year, value: fact.value }))
+    .sort((left, right) => left.year - right.year);
+}
+
+function analysisSeriesFor(rows: ResearchAnalysisRow[], key: ResearchAnalysisRow["metric_key"]): YearValue[] {
+  return rows.filter((row) => row.metric_key === key)
+    .map((row) => ({ year: row.fiscal_year, value: row.value }))
+    .sort((left, right) => left.year - right.year);
+}
+
+function median(values: number[]): number | null {
+  if (!values.length) return null;
+  const sorted = [...values].sort((left, right) => left - right);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function sampleStandardDeviation(values: number[]): number | null {
+  if (!values.length) return null;
+  if (values.length === 1) return 0;
+  const average = values.reduce((total, value) => total + value, 0) / values.length;
+  return Math.sqrt(values.reduce((total, value) => total + ((value - average) ** 2), 0) / (values.length - 1));
+}
+
+export function growthStatistics(series: YearValue[]): GrowthStatistics {
+  const sorted = [...series].sort((left, right) => left.year - right.year);
+  const growthRates: number[] = [];
+  for (let index = 1; index < sorted.length; index += 1) {
+    const previous = sorted[index - 1].value;
+    if (previous !== 0) growthRates.push(((sorted[index].value - previous) / Math.abs(previous)) * 100);
+  }
+  const first = sorted[0];
+  const last = sorted[sorted.length - 1];
+  return {
+    median: median(growthRates),
+    standardDeviation: sampleStandardDeviation(growthRates),
+    observations: growthRates.length,
+    startYear: first?.year ?? null,
+    endYear: last?.year ?? null,
+    startValue: first?.value ?? null,
+    endValue: last?.value ?? null,
+    totalChange: first && last && first.value !== 0 ? ((last.value - first.value) / Math.abs(first.value)) * 100 : null,
+  };
+}
+
+export function levelStatistics(series: YearValue[]) {
+  const values = series.map((item) => item.value);
+  return { median: median(values), standardDeviation: sampleStandardDeviation(values), observations: values.length };
 }
 
 function derivedSeries(left: YearValue[], right: YearValue[], operation: (a: number, b: number) => number): YearValue[] {
@@ -125,6 +197,25 @@ function netDebtSeries(debt: YearValue[], cash: YearValue[], investments: YearVa
   }));
 }
 
+function ratioByRequestedYear(numerator: YearValue[], denominator: YearValue[], fromYear: number, toYear: number): NullableYearValue[] {
+  const numeratorByYear = new Map(numerator.map((item) => [item.year, item.value]));
+  const denominatorByYear = new Map(denominator.map((item) => [item.year, item.value]));
+  return Array.from({ length: toYear - fromYear + 1 }, (_, index) => {
+    const year = fromYear + index;
+    const top = numeratorByYear.get(year);
+    const bottom = denominatorByYear.get(year);
+    return { year, value: top === undefined || bottom === undefined || bottom <= 0 ? null : top / bottom };
+  });
+}
+
+function valuesByRequestedYear(series: YearValue[], fromYear: number, toYear: number): NullableYearValue[] {
+  const byYear = new Map(series.map((item) => [item.year, item.value]));
+  return Array.from({ length: toYear - fromYear + 1 }, (_, index) => {
+    const year = fromYear + index;
+    return { year, value: byYear.get(year) ?? null };
+  });
+}
+
 export async function pullResearchCompany(env: ResearchProviderEnv, companyId: string, fromYear: number, toYear: number) {
   const numericId = Number(companyId.replace(/^research-/, ""));
   if (!Number.isInteger(numericId) || numericId <= 0) throw new Error("Invalid Research company identifier.");
@@ -139,10 +230,21 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
     and: `(fiscal_year.lte.${toYear})`,
     order: "statement_key.asc,fact_key.asc,fiscal_year.asc",
   });
-  const rawFacts = await researchFetch<ResearchFactRow[]>(env, `consumer_financial_facts?${factParams}`);
+  const analysisParams = new URLSearchParams({
+    select: "company_id,metric_key,unit_kind,fiscal_year,value",
+    company_id: `eq.${numericId}`,
+    fiscal_year: `gte.${fromYear}`,
+    and: `(fiscal_year.lte.${toYear})`,
+    order: "metric_key.asc,fiscal_year.asc",
+  });
+  const [rawFacts, rawAnalysis] = await Promise.all([
+    researchFetch<ResearchFactRow[]>(env, `consumer_financial_facts?${factParams}`),
+    researchFetch<ResearchAnalysisRow[]>(env, `consumer_analysis_metrics?${analysisParams}`),
+  ]);
   const amountScale = company.country === "India" ? 10 : 1;
   const amountUnit = company.country === "India" ? "₹ crore" : "US$ million";
   const facts = rawFacts.map((fact) => ({ ...fact, value: fact.unit_kind === "amount" ? Number(fact.value) / amountScale : Number(fact.value) }));
+  const analysis = rawAnalysis.map((row) => ({ ...row, value: row.unit_kind === "amount" ? Number(row.value) / amountScale : Number(row.value) }));
   const statements = (Object.keys(statementLabels) as Array<keyof typeof statementLabels>).map((statementKey) => {
     const statementFacts = facts.filter((fact) => fact.statement_key === statementKey);
     const grouped = new Map<string, ResearchFactRow[]>();
@@ -160,12 +262,19 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
     };
   });
   const revenue = seriesFor(facts, "revenue");
+  const operatingCost = seriesFor(facts, "costOfRevenue");
+  const sga = seriesFor(facts, "sga");
+  const ebitda = seriesFor(facts, "ebitda");
   const operatingIncome = seriesFor(facts, "operatingIncome");
   const operatingCash = seriesFor(facts, "operatingCash");
   const capex = seriesFor(facts, "capex");
   const debt = seriesFor(facts, "totalDebt");
   const cash = seriesFor(facts, "cash");
   const investments = seriesFor(facts, "shortTermInvestments");
+  const netDebt = netDebtSeries(debt, cash, investments);
+  const operatingMargin = derivedSeries(operatingIncome, revenue, (a, b) => (a / b) * 100);
+  const spread = analysisSeriesFor(analysis, "spread");
+  const fcff = analysisSeriesFor(analysis, "fcff");
   const latestYear = Math.max(...facts.map((fact) => fact.fiscal_year), toYear);
   return {
     id: `research-${company.id}`,
@@ -178,9 +287,21 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
     updatedAt: new Date().toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" }),
     metrics: {
       revenue,
-      operatingMargin: derivedSeries(operatingIncome, revenue, (a, b) => (a / b) * 100),
+      operatingMargin,
       freeCashFlow: derivedSeries(operatingCash, capex, (a, b) => a - Math.abs(b)),
-      netDebt: netDebtSeries(debt, cash, investments),
+      netDebt,
+    },
+    researchShelf: {
+      fromYear,
+      toYear,
+      revenueGrowth: growthStatistics(revenue),
+      operatingCostGrowth: growthStatistics(operatingCost),
+      sgaGrowth: growthStatistics(sga),
+      operatingMarginGrowth: growthStatistics(operatingMargin),
+      netDebtToEbitda: ratioByRequestedYear(netDebt, ebitda, fromYear, toYear),
+      spread: levelStatistics(spread),
+      spreadByYear: valuesByRequestedYear(spread, fromYear, toYear),
+      fcff: valuesByRequestedYear(fcff, fromYear, toYear),
     },
     notes: {
       growth: "Review the imported multi-year revenue record and the underlying spreadsheet source before drawing conclusions.",

@@ -5,6 +5,41 @@ export interface YearValue {
   value: number;
 }
 
+export interface NullableYearValue {
+  year: number;
+  value: number | null;
+}
+
+export interface GrowthStatistics {
+  median: number | null;
+  standardDeviation: number | null;
+  observations: number;
+  startYear: number | null;
+  endYear: number | null;
+  startValue: number | null;
+  endValue: number | null;
+  totalChange: number | null;
+}
+
+export interface LevelStatistics {
+  median: number | null;
+  standardDeviation: number | null;
+  observations: number;
+}
+
+export interface ResearchShelfAnalysis {
+  fromYear: number;
+  toYear: number;
+  revenueGrowth: GrowthStatistics;
+  operatingCostGrowth: GrowthStatistics;
+  sgaGrowth: GrowthStatistics;
+  operatingMarginGrowth: GrowthStatistics;
+  netDebtToEbitda: NullableYearValue[];
+  spread: LevelStatistics;
+  spreadByYear: NullableYearValue[];
+  fcff: NullableYearValue[];
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -17,6 +52,7 @@ export interface Company {
   reportingPeriod: string;
   updatedAt: string;
   metrics: Record<MetricKey, YearValue[]>;
+  researchShelf?: ResearchShelfAnalysis;
   notes: {
     growth: string;
     profitability: string;

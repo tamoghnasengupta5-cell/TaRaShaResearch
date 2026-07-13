@@ -27,8 +27,8 @@ interface AdminCatalogRow {
   exchange: string;
 }
 
-const MAX_SESSION_COMPANIES = 3;
-const MAX_YEAR_RANGE = 5;
+const MAX_SESSION_COMPANIES = 50;
+const MAX_YEAR_RANGE = 7;
 const SESSION_HOURS = 12;
 const SEC_MAX_ATTEMPTS = 5;
 const SEC_RETRYABLE_STATUSES = new Set([403, 429, 500, 502, 503, 504]);

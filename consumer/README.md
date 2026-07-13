@@ -8,8 +8,8 @@ The zero-cost Cloudflare live preview has now been provisioned and its US SEC ca
 
 - Responsive landing page and navigation
 - Searchable company catalogue without recommendations or rankings
-- On-demand shared Research database retrieval for a user-selected range of up to five years
-- Three-company transient research shelf; a refresh or closed tab clears the financial facts
+- On-demand shared Research database retrieval for a user-selected range of up to seven years
+- Fifty-company transient research shelf; a refresh or closed tab clears the financial facts
 - Full income-statement, balance-sheet, cash-flow and share-fact tables when standard tags exist
 - Provider-neutral server adapter; the legacy SEC provider remains available as a fallback
 - Plain-language company pages organised around growth, profitability, cash and debt

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { companies, learningCards, metricMeta } from "./data/demo";
 import { formatMetric, latest, percentChange } from "./domain";
 import { liveDataEnabled, MAX_SESSION_COMPANIES, MAX_YEAR_RANGE, pullCompanyResearch, searchCompanyCatalog } from "./liveData";
-import type { CatalogCompany, Company, MetricKey, Page, StatementFact, StatementGroup, YearValue } from "./types";
+import type { CatalogCompany, Company, GrowthStatistics, MetricKey, Page, StatementFact, StatementGroup, YearValue } from "./types";
 import tarashaLogo from "./assets/tarasha-logo.png";
 
 const navItems: { page: Page; label: string; icon: string }[] = [
@@ -224,7 +224,7 @@ function Discover({ sessionCompanies, onResearchPulled, openCompany, watchlist, 
   const [query, setQuery] = useState("");
   const [country, setCountry] = useState<"USA" | "India">("USA");
   const currentYear = new Date().getFullYear();
-  const [fromYear, setFromYear] = useState(currentYear - 4);
+  const [fromYear, setFromYear] = useState(currentYear - 6);
   const [toYear, setToYear] = useState(currentYear);
   const [results, setResults] = useState<CatalogCompany[]>([]);
   const [searching, setSearching] = useState(false);
@@ -271,6 +271,61 @@ function Discover({ sessionCompanies, onResearchPulled, openCompany, watchlist, 
 }
 
 function CompanyCard({ company, openCompany, watched, toggleWatch }: { company: Company; openCompany: (id: string) => void; watched: boolean; toggleWatch: (id: string) => void }) {
+  if (company.researchShelf) {
+    const shelf = company.researchShelf;
+    const revenue = shelf.revenueGrowth;
+    const operatingCost = shelf.operatingCostGrowth;
+    const sga = shelf.sgaGrowth;
+    const margin = shelf.operatingMarginGrowth;
+    const spread = shelf.spread;
+    return (
+      <article className="company-card research-story-card">
+        <button className={`watch-button ${watched ? "watched" : ""}`} onClick={() => toggleWatch(company.id)} aria-label={watched ? "Remove from watchlist" : "Add to watchlist"}>{watched ? "♥" : "♡"}</button>
+        <div className="story-card-head">
+          <div className="company-heading"><span className="company-monogram">{company.name[0]}</span><div><h3>{company.name}</h3><span>{company.symbol} · FY {shelf.fromYear}–{shelf.toYear}</span></div></div>
+          <span className="story-badge">Business story</span>
+        </div>
+
+        <section className="story-chapter growth-chapter">
+          <div className="story-chapter-title"><span>01</span><div><small>Sales engine</small><strong>How steadily did the bakery counter grow?</strong></div></div>
+          <p>{growthCommentary("Revenue", revenue)}</p>
+          <div className="story-stat-pair"><StoryStat label="Typical annual growth" value={formatPercent(revenue.median)} /><StoryStat label="Growth deviation" value={formatPercentagePoints(revenue.standardDeviation)} /></div>
+        </section>
+
+        <section className="story-chapter cost-chapter">
+          <div className="story-chapter-title"><span>02</span><div><small>Cost of growth</small><strong>What had to rise to support those sales?</strong></div></div>
+          <p>{costCommentary(operatingCost, sga)}</p>
+          <div className="story-stat-pair"><StoryStat label="Operating cost · median growth" value={formatPercent(operatingCost.median)} /><StoryStat label="SG&A · median growth" value={formatPercent(sga.median)} /></div>
+        </section>
+
+        <section className="story-chapter margin-chapter">
+          <div className="story-chapter-title"><span>03</span><div><small>Profit kept from sales</small><strong>Did the operating margin become stronger?</strong></div></div>
+          <p>{marginCommentary(margin)}</p>
+          <div className="story-stat-pair"><StoryStat label="Median margin growth" value={formatPercent(margin.median)} /><StoryStat label="Margin-growth deviation" value={formatPercentagePoints(margin.standardDeviation)} /></div>
+        </section>
+
+        <section className="story-chapter yearly-chapter">
+          <div className="story-chapter-title"><span>04</span><div><small>Debt pressure by year</small><strong>How many years of EBITDA would net debt represent?</strong></div></div>
+          <p>Think of this as the bakery’s loan after using available cash, compared with one year of operating earnings. Lower is generally lighter; a negative number means cash exceeded debt.</p>
+          <YearRibbon values={shelf.netDebtToEbitda} formatter={(value) => value === null ? "n/m" : `${value.toFixed(1)}×`} missingTitle="EBITDA was missing or not positive, so the ratio is not meaningful." />
+        </section>
+
+        <section className="story-chapter spread-chapter">
+          <div className="story-chapter-title"><span>05</span><div><small>Return quality</small><strong>Did returns clear the cost of funding?</strong></div></div>
+          <p>{spreadCommentary(spread.median, spread.standardDeviation)}</p>
+          <div className="story-stat-pair"><StoryStat label="Median ROIC − WACC Spread" value={formatPercentagePoints(spread.median)} /><StoryStat label="Spread deviation" value={formatPercentagePoints(spread.standardDeviation)} /></div>
+        </section>
+
+        <section className="story-chapter yearly-chapter cash-chapter">
+          <div className="story-chapter-title"><span>06</span><div><small>Cash for all funders</small><strong>What FCFF remained each year?</strong></div></div>
+          <p>FCFF is the cash the business generated after operating needs and reinvestment—before deciding how lenders and owners divide it.</p>
+          <YearRibbon values={shelf.fcff} formatter={(value) => value === null ? "—" : formatCompanyAmount(company, value)} missingTitle="FCFF was not available for this reporting year." />
+        </section>
+
+        <div className="card-footer story-footer"><span>Session data · {company.currency}</span><button className="text-button" onClick={() => openCompany(company.id)}>Open full research dossier →</button></div>
+      </article>
+    );
+  }
   const revenue = company.metrics.revenue;
   const change = revenue.length ? percentChange(revenue) : null;
   const revenueText = revenue.length ? formatCompanyMetric(company, "revenue", latest(revenue).value) : "Not tagged";
@@ -285,6 +340,58 @@ function CompanyCard({ company, openCompany, watched, toggleWatch }: { company: 
       </button>
     </article>
   );
+}
+
+function StoryStat({ label, value }: { label: string; value: string }) {
+  return <div><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function YearRibbon({ values, formatter, missingTitle }: { values: Array<{ year: number; value: number | null }>; formatter: (value: number | null) => string; missingTitle: string }) {
+  return <div className="year-ribbon">{values.map((item) => <div key={item.year} className={item.value === null ? "missing" : item.value < 0 ? "negative" : ""} title={item.value === null ? missingTitle : undefined}><span>FY {String(item.year).slice(-2)}</span><strong>{formatter(item.value)}</strong></div>)}</div>;
+}
+
+function formatPercent(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "Not available";
+  return `${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value).toFixed(1)}%`;
+}
+
+function formatPercentagePoints(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return "Not available";
+  return `${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value).toFixed(1)} pts`;
+}
+
+function formatCompanyAmount(company: Company, value: number): string {
+  const sign = value < 0 ? "−" : "";
+  const amount = Math.abs(value).toLocaleString(company.currency.startsWith("US$") ? "en-US" : "en-IN", { maximumFractionDigits: 1, notation: Math.abs(value) >= 100_000 ? "compact" : "standard" });
+  return company.currency.startsWith("US$") ? `${sign}$${amount}m` : `${sign}₹${amount} cr`;
+}
+
+function growthCommentary(label: string, stats: GrowthStatistics): string {
+  if (stats.median === null) return `${label} did not have enough comparable annual observations to describe a growth rhythm.`;
+  const direction = stats.median >= 0 ? "grew" : "contracted";
+  const consistency = stats.standardDeviation === null ? "The consistency cannot yet be measured." : stats.standardDeviation <= Math.abs(stats.median) ? `The ${stats.standardDeviation.toFixed(1)}-point deviation suggests a relatively steady rhythm.` : `The ${stats.standardDeviation.toFixed(1)}-point deviation says the yearly journey was much less smooth than the typical rate.`;
+  return `${label} typically ${direction} ${Math.abs(stats.median).toFixed(1)}% from one reported year to the next. ${consistency}`;
+}
+
+function costCommentary(operatingCost: GrowthStatistics, sga: GrowthStatistics): string {
+  const operatingText = operatingCost.median === null ? "Operating cost (cost of revenue) was not consistently available" : `operating cost typically ${operatingCost.median >= 0 ? "rose" : "fell"} ${Math.abs(operatingCost.median).toFixed(1)}% a year${operatingCost.totalChange === null ? "" : ` and changed ${formatPercent(operatingCost.totalChange)} across the full window`}`;
+  const sgaText = sga.median === null ? "SG&A was not consistently available" : `SG&A typically ${sga.median >= 0 ? "rose" : "fell"} ${Math.abs(sga.median).toFixed(1)}% a year${sga.totalChange === null ? "" : ` and changed ${formatPercent(sga.totalChange)} across the full window`}`;
+  return `To support the sales journey, ${operatingText}; ${sgaText}. This helps show whether growth demanded costs that rose faster than the counter’s takings.`;
+}
+
+function marginCommentary(stats: GrowthStatistics): string {
+  if (stats.median === null) return "There were not enough comparable operating-margin observations to describe how the margin changed.";
+  const direction = stats.median >= 0 ? "expanded" : "contracted";
+  const deviation = stats.standardDeviation === null ? "Deviation is not available." : `Its year-to-year growth-rate deviation was ${stats.standardDeviation.toFixed(1)} points.`;
+  return `The operating margin typically ${direction} ${Math.abs(stats.median).toFixed(1)}% relative to the prior year’s margin. ${deviation} This is growth in the margin itself, not percentage points of margin.`;
+}
+
+function spreadCommentary(medianSpread: number | null, deviation: number | null): string {
+  if (medianSpread === null) return "ROIC and estimated WACC did not overlap in enough years to describe the return-quality spread.";
+  const valueMessage = medianSpread >= 0
+    ? `The business typically earned ${medianSpread.toFixed(1)} percentage points above its estimated funding cost—like a bakery earning more on its ovens and working capital than its owner and lender required.`
+    : `The business typically earned ${Math.abs(medianSpread).toFixed(1)} percentage points below its estimated funding cost—reported profit did not fully clear the return demanded by owners and lenders.`;
+  return `${valueMessage} ${deviation === null ? "Spread consistency is not available." : `The ${deviation.toFixed(1)}-point deviation shows how much that value-creation cushion moved around.`}`;
 }
 
 function CompanyDetail({ company, watched, toggleWatch, navigate }: { company: Company; watched: boolean; toggleWatch: (id: string) => void; navigate: (page: Page) => void }) {
