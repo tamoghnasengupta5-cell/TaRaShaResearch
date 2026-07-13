@@ -124,6 +124,7 @@ h1, h2 { font-family: "Cormorant Garamond", Georgia, serif; letter-spacing: -.02
 .story-card-head .company-heading { display: flex; align-items: center; gap: 13px; }
 .story-card-head .company-heading h3 { font: 600 30px/1.05 "Cormorant Garamond", serif; margin: 0 0 5px; }
 .story-card-head .company-heading div > span { color: var(--muted); font-size: 9px; text-transform: uppercase; letter-spacing: .08em; }
+.story-card-head .company-heading small { display: block; max-width: 720px; margin-top: 5px; color: #8c6b2c; font-size: 8px; line-height: 1.35; }
 .story-badge { color: #6d501c; background: #f0dfb5; border: 1px solid #d2b66f; padding: 7px 10px; font-size: 8px; font-weight: 800; text-transform: uppercase; letter-spacing: .12em; }
 .story-chapter { padding: 25px 27px 22px 0; border-bottom: 1px solid #e1d5bd; }
 .story-chapter:nth-of-type(even) { padding-left: 27px; padding-right: 0; border-left: 1px solid #e1d5bd; }

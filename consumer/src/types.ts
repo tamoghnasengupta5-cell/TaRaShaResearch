@@ -30,6 +30,7 @@ export interface LevelStatistics {
 export interface ResearchShelfAnalysis {
   fromYear: number;
   toYear: number;
+  industryBucket: string;
   revenueGrowth: GrowthStatistics;
   operatingCostGrowth: GrowthStatistics;
   sgaGrowth: GrowthStatistics;
@@ -79,6 +80,7 @@ export interface CatalogCompany {
   exchange: string;
   country: "USA" | "India";
   provider: string;
+  industryBucket?: string;
   research_available: number;
   data_access?: "sec" | "normalized";
 }

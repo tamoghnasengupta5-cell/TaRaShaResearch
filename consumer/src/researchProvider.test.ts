@@ -8,17 +8,17 @@ describe("shared Research provider", () => {
 
   it("maps Research search rows into the provider-neutral catalogue", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify([
-      { id: 9, name: "Microsoft Corporation", ticker: "MSFT", country: "USA" },
+      { id: 9, name: "Microsoft Corporation", ticker: "MSFT", country: "USA", industry_bucket: "AI Cloud, Data & AI Platform, Model Layer : Hyperscale Cloud & AI Platforms" },
     ]), { status: 200 })));
 
     const companies = await searchResearchCompanies(env, "MSFT", "USA");
 
-    expect(companies[0]).toMatchObject({ id: "research-9", ticker: "MSFT", data_access: "normalized", provider: "TaRaSha Research database" });
+    expect(companies[0]).toMatchObject({ id: "research-9", ticker: "MSFT", industryBucket: "AI Cloud, Data & AI Platform, Model Layer : Hyperscale Cloud & AI Platforms", data_access: "normalized", provider: "TaRaSha Research database" });
   });
 
   it("normalizes Indian amounts and derives the consumer research-shelf story", async () => {
     const fetchMock = vi.fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 44, name: "Example India", ticker: "EXAMPLE", country: "India" }]), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 44, name: "Example India", ticker: "EXAMPLE", country: "India", industry_bucket: "India : Industrials : Industrial Products Companies" }]), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify([
         { company_id: 44, statement_key: "income", fact_key: "revenue", label: "Revenue", unit_kind: "amount", fiscal_year: 2024, value: 8000 },
         { company_id: 44, statement_key: "income", fact_key: "revenue", label: "Revenue", unit_kind: "amount", fiscal_year: 2025, value: 10000 },
@@ -55,6 +55,7 @@ describe("shared Research provider", () => {
     expect(company?.metrics.freeCashFlow[0].value).toBe(100);
     expect(company?.metrics.netDebt[1].value).toBe(180);
     expect(company?.researchShelf?.revenueGrowth.median).toBe(25);
+    expect(company?.researchShelf?.industryBucket).toBe("India : Industrials : Industrial Products Companies");
     expect(company?.researchShelf?.operatingCostGrowth.median).toBe(20);
     expect(company?.researchShelf?.sgaGrowth.median).toBe(10);
     expect(company?.researchShelf?.netDebtToEbitda).toEqual([{ year: 2024, value: 1.125 }, { year: 2025, value: 0.9 }]);

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { companies, learningCards, metricMeta } from "./data/demo";
 import { formatMetric, latest, percentChange } from "./domain";
+import { languageForIndustryBucket } from "./industryLanguage";
 import { liveDataEnabled, MAX_SESSION_COMPANIES, MAX_YEAR_RANGE, pullCompanyResearch, searchCompanyCatalog } from "./liveData";
 import type { CatalogCompany, Company, GrowthStatistics, MetricKey, Page, StatementFact, StatementGroup, YearValue } from "./types";
 import tarashaLogo from "./assets/tarasha-logo.png";
@@ -278,23 +279,24 @@ function CompanyCard({ company, openCompany, watched, toggleWatch }: { company: 
     const sga = shelf.sgaGrowth;
     const margin = shelf.operatingMarginGrowth;
     const spread = shelf.spread;
+    const language = languageForIndustryBucket(shelf.industryBucket);
     return (
       <article className="company-card research-story-card">
         <button className={`watch-button ${watched ? "watched" : ""}`} onClick={() => toggleWatch(company.id)} aria-label={watched ? "Remove from watchlist" : "Add to watchlist"}>{watched ? "♥" : "♡"}</button>
         <div className="story-card-head">
-          <div className="company-heading"><span className="company-monogram">{company.name[0]}</span><div><h3>{company.name}</h3><span>{company.symbol} · FY {shelf.fromYear}–{shelf.toYear}</span></div></div>
-          <span className="story-badge">Business story</span>
+          <div className="company-heading"><span className="company-monogram">{company.name[0]}</span><div><h3>{company.name}</h3><span>{company.symbol} · FY {shelf.fromYear}–{shelf.toYear}</span><small>{shelf.industryBucket}</small></div></div>
+          <span className="story-badge">{language.lens}</span>
         </div>
 
         <section className="story-chapter growth-chapter">
-          <div className="story-chapter-title"><span>01</span><div><small>Sales engine</small><strong>How steadily did the bakery counter grow?</strong></div></div>
-          <p>{growthCommentary("Revenue", revenue)}</p>
+          <div className="story-chapter-title"><span>01</span><div><small>Sales engine</small><strong>{language.growthQuestion}</strong></div></div>
+          <p>{growthCommentary(language.revenueSubject, revenue)}</p>
           <div className="story-stat-pair"><StoryStat label="Typical annual growth" value={formatPercent(revenue.median)} /><StoryStat label="Growth deviation" value={formatPercentagePoints(revenue.standardDeviation)} /></div>
         </section>
 
         <section className="story-chapter cost-chapter">
-          <div className="story-chapter-title"><span>02</span><div><small>Cost of growth</small><strong>What had to rise to support those sales?</strong></div></div>
-          <p>{costCommentary(operatingCost, sga)}</p>
+          <div className="story-chapter-title"><span>02</span><div><small>Cost of growth</small><strong>What had to rise to support this industry’s growth engine?</strong></div></div>
+          <p>{costCommentary(operatingCost, sga, language.costSupport, language.revenueSubject)}</p>
           <div className="story-stat-pair"><StoryStat label="Operating cost · median growth" value={formatPercent(operatingCost.median)} /><StoryStat label="SG&A · median growth" value={formatPercent(sga.median)} /></div>
         </section>
 
@@ -306,13 +308,13 @@ function CompanyCard({ company, openCompany, watched, toggleWatch }: { company: 
 
         <section className="story-chapter yearly-chapter">
           <div className="story-chapter-title"><span>04</span><div><small>Debt pressure by year</small><strong>How many years of EBITDA would net debt represent?</strong></div></div>
-          <p>Think of this as the bakery’s loan after using available cash, compared with one year of operating earnings. Lower is generally lighter; a negative number means cash exceeded debt.</p>
+          <p>{language.leverageExplanation}</p>
           <YearRibbon values={shelf.netDebtToEbitda} formatter={(value) => value === null ? "n/m" : `${value.toFixed(1)}×`} missingTitle="EBITDA was missing or not positive, so the ratio is not meaningful." />
         </section>
 
         <section className="story-chapter spread-chapter">
           <div className="story-chapter-title"><span>05</span><div><small>Return quality</small><strong>Did returns clear the cost of funding?</strong></div></div>
-          <p>{spreadCommentary(spread.median, spread.standardDeviation)}</p>
+          <p>{spreadCommentary(spread.median, spread.standardDeviation, language.capitalBase)}</p>
           <div className="story-stat-pair"><StoryStat label="Median ROIC − WACC Spread" value={formatPercentagePoints(spread.median)} /><StoryStat label="Spread deviation" value={formatPercentagePoints(spread.standardDeviation)} /></div>
         </section>
 
@@ -373,10 +375,10 @@ function growthCommentary(label: string, stats: GrowthStatistics): string {
   return `${label} typically ${direction} ${Math.abs(stats.median).toFixed(1)}% from one reported year to the next. ${consistency}`;
 }
 
-function costCommentary(operatingCost: GrowthStatistics, sga: GrowthStatistics): string {
+function costCommentary(operatingCost: GrowthStatistics, sga: GrowthStatistics, costSupport: string, revenueSubject: string): string {
   const operatingText = operatingCost.median === null ? "Operating cost (cost of revenue) was not consistently available" : `operating cost typically ${operatingCost.median >= 0 ? "rose" : "fell"} ${Math.abs(operatingCost.median).toFixed(1)}% a year${operatingCost.totalChange === null ? "" : ` and changed ${formatPercent(operatingCost.totalChange)} across the full window`}`;
   const sgaText = sga.median === null ? "SG&A was not consistently available" : `SG&A typically ${sga.median >= 0 ? "rose" : "fell"} ${Math.abs(sga.median).toFixed(1)}% a year${sga.totalChange === null ? "" : ` and changed ${formatPercent(sga.totalChange)} across the full window`}`;
-  return `To support the sales journey, ${operatingText}; ${sgaText}. This helps show whether growth demanded costs that rose faster than the counter’s takings.`;
+  return `To support ${costSupport}, ${operatingText}; ${sgaText}. This helps show whether the cost base rose faster than ${revenueSubject.toLowerCase()}.`;
 }
 
 function marginCommentary(stats: GrowthStatistics): string {
@@ -386,10 +388,10 @@ function marginCommentary(stats: GrowthStatistics): string {
   return `The operating margin typically ${direction} ${Math.abs(stats.median).toFixed(1)}% relative to the prior year’s margin. ${deviation} This is growth in the margin itself, not percentage points of margin.`;
 }
 
-function spreadCommentary(medianSpread: number | null, deviation: number | null): string {
+function spreadCommentary(medianSpread: number | null, deviation: number | null, capitalBase: string): string {
   if (medianSpread === null) return "ROIC and estimated WACC did not overlap in enough years to describe the return-quality spread.";
   const valueMessage = medianSpread >= 0
-    ? `The business typically earned ${medianSpread.toFixed(1)} percentage points above its estimated funding cost—like a bakery earning more on its ovens and working capital than its owner and lender required.`
+    ? `The business typically earned ${medianSpread.toFixed(1)} percentage points above its estimated funding cost—its return on ${capitalBase} cleared what owners and lenders required.`
     : `The business typically earned ${Math.abs(medianSpread).toFixed(1)} percentage points below its estimated funding cost—reported profit did not fully clear the return demanded by owners and lenders.`;
   return `${valueMessage} ${deviation === null ? "Spread consistency is not available." : `The ${deviation.toFixed(1)}-point deviation shows how much that value-creation cushion moved around.`}`;
 }

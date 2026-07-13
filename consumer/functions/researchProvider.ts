@@ -8,6 +8,7 @@ interface ResearchCompanyRow {
   name: string;
   ticker: string;
   country: "USA" | "India";
+  industry_bucket: string;
 }
 
 interface ResearchFactRow {
@@ -109,7 +110,7 @@ export async function searchResearchCompanies(env: ResearchProviderEnv, query: s
   const safeQuery = query.replace(/[^a-zA-Z0-9 .&-]/g, "").trim().slice(0, 60);
   if (safeQuery.length < 2) return [];
   const params = new URLSearchParams({
-    select: "id,name,ticker,country",
+    select: "id,name,ticker,country,industry_bucket",
     country: `eq.${country}`,
     or: `(name.ilike.*${safeQuery}*,ticker.ilike.*${safeQuery}*)`,
     limit: "30",
@@ -125,6 +126,7 @@ export async function searchResearchCompanies(env: ResearchProviderEnv, query: s
       exchange: row.country,
       country: row.country,
       provider: "TaRaSha Research database",
+      industryBucket: row.industry_bucket,
       research_available: 1,
       data_access: "normalized" as const,
     }));
@@ -219,7 +221,7 @@ function valuesByRequestedYear(series: YearValue[], fromYear: number, toYear: nu
 export async function pullResearchCompany(env: ResearchProviderEnv, companyId: string, fromYear: number, toYear: number) {
   const numericId = Number(companyId.replace(/^research-/, ""));
   if (!Number.isInteger(numericId) || numericId <= 0) throw new Error("Invalid Research company identifier.");
-  const companyParams = new URLSearchParams({ select: "id,name,ticker,country", id: `eq.${numericId}`, limit: "1" });
+  const companyParams = new URLSearchParams({ select: "id,name,ticker,country,industry_bucket", id: `eq.${numericId}`, limit: "1" });
   const companies = await researchFetch<ResearchCompanyRow[]>(env, `consumer_companies?${companyParams}`);
   const company = companies[0];
   if (!company) return null;
@@ -280,7 +282,7 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
     id: `research-${company.id}`,
     name: company.name,
     symbol: company.ticker,
-    sector: `${company.country} · TaRaSha Research coverage`,
+    sector: company.industry_bucket || `${company.country} · TaRaSha Research coverage`,
     description: "Historical financial statements imported through the TaRaSha Private Research bulk-upload workflow.",
     currency: amountUnit,
     reportingPeriod: `FY ${latestYear}`,
@@ -294,6 +296,7 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
     researchShelf: {
       fromYear,
       toYear,
+      industryBucket: company.industry_bucket || "Unclassified",
       revenueGrowth: growthStatistics(revenue),
       operatingCostGrowth: growthStatistics(operatingCost),
       sgaGrowth: growthStatistics(sga),
