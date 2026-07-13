@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tarasha-consumer-platform",
+  "pages_build_output_dir": "./dist",
+  "compatibility_date": "2026-07-11",
+  "vars": {
+    "DATA_PROVIDER": "research-db",
+    "SHARED_RESEARCH_URL": "https://fgmijnuwplxasztyjfqr.supabase.co"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tarasha-consumer-catalog",
+      "database_id": "1f4f4171-938f-4f9d-adbe-6ac8f940df67"
+    }
+  ]
+}
