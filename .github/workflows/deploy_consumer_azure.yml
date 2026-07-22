@@ -14,7 +14,7 @@ permissions:
   id-token: write
 
 env:
-  AZURE_WEBAPP_NAME: tarasha-consumer
+  AZURE_WEBAPP_NAME: tarasha-discover
   RESEARCH_WEBAPP_NAME: TaRaSha
   CONSUMER_API_ORIGIN: https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
 
