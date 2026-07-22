@@ -92,6 +92,12 @@ jobs:
               WEBSITES_PORT=8080 \
             --output none
 
+          az webapp update \
+            --resource-group "$resource_group" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --https-only true \
+            --output none
+
           hostname="$(az webapp show --resource-group "$resource_group" --name "$AZURE_WEBAPP_NAME" --query defaultHostName --output tsv)"
           echo "resource-group=$resource_group" >> "$GITHUB_OUTPUT"
           echo "hostname=$hostname" >> "$GITHUB_OUTPUT"
