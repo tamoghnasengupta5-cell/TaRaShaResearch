@@ -30,6 +30,8 @@ from ttc_efficiency import (
     _build_cash_and_equivalents_series,
     _compute_level_stats,
     _compute_value_creation_filter_metrics,
+    _capital_intensity,
+    _free_cash_flow,
     _get_balance_sheet_params,
     _get_cash_flow_params,
     _get_company_buckets,
@@ -520,7 +522,7 @@ def _compute_ttc_overall_score(conn, company_id: int, year_range: str, ttc_conte
         ocf = ocf_cf.get(year)
         capex = capex_cf.get(year)
         net_income = net_income_cf.get(year)
-        free_cash_flow = float(ocf) + float(capex) if ocf is not None and capex is not None else None
+        free_cash_flow = _free_cash_flow(ocf, capex) if ocf is not None and capex is not None else None
         if revenue not in (None, 0) and ocf is not None:
             ocf_margin_vals.append(float(ocf) / float(revenue))
         if revenue not in (None, 0) and free_cash_flow is not None:
@@ -528,7 +530,7 @@ def _compute_ttc_overall_score(conn, company_id: int, year_range: str, ttc_conte
         if ocf is not None and net_income not in (None, 0):
             cfo_net_income_vals.append(float(ocf) / float(net_income))
         if revenue not in (None, 0) and capex is not None:
-            capital_intensity_vals.append((-1.0 * float(capex)) / float(revenue))
+            capital_intensity_vals.append(_capital_intensity(capex, revenue))
 
         net_ppe = net_ppe_cf.get(year)
         current_assets = current_assets_cf.get(year)

@@ -119,6 +119,54 @@ net_income_ttm = Table(
     Column("net_income", Float, nullable=False),
 )
 
+net_income_to_common_annual = Table(
+    "net_income_to_common_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("net_income_to_common", Float, nullable=False),
+)
+
+net_income_to_common_quarterly = Table(
+    "net_income_to_common_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("net_income_to_common", Float, nullable=False),
+)
+
+earnings_from_discontinued_operations_annual = Table(
+    "earnings_from_discontinued_operations_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("earnings_from_discontinued_operations", Float, nullable=False),
+)
+
+earnings_from_discontinued_operations_quarterly = Table(
+    "earnings_from_discontinued_operations_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("earnings_from_discontinued_operations", Float, nullable=False),
+)
+
+minority_interest_in_earnings_annual = Table(
+    "minority_interest_in_earnings_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("minority_interest_in_earnings", Float, nullable=False),
+)
+
+minority_interest_in_earnings_quarterly = Table(
+    "minority_interest_in_earnings_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("minority_interest_in_earnings", Float, nullable=False),
+)
+
 eff_tax_rate_annual = Table(
     "eff_tax_rate_annual",
     metadata,
@@ -525,6 +573,22 @@ capital_expenditures_quarterly = Table(
     Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
     Column("quarter_end", Text, primary_key=True),
     Column("capital_expenditures", Float, nullable=False),
+)
+
+common_dividends_paid_annual = Table(
+    "common_dividends_paid_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("common_dividends_paid", Float, nullable=False),
+)
+
+common_dividends_paid_quarterly = Table(
+    "common_dividends_paid_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("common_dividends_paid", Float, nullable=False),
 )
 
 operating_cash_flow_annual = Table(

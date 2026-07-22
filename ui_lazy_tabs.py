@@ -105,6 +105,21 @@ def lazy_tab_bar(labels: Sequence[str], key: str, default: str | None = None) ->
             font-size: 0.96rem !important;
           }}
 
+          .st-key-{class_suffix} [role="radiogroup"] input[type="radio"],
+          .st-key-{class_suffix} [role="radiogroup"] [data-baseweb="radio"] > div:first-child,
+          .st-key-{class_suffix} [role="radiogroup"] [data-testid="stRadio"] [data-testid="stMarkdownContainer"] + div,
+          .st-key-{class_suffix} [role="radiogroup"] label > div:first-child:empty,
+          .st-key-{class_suffix} [role="radiogroup"] label > div:first-child:not([data-testid="stMarkdownContainer"]) {{
+            display: none !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+            width: 0 !important;
+            min-width: 0 !important;
+            height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }}
+
           .st-key-{class_suffix} [role="radiogroup"] label > div:first-child {{
             display: none !important;
           }}

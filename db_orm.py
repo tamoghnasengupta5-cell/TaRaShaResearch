@@ -65,6 +65,12 @@ class CapitalExpendituresAnnual(Base):
 class CapitalExpendituresQuarterly(Base):
     __table__ = db_models.capital_expenditures_quarterly
 
+class CommonDividendsPaidAnnual(Base):
+    __table__ = db_models.common_dividends_paid_annual
+
+class CommonDividendsPaidQuarterly(Base):
+    __table__ = db_models.common_dividends_paid_quarterly
+
 class CashAndCashEquivalentsAnnual(Base):
     __table__ = db_models.cash_and_cash_equivalents_annual
 
@@ -184,6 +190,24 @@ class NetIncomeAnnual(Base):
 
 class NetIncomeTtm(Base):
     __table__ = db_models.net_income_ttm
+
+class NetIncomeToCommonAnnual(Base):
+    __table__ = db_models.net_income_to_common_annual
+
+class NetIncomeToCommonQuarterly(Base):
+    __table__ = db_models.net_income_to_common_quarterly
+
+class EarningsFromDiscontinuedOperationsAnnual(Base):
+    __table__ = db_models.earnings_from_discontinued_operations_annual
+
+class EarningsFromDiscontinuedOperationsQuarterly(Base):
+    __table__ = db_models.earnings_from_discontinued_operations_quarterly
+
+class MinorityInterestInEarningsAnnual(Base):
+    __table__ = db_models.minority_interest_in_earnings_annual
+
+class MinorityInterestInEarningsQuarterly(Base):
+    __table__ = db_models.minority_interest_in_earnings_quarterly
 
 class NonCashWorkingCapitalAnnual(Base):
     __table__ = db_models.non_cash_working_capital_annual
@@ -382,4 +406,3 @@ class WaccAnnual(Base):
 
 class AppBackfillState(Base):
     __table__ = db_models.app_backfill_state
-

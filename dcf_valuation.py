@@ -44,7 +44,7 @@ from ttc_efficiency import (
 )
 from db_config import get_db_url, get_sqlite_path, is_sqlite_url
 from ui_lazy_tabs import lazy_tab_bar
-from ui_theme import company_label_map, dashboard_section, display_table_frame, format_company_option, render_dashboard_table
+from ui_theme import add_taxonomy_pictures, company_label_map, dashboard_section, display_table_frame, format_company_option, render_dashboard_table
 
 
 _DCF_BUCKET_KEY = "dcf_selected_bucket_name"
@@ -66,6 +66,8 @@ _VALUATION_DASHBOARD_RESULTS_KEY = "valuation_dashboard_results"
 _VALUATION_DASHBOARD_META_KEY = "valuation_dashboard_results_meta"
 _VALUATION_DASHBOARD_SAVE_MODE_KEY = "valuation_dashboard_save_mode"
 _VALUATION_DASHBOARD_SAVED_TABLE = "valuation_saved_dashboards"
+_VALUATION_DASHBOARD_SCHEMA_VERSION = 2
+_INITIAL_DCF_ASSUMPTION_STATUS = "Initial assumption upload awaiting"
 
 _SETTINGS_FIELDS = [
     "historical_years",
@@ -301,6 +303,60 @@ def _get_company_country(conn, company_id: int, company_row: Optional[pd.Series]
         return None
     country_text = str(country).strip()
     return country_text or None
+
+
+def _canonical_country(country: Optional[str]) -> str:
+    text = str(country or "").strip()
+    if not text:
+        return "USA"
+    normalized = text.upper()
+    if normalized in ("USA", "US", "UNITED STATES", "UNITED STATES OF AMERICA"):
+        return "USA"
+    if normalized in ("INDIA", "IN", "REPUBLIC OF INDIA"):
+        return "India"
+    if normalized in ("CHINA", "CN", "PRC", "PEOPLE'S REPUBLIC OF CHINA", "PEOPLES REPUBLIC OF CHINA"):
+        return "China"
+    if normalized in ("JAPAN", "JP"):
+        return "Japan"
+    if normalized in ("UK", "UNITED KINGDOM", "GREAT BRITAIN", "BRITAIN", "GB"):
+        return "UK"
+    if normalized in ("UAE", "UNITED ARAB EMIRATES", "AE"):
+        return "UAE"
+    return text
+
+
+def _country_display(country: Optional[str]) -> str:
+    canonical = _canonical_country(country)
+    flag_map = {
+        "USA": "🇺🇸",
+        "India": "🇮🇳",
+        "China": "🇨🇳",
+        "Japan": "🇯🇵",
+        "UK": "🇬🇧",
+        "UAE": "🇦🇪",
+    }
+    return f"{flag_map.get(canonical, '🏳️')} {canonical}"
+
+
+def _format_dcf_assumption_update_date(updated_at: object) -> str:
+    if updated_at is None or pd.isna(updated_at):
+        return _INITIAL_DCF_ASSUMPTION_STATUS
+    text = str(updated_at).strip()
+    if not text:
+        return _INITIAL_DCF_ASSUMPTION_STATUS
+    parsed = pd.to_datetime(text, errors="coerce")
+    if pd.notna(parsed):
+        return parsed.strftime("%Y-%m-%d")
+    return text
+
+
+def _company_dcf_assumption_status(company_overrides_df: pd.DataFrame, company_id: int) -> Tuple[str, bool]:
+    if company_overrides_df is None or company_overrides_df.empty or "company_id" not in company_overrides_df.columns:
+        return _INITIAL_DCF_ASSUMPTION_STATUS, False
+    match_df = company_overrides_df[company_overrides_df["company_id"] == int(company_id)]
+    if match_df.empty:
+        return _INITIAL_DCF_ASSUMPTION_STATUS, False
+    return _format_dcf_assumption_update_date(match_df.iloc[0].get("updated_at")), True
 
 
 def _parse_projection_path_config(value: object) -> Dict[str, object]:
@@ -2985,7 +3041,7 @@ def _render_dcf_results(display_df: pd.DataFrame, *, caption_text: str, download
         key=f"{download_key}_table",
     )
 
-    export_csv = visible_df.to_csv(index=False).encode("utf-8")
+    export_csv = add_taxonomy_pictures(visible_df).to_csv(index=False).encode("utf-8")
     st.download_button(
         download_label,
         data=export_csv,
@@ -2999,9 +3055,10 @@ def _render_dcf_results(display_df: pd.DataFrame, *, caption_text: str, download
 
 
 def _valuation_dashboard_excel_bytes(df: pd.DataFrame) -> bytes:
+    export_df = add_taxonomy_pictures(df)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Valuation Dashboard")
+        export_df.to_excel(writer, index=False, sheet_name="Valuation Dashboard")
         worksheet = writer.sheets["Valuation Dashboard"]
         worksheet.freeze_panes = "A2"
         worksheet.auto_filter.ref = worksheet.dimensions
@@ -3022,7 +3079,7 @@ def _valuation_dashboard_excel_bytes(df: pd.DataFrame) -> bytes:
 _RELATIVE_MARKET_METRICS_TABLE = "relative_valuation_market_metrics"
 _RELATIVE_VALUATION_RESULTS_KEY = "relative_valuation_dashboard_results"
 _RELATIVE_VALUATION_META_KEY = "relative_valuation_dashboard_meta"
-_RELATIVE_VALUATION_SCHEMA_VERSION = 2
+_RELATIVE_VALUATION_SCHEMA_VERSION = 3
 
 
 def _ensure_relative_market_metrics_table(conn) -> None:
@@ -3905,9 +3962,10 @@ def _business_quarter_trend_score_for_company(conn, company_id: int, quarter_ran
 
 
 def _relative_valuation_excel_bytes(df: pd.DataFrame) -> bytes:
+    export_df = add_taxonomy_pictures(df)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Relative Valuation Dashboard")
+        export_df.to_excel(writer, index=False, sheet_name="Relative Valuation Dashboard")
         worksheet = writer.sheets["Relative Valuation Dashboard"]
         worksheet.freeze_panes = "A2"
         worksheet.auto_filter.ref = worksheet.dimensions
@@ -3974,15 +4032,22 @@ def _run_relative_valuation_dashboard(
 
         dcf_row = dcf_lookup.get((str(company_row["name"]), str(company_row["ticker"])))
         category, subcategory = category_map.get(company_id, ("", ""))
+        dcf_assumption_update_date = (
+            str(dcf_row.get("Last DCF assumption update date"))
+            if dcf_row is not None and dcf_row.get("Last DCF assumption update date") is not None
+            else _INITIAL_DCF_ASSUMPTION_STATUS
+        )
         rows.append(
             {
                 "Company": company_row["name"],
                 "Ticker": company_row["ticker"],
-                "Country": country,
+                "Country": _country_display(country),
                 "Category": category,
                 "Sub-Category": subcategory,
+                "Last DCF assumption update date": dcf_assumption_update_date,
                 "Enterprise Value": _relative_ev_display_value(enterprise_value, country),
                 "Enterprise Value Unit": _relative_ev_display_unit(country),
+                "DCF driven Intrinsic Value": _safe_float(dcf_row.get("Intrinsic Value")) if dcf_row is not None else None,
                 "Debt-Adj. Total Score": _safe_float(dcf_row.get("Total Debt-Adjusted Scaled Volatility-Adjusted Score")) if dcf_row is not None else None,
                 "Business Quarter Trend Score": bqt_score,
                 "DCF Upside/Downside": _safe_float(dcf_row.get("Upside/Downside")) if dcf_row is not None else None,
@@ -4084,6 +4149,7 @@ def _render_relative_valuation_dashboard_tab(conn) -> None:
         dashboard_df,
         column_config={
             "Enterprise Value": st.column_config.NumberColumn(format="%.2f"),
+            "DCF driven Intrinsic Value": st.column_config.NumberColumn(format="%.2f"),
             "Debt-Adj. Total Score": st.column_config.NumberColumn(format="%.2f"),
             "Business Quarter Trend Score": st.column_config.NumberColumn(format="%.1f"),
             "DCF Upside/Downside": st.column_config.NumberColumn(format="%.2f%%"),
@@ -4532,6 +4598,9 @@ def _valuation_dashboard_row(
     *,
     debt_adjusted_score: Optional[float],
     terminal_year: int,
+    country: Optional[str],
+    dcf_assumption_update_date: str,
+    has_dcf_assumption_update: bool,
 ) -> Dict[str, object]:
     detail_payload = projection_row.get("__valuation_detail")
     if not isinstance(detail_payload, dict):
@@ -4546,18 +4615,23 @@ def _valuation_dashboard_row(
     historical_years = _assumption_row_value(detail_payload, "Historical Years Used")
     terminal_year_wacc = _latest_projected_metric_value(detail_payload, "Projected Year WACC")
     upside_downside = _safe_float(projection_row.get("Difference %"))
+    intrinsic_value = _safe_float(projection_row.get("Intrinsic Value")) if has_dcf_assumption_update else None
+    if not has_dcf_assumption_update:
+        upside_downside = None
 
     return {
         "Company Name": projection_row.get("Company Name"),
         "Ticker": projection_row.get("Ticker"),
+        "Country": _country_display(country),
         "Industry Bucket": projection_row.get("Industry Bucket"),
+        "Last DCF assumption update date": dcf_assumption_update_date,
         "Current Market Price": _safe_float(projection_row.get("Current Market Price")),
-        "Intrinsic Value": _safe_float(projection_row.get("Intrinsic Value")),
+        "Intrinsic Value": intrinsic_value,
         "Upside/Downside": upside_downside,
         "Embedded Growth Intensity": _percentage_points(embedded_growth_score),
         "Number of Historical Years Considered": int(historical_years) if historical_years is not None else None,
         "Total Debt-Adjusted Scaled Volatility-Adjusted Score": debt_adjusted_score,
-        "Composite Score": _valuation_dashboard_composite_score(debt_adjusted_score, upside_downside),
+        "Composite Score": _valuation_dashboard_composite_score(debt_adjusted_score, upside_downside) if has_dcf_assumption_update else None,
         "Overall Through-the-Cycle-Efficiency Score": _safe_float(projection_row.get("Overall Through-the-Cycle-Efficiency Score")),
         "Terminal Year": int(terminal_year),
         "Terminal Year WACC%": _percentage_points(terminal_year_wacc),
@@ -4611,6 +4685,7 @@ def _run_valuation_dashboard(
 
     for idx, (_, company_row) in enumerate(members_df.iterrows(), start=1):
         company_id = int(company_row["id"])
+        dcf_assumption_update_date, has_dcf_assumption_update = _company_dcf_assumption_status(company_overrides_df, company_id)
         progress_bar.progress(
             int((idx / total) * 100),
             text=f"Computing valuation dashboard row for {company_row['name']} ({idx}/{total})...",
@@ -4676,6 +4751,9 @@ def _run_valuation_dashboard(
                 pd.Series(projection_row),
                 debt_adjusted_score=debt_adjusted_score,
                 terminal_year=int(terminal_year),
+                country=company_row.get("country"),
+                dcf_assumption_update_date=dcf_assumption_update_date,
+                has_dcf_assumption_update=has_dcf_assumption_update,
             )
         )
 
@@ -4781,6 +4859,7 @@ def _render_valuation_dashboard_tab(conn) -> None:
             terminal_year=int(terminal_year),
         )
         st.session_state[_VALUATION_DASHBOARD_META_KEY] = {
+            "schema_version": _VALUATION_DASHBOARD_SCHEMA_VERSION,
             "company_ids": list(selected_company_ids),
             "score_year_range": score_year_range,
             "terminal_year": int(terminal_year),
@@ -4794,7 +4873,8 @@ def _render_valuation_dashboard_tab(conn) -> None:
         return
 
     if (
-        dashboard_meta.get("company_ids") != list(selected_company_ids)
+        dashboard_meta.get("schema_version") != _VALUATION_DASHBOARD_SCHEMA_VERSION
+        or dashboard_meta.get("company_ids") != list(selected_company_ids)
         or dashboard_meta.get("score_year_range") != score_year_range
         or int(dashboard_meta.get("terminal_year", terminal_year)) != int(terminal_year)
         or dashboard_meta.get("selection_mode") != selection_mode

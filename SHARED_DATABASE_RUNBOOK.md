@@ -44,6 +44,29 @@ TARASHA_DB_URL="sqlite:////Users/tamoghna/Documents/TaRaShaResearch/app.db" \
 - `anon` and `authenticated` have no grants on those views.
 - The Consumer service-role key is encrypted in Cloudflare and never sent to the browser.
 
+## Research latency controls
+
+Research reuses a bounded PostgreSQL connection pool and labels its sessions
+`TaRaShaResearch`. Each uploaded company is written with set-based upserts and
+one transaction, including its industry membership and dependent metrics. The
+Combined Dashboard is read-only and fetches its annual metric series in one
+batched query; it does not refresh the entire database during page rendering.
+
+The defaults can be tuned without changing Consumer or creating another database:
+
+| Setting | Default | Purpose |
+|---|---:|---|
+| `TARASHA_DB_POOL_SIZE` | `5` | Persistent Research connections per app process |
+| `TARASHA_DB_MAX_OVERFLOW` | `5` | Short-lived burst capacity |
+| `TARASHA_DB_POOL_TIMEOUT` | `30` | Seconds to wait for a Research connection |
+| `TARASHA_DB_POOL_RECYCLE` | `900` | Seconds before replacing an idle connection |
+| `TARASHA_DB_APPLICATION_NAME` | `TaRaShaResearch` | PostgreSQL workload label |
+
+PostgreSQL schema creation is migration-owned. Research therefore skips
+`metadata.create_all()` on normal PostgreSQL startup. Set
+`TARASHA_AUTO_CREATE_SCHEMA=true` only for a controlled bootstrap; normal
+deployments should continue to use `alembic upgrade head`.
+
 ## Re-run a complete SQLite migration
 
 Make a database backup first. The migration is atomic and excludes SQLite rows whose foreign-key parent has been deleted.

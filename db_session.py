@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from functools import lru_cache
+import os
 from typing import Any, Iterable, Mapping, Tuple
 
 import pandas as pd
@@ -16,12 +17,52 @@ from db_config import get_db_url, is_sqlite_url
 def get_engine() -> Engine:
     url = get_db_url()
     connect_args = {}
+    engine_kwargs: dict[str, Any] = {
+        "future": True,
+        "pool_pre_ping": True,
+        "pool_reset_on_return": "rollback",
+    }
     if is_sqlite_url(url):
         connect_args = {"check_same_thread": False}
-    return create_engine(url, future=True, pool_pre_ping=True, connect_args=connect_args)
+    else:
+        # Research and Consumer use separate clients/roles against the same
+        # PostgreSQL database. Keep Research's pool bounded so Consumer traffic
+        # cannot exhaust writer connections, while still reusing warm sockets.
+        connect_args = {
+            "application_name": os.environ.get("TARASHA_DB_APPLICATION_NAME", "TaRaShaResearch"),
+        }
+        engine_kwargs.update(
+            pool_size=max(1, int(os.environ.get("TARASHA_DB_POOL_SIZE", "5"))),
+            max_overflow=max(0, int(os.environ.get("TARASHA_DB_MAX_OVERFLOW", "5"))),
+            pool_timeout=max(1, int(os.environ.get("TARASHA_DB_POOL_TIMEOUT", "30"))),
+            pool_recycle=max(60, int(os.environ.get("TARASHA_DB_POOL_RECYCLE", "900"))),
+        )
+    return create_engine(url, connect_args=connect_args, **engine_kwargs)
 
 
-SessionLocal = sessionmaker(bind=get_engine(), autoflush=False, autocommit=False, expire_on_commit=False, future=True)
+class ManagedSession(Session):
+    """Session that can defer legacy helper commits into one outer transaction."""
+
+    _DEFER_KEY = "tarasha_deferred_commit_depth"
+
+    def commit(self) -> None:
+        if int(self.info.get(self._DEFER_KEY, 0)) > 0:
+            # Existing persistence helpers call commit after each metric family.
+            # During a company upload, flush those changes but leave the actual
+            # COMMIT to DbCompat.transaction().
+            self.flush()
+            return
+        super().commit()
+
+
+SessionLocal = sessionmaker(
+    bind=get_engine(),
+    class_=ManagedSession,
+    autoflush=False,
+    autocommit=False,
+    expire_on_commit=False,
+    future=True,
+)
 
 
 @contextmanager
@@ -83,7 +124,9 @@ def executemany(session: Session, sql: str, seq_params: Iterable[Tuple[Any, ...]
 
 def read_sql_df(session: Session, sql: str, params: Tuple[Any, ...] | Mapping[str, Any] | None = None) -> pd.DataFrame:
     named_sql, named_params = _to_named_params(sql, params)
-    return pd.read_sql_query(text(named_sql), session.get_bind(), params=named_params)
+    # Reuse the operation's checked-out connection. Passing the Engine here
+    # made every pandas read check out and pre-ping another pooled connection.
+    return pd.read_sql_query(text(named_sql), session.connection(), params=named_params)
 
 
 class CompatCursor:
@@ -142,6 +185,40 @@ class DbCompat:
 
     def close(self):
         self._session.close()
+
+    @contextmanager
+    def transaction(self):
+        """Group legacy helper commits into one atomic transaction."""
+        key = ManagedSession._DEFER_KEY
+        depth = int(self._session.info.get(key, 0))
+        self._session.info[key] = depth + 1
+        try:
+            yield self
+        except Exception:
+            self._session.info[key] = 0
+            self._session.rollback()
+            raise
+        else:
+            remaining = max(0, int(self._session.info.get(key, 1)) - 1)
+            self._session.info[key] = remaining
+            if remaining == 0:
+                # Bypass ManagedSession.commit so the outer boundary performs
+                # exactly one real database commit.
+                Session.commit(self._session)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self._session.rollback()
+        self.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def get_bind(self):
         return self._session.get_bind()
