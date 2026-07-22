@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - "consumer/**"
+      - ".github/workflows/consumer-checks.yml"
+      - ".github/workflows/deploy_consumer_azure.yml"
   workflow_dispatch:
 
 jobs:
