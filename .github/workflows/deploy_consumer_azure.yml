@@ -15,7 +15,6 @@ permissions:
 
 env:
   AZURE_WEBAPP_NAME: tarasha-consumer
-  AZURE_APP_SERVICE_PLAN: tarasha-consumer-linux
   RESEARCH_WEBAPP_NAME: TaRaSha
   CONSUMER_API_ORIGIN: https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
 
@@ -55,35 +54,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          research_app="$(az webapp list --query "[?name=='${RESEARCH_WEBAPP_NAME}'] | [0].[resourceGroup,location]" --output tsv)"
+          research_app="$(az webapp list --query "[?name=='${RESEARCH_WEBAPP_NAME}'] | [0].[resourceGroup,serverFarmId]" --output tsv)"
           if [[ -z "$research_app" ]]; then
             echo "The existing ${RESEARCH_WEBAPP_NAME} web app was not found in this subscription." >&2
             exit 1
           fi
 
-          read -r resource_group location <<< "$research_app"
-          node_runtime="$(az webapp list-runtimes --os linux --query "[?runtime == 'Node.js' && contains(version, '22')].config | [0]" --output tsv)"
+          read -r resource_group plan_id <<< "$research_app"
+          plan_name="${plan_id##*/}"
+          node_runtime="$(az webapp list-runtimes --os linux --query "[?runtime == 'Node' && contains(version, '22')].config | [0]" --output tsv)"
           node_runtime="${node_runtime:-NODE|22-lts}"
           create_runtime="${node_runtime/|/:}"
-
-          if ! az appservice plan show \
-            --resource-group "$resource_group" \
-            --name "$AZURE_APP_SERVICE_PLAN" \
-            --output none 2>/dev/null; then
-            az appservice plan create \
-              --resource-group "$resource_group" \
-              --name "$AZURE_APP_SERVICE_PLAN" \
-              --location "$location" \
-              --sku F1 \
-              --is-linux \
-              --output none
-          fi
 
           existing_app="$(az webapp list --query "[?name=='${AZURE_WEBAPP_NAME}'] | [0].name" --output tsv)"
           if [[ -z "$existing_app" ]]; then
             az webapp create \
               --resource-group "$resource_group" \
-              --plan "$AZURE_APP_SERVICE_PLAN" \
+              --plan "$plan_name" \
               --name "$AZURE_WEBAPP_NAME" \
               --runtime "$create_runtime" \
               --output none
