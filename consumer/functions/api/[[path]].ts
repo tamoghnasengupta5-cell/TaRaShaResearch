@@ -124,6 +124,32 @@ async function researchCompany(request: Request, env: Env): Promise<Response> {
   }
 }
 
+async function recalculateResearchCompany(request: Request, env: Env): Promise<Response> {
+  if (!researchProviderEnabled(env)) return error("The shared Research provider is not active.", 404);
+  const body: { companyId?: string; fromYear?: number; toYear?: number; constituentIds?: string[] | null } = await request
+    .json<{ companyId?: string; fromYear?: number; toYear?: number; constituentIds?: string[] | null }>()
+    .catch(() => ({}));
+  const companyId = cleanText(body.companyId, 100);
+  const fromYear = Number(body.fromYear);
+  const toYear = Number(body.toYear);
+  const currentYear = new Date().getUTCFullYear();
+  if (!Number.isInteger(fromYear) || !Number.isInteger(toYear) || fromYear > toYear || toYear > currentYear || fromYear < 1995 || toYear - fromYear + 1 > MAX_YEAR_RANGE) {
+    return error(`Select no more than ${MAX_YEAR_RANGE} reporting years.`);
+  }
+  let constituentIds: number[] | undefined;
+  if (body.constituentIds !== null && body.constituentIds !== undefined) {
+    if (!Array.isArray(body.constituentIds) || !body.constituentIds.length || body.constituentIds.length > 100) return error("Select between 1 and 100 industry constituents.");
+    if (body.constituentIds.some((id) => !/^research-[1-9]\d*$/.test(String(id)))) return error("One or more industry constituent identifiers are invalid.");
+    constituentIds = [...new Set(body.constituentIds.map((id) => Number(id.replace(/^research-/, ""))))];
+  }
+  try {
+    const company = await pullResearchCompany(env, companyId, fromYear, toYear, constituentIds);
+    return company ? json(company) : error("Company was not found in TaRaSha Research.", 404);
+  } catch (cause) {
+    return error(cause instanceof Error ? cause.message : "Industry comparison recalculation failed.", 502);
+  }
+}
+
 async function adminCatalogBatch(request: Request, env: Env): Promise<Response> {
   if (!env.ADMIN_SYNC_KEY || request.headers.get("x-admin-key") !== env.ADMIN_SYNC_KEY) return error("Admin authorization failed.", 401);
   const payload: { rows?: AdminCatalogRow[] } = await request.json<{ rows?: AdminCatalogRow[] }>().catch(() => ({ rows: [] }));
@@ -215,6 +241,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   if (request.method === "GET" && first === "health") return json({ ok: true, provider: researchProviderEnabled(env) ? "research-db" : "sec", financialStorage: "browser-session-only" });
   if (request.method === "GET" && first === "companies") return searchCompanies(request, env);
   if (request.method === "GET" && first === "research" && second === "company") return researchCompany(request, env);
+  if (request.method === "POST" && first === "research" && second === "company") return recalculateResearchCompany(request, env);
   if (request.method === "POST" && first === "admin" && second === "catalog" && third === "batch") return adminCatalogBatch(request, env);
   if (request.method === "POST" && first === "session" && second === "claim") return claimCompany(request, env);
   if (request.method === "GET" && first === "sec" && second === "companyfacts") return secProxy(request, env, "companyfacts");

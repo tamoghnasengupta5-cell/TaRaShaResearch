@@ -5,15 +5,16 @@ export interface YearValue {
   value: number;
 }
 
-export interface NullableYearValue {
-  year: number;
-  value: number | null;
+export interface DistributionObservation {
+  label: string;
+  value: number;
 }
 
 export interface GrowthStatistics {
   median: number | null;
   standardDeviation: number | null;
   observations: number;
+  distribution: DistributionObservation[];
   startYear: number | null;
   endYear: number | null;
   startValue: number | null;
@@ -21,24 +22,187 @@ export interface GrowthStatistics {
   totalChange: number | null;
 }
 
+export interface GrowthComparison {
+  company: GrowthStatistics;
+  industryBucket: GrowthStatistics;
+}
+
+export type ProfitabilityMetricKey = "grossMargin" | "operatingMargin" | "cogsRatio" | "sgaRatio" | "daRatio" | "rdRatio";
+
 export interface LevelStatistics {
   median: number | null;
   standardDeviation: number | null;
   observations: number;
+  distribution: DistributionObservation[];
+}
+
+export interface ProfitabilityYearPoint {
+  year: number;
+  grossMargin: number | null;
+  grossProfit: number | null;
+  operatingMargin: number | null;
+  operatingIncome: number | null;
+  cogsRatio: number | null;
+  cogs: number | null;
+  sgaRatio: number | null;
+  sga: number | null;
+  daRatio: number | null;
+  da: number | null;
+  rdRatio: number | null;
+  rd: number | null;
+}
+
+export interface IndustryLevelPoint {
+  year: number;
+  companyValue: number | null;
+  companyAbsoluteValue: number | null;
+  industryMedian: number | null;
+  industryMedianAbsoluteValue: number | null;
+}
+
+export interface PerformanceThresholds {
+  lowerQuartile: number | null;
+  median: number | null;
+  upperQuartile: number | null;
+  observations: number;
+  direction: "higher" | "lower";
+}
+
+export interface ProfitabilityMetricBands {
+  level: PerformanceThresholds;
+  standardDeviation: PerformanceThresholds;
+}
+
+export interface ProfitabilityAnalysis {
+  statistics: Record<ProfitabilityMetricKey, LevelStatistics>;
+  industryStatistics: Record<ProfitabilityMetricKey, LevelStatistics>;
+  yearly: ProfitabilityYearPoint[];
+  industryComparisons: {
+    grossMargin: IndustryLevelPoint[];
+    operatingMargin: IndustryLevelPoint[];
+    daRatio: IndustryLevelPoint[];
+    rdRatio: IndustryLevelPoint[];
+  };
+  performanceBands: Record<ProfitabilityMetricKey, ProfitabilityMetricBands>;
+}
+
+export type EarningsFlowMetricKey =
+  | "revenue"
+  | "cogs"
+  | "grossProfit"
+  | "sga"
+  | "researchAndDevelopment"
+  | "otherOperatingExpense"
+  | "ebitda"
+  | "depreciationAndAmortization"
+  | "ebit"
+  | "interestExpense"
+  | "ebt"
+  | "taxes"
+  | "netProfit"
+  | "minorityInterestInEarnings"
+  | "earningsFromDiscontinuedOperations"
+  | "commonDividendsPaid"
+  | "other"
+  | "netIncomeToCommon"
+  | "currentYearEarningsRetained"
+  | "dilutedShares"
+  | "eps";
+
+export interface EarningsFlowMetricValue {
+  companyValue: number | null;
+  industryMedian: number | null;
+  industryObservations: number;
+  companyMarginPercent: number | null;
+  industryMedianMarginPercent: number | null;
+}
+
+export interface EarningsFlowYear {
+  year: number;
+  metrics: Record<EarningsFlowMetricKey, EarningsFlowMetricValue>;
+}
+
+export type ValuationMetricKey = "evRevenue" | "evGrossProfit" | "evEbitda" | "evEbit" | "pe";
+
+export interface ValuationComparisonValue {
+  companyValue: number | null;
+  industryMedian: number | null;
+  industryObservations: number;
+}
+
+export interface EarningsAndValuationAnalysis {
+  earningsFlow: EarningsFlowYear[];
+  valuation: {
+    denominatorYear: number | null;
+    enterpriseValue: number | null;
+    enterpriseValueAsOf: string | null;
+    enterpriseValueSource: string;
+    enterpriseValueDetail: string;
+    comparisons: Record<ValuationMetricKey, ValuationComparisonValue>;
+  };
+}
+
+export interface CompanyDeltaPoint {
+  fromYear: number;
+  toYear: number;
+  revenue: number | null;
+  revenueChangePercent: number | null;
+  grossProfit: number | null;
+  grossProfitChangePercent: number | null;
+  operatingIncome: number | null;
+  operatingIncomeChangePercent: number | null;
+}
+
+export interface IndustryDeltaPoint {
+  fromYear: number;
+  toYear: number;
+  company: number | null;
+  companyChangePercent: number | null;
+  industryMedian: number | null;
+  industryMedianChangePercent: number | null;
+}
+
+export interface RawIncomePoint {
+  year: number;
+  revenue: number | null;
+  revenueChangePercent: number | null;
+  grossProfit: number | null;
+  grossProfitChangePercent: number | null;
+  operatingIncome: number | null;
+  operatingIncomeChangePercent: number | null;
+}
+
+export interface IndustryConstituent {
+  id: string;
+  name: string;
+  ticker: string;
+  industryBucket: string;
+  revenueObservations: number;
+  grossProfitObservations: number;
+  operatingIncomeObservations: number;
 }
 
 export interface ResearchShelfAnalysis {
   fromYear: number;
   toYear: number;
   industryBucket: string;
-  revenueGrowth: GrowthStatistics;
-  operatingCostGrowth: GrowthStatistics;
-  sgaGrowth: GrowthStatistics;
-  operatingMarginGrowth: GrowthStatistics;
-  netDebtToEbitda: NullableYearValue[];
-  spread: LevelStatistics;
-  spreadByYear: NullableYearValue[];
-  fcff: NullableYearValue[];
+  industryCompanyCount: number;
+  industryConstituents: IndustryConstituent[];
+  industryConstituentsCustomized: boolean;
+  growthComparisons: {
+    revenue: GrowthComparison;
+    grossProfit: GrowthComparison;
+    operatingIncome: GrowthComparison;
+  };
+  companyDeltas: CompanyDeltaPoint[];
+  industryDeltas: {
+    revenue: IndustryDeltaPoint[];
+    grossProfit: IndustryDeltaPoint[];
+    operatingIncome: IndustryDeltaPoint[];
+  };
+  rawIncome: RawIncomePoint[];
+  profitability: ProfitabilityAnalysis;
+  earningsAndValuation: EarningsAndValuationAnalysis;
 }
 
 export interface Company {
@@ -108,4 +272,4 @@ export interface FilingDocument {
   url: string;
 }
 
-export type Page = "home" | "discover" | "company" | "compare" | "watchlist" | "learn";
+export type Page = "home" | "login" | "discover" | "company" | "compare" | "watchlist" | "learn";

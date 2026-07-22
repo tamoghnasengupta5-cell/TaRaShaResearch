@@ -39,9 +39,14 @@ TARASHA_DB_URL="sqlite:////Users/tamoghna/Documents/TaRaShaResearch/app.db" \
 
 - Current SQLAlchemy metadata contains all 130 Research tables.
 - Alembic revision `20260712_0001` brings four formerly runtime-created tables under migration ownership.
-- `consumer_companies` exposes only company identity and market.
+- Alembic revision `20260713_0004` adds the read-only bucket-membership and income-fact projections used by the Consumer growth-comparison shelf.
+- Alembic revision `20260716_0005` adds the R&D fact and cost-structure fields used by the Consumer margins-and-costs card.
+- Alembic revision `20260718_0006` adds the EBIT and earnings-bridge facts plus the saved EV/P-E snapshot used by the Consumer profit-flow-and-valuation card.
+- `consumer_companies` exposes only company identity, market and industry-bucket labels.
 - `consumer_financial_facts` exposes an allowlisted set of annual statement facts.
-- `anon` and `authenticated` have no grants on those views.
+- `consumer_industry_bucket_memberships` and `consumer_industry_income_facts` expose only the bucket links and allowlisted income-statement history needed for Consumer industry medians.
+- `consumer_market_metrics` exposes saved point-in-time EV and trailing P/E snapshots; it does not trigger live market-data requests.
+- `anon` and `authenticated` have no grants on these views.
 - The Consumer service-role key is encrypted in Cloudflare and never sent to the browser.
 
 ## Re-run a complete SQLite migration

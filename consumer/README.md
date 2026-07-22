@@ -96,7 +96,7 @@ The existing Consumer-auth schema is optional and separate from the shared Resea
 4. Add the public project URL and anonymous key to `.env.local` using `.env.example`.
 5. Add the authentication screens before moving away from the Access-protected preview; the schema already rejects uninvited users and an eleventh profile.
 
-Never expose the shared Research service-role key in the browser. Only the Pages Function may use it, and only the `consumer_companies` and `consumer_financial_facts` views are queried.
+Never expose the shared Research service-role key in the browser. Only the Pages Function may use it, and it may query only the restricted `consumer_*` views defined by the shared Research migrations.
 
 ## Data-source boundary
 
