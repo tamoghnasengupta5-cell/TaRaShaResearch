@@ -379,17 +379,13 @@ def render_combined_dashboard_tab() -> None:
 
         rows_breakup: List[Dict[str, Optional[float]]] = []
 
-        bump_progress("Refreshing WACC/Spread inputs...")
+        bump_progress("Loading dashboard metrics...")
         try:
-            # One-time backfill for derived metrics used by this tab.
-            for cid in score_company_ids:
-                compute_and_store_levered_beta(conn, cid)
-            refresh_cost_of_equity_all_companies(conn)
-            refresh_pre_tax_cost_of_debt_all_companies(conn)
-            refresh_wacc_all_companies(conn)
-            refresh_roic_wacc_spread_all_companies(conn)
+            dashboard_series = get_combined_dashboard_series_batch(conn, score_company_ids)
         except Exception as e:
-            st.warning(f"Skipping WACC/Spread backfill: {e}")
+            st.error(f"Unable to load dashboard metrics: {e}")
+            progress_bar.empty()
+            return
 
         for idx, cid in enumerate(score_company_ids, start=1):
             row_info = companies_df[companies_df["id"] == cid]
@@ -399,6 +395,7 @@ def render_combined_dashboard_tab() -> None:
             row_info = row_info.iloc[0]
             name = row_info["name"]
             ticker = row_info["ticker"]
+            company_series = dashboard_series.get(cid, {})
 
             bump_progress(f"Computing scores for {name} ({idx}/{len(score_company_ids)})")
 
@@ -427,14 +424,11 @@ def render_combined_dashboard_tab() -> None:
             # Balance Sheet score part
             # -------------------------
             try:
-                # Ensure equity-derived metrics (Total Equity, Average Equity, ROE) are up-to-date
-                compute_and_store_total_equity_and_roe(conn, cid)
-
-                ann_acc = get_annual_accumulated_profit_series(conn, cid)
+                ann_acc = company_series["accumulated_profit"]
                 ann_acc_stats = exclude_recent_zero_accumulated_profit_for_stats(ann_acc)
-                ann_roe = get_annual_roe_series(conn, cid)
-                ann_roce = get_annual_roce_series(conn, cid)
-                ann_interest_load = get_annual_interest_load_series(conn, cid)
+                ann_roe = company_series["roe"]
+                ann_roce = company_series["roce"]
+                ann_interest_load = company_series["interest_load_pct"]
 
                 available_years_bs: List[int] = []
                 for df in (ann_acc, ann_roe, ann_roce, ann_interest_load):
@@ -550,7 +544,7 @@ def render_combined_dashboard_tab() -> None:
             # P&L score part
             # -------------------------
             try:
-                ann_rev = get_annual_series(conn, cid)
+                ann_rev = company_series["revenue"]
                 if not ann_rev.empty:
                     yr_start_pl, yr_end_pl = parse_range_overall(yr_input_overall, ann_rev["year"].tolist())
                     if yr_start_pl < yr_end_pl:
@@ -565,7 +559,7 @@ def render_combined_dashboard_tab() -> None:
                         abs_denom=True,
                     )
 
-                    ann_pt = get_annual_pretax_income_series(conn, cid)
+                    ann_pt = company_series["pretax_income"]
                     med_pt_g: Optional[float] = None
                     std_pt_g: Optional[float] = None
                     if not ann_pt.empty:
@@ -578,7 +572,7 @@ def render_combined_dashboard_tab() -> None:
                             abs_denom=True,
                         )
 
-                    ann_ni = get_annual_net_income_series(conn, cid)
+                    ann_ni = company_series["net_income"]
                     med_ni_g: Optional[float] = None
                     std_ni_g: Optional[float] = None
                     if not ann_ni.empty:
@@ -591,7 +585,7 @@ def render_combined_dashboard_tab() -> None:
                             abs_denom=True,
                         )
 
-                    ann_nopat = get_annual_nopat_series(conn, cid)
+                    ann_nopat = company_series["nopat"]
                     med_nopat_g: Optional[float] = None
                     std_nopat_g: Optional[float] = None
                     if not ann_nopat.empty:
@@ -604,7 +598,7 @@ def render_combined_dashboard_tab() -> None:
                             abs_denom=True,
                         )
 
-                    ann_om = get_annual_op_margin_series(conn, cid)
+                    ann_om = company_series["margin"]
                     med_om: Optional[float] = None
                     std_om: Optional[float] = None
                     om_is_fraction = True
@@ -705,16 +699,8 @@ def render_combined_dashboard_tab() -> None:
             fs_add: Optional[float] = None
             fs_scaled: Optional[float] = None
             try:
-                # Ensure underlying metrics exist / are fresh
-                compute_and_store_fcff_and_reinvestment_rate(conn, cid)
-                compute_and_store_levered_beta(conn, cid)
-                compute_and_store_cost_of_equity(conn, cid)
-                compute_and_store_pre_tax_cost_of_debt(conn, cid)
-                compute_and_store_wacc(conn, cid)
-                compute_and_store_roic_wacc_spread(conn, cid)
-
-                fcff_df = get_annual_fcff_series(conn, cid)
-                spread_df = get_annual_roic_wacc_spread_series(conn, cid)
+                fcff_df = company_series["fcff"]
+                spread_df = company_series["spread_pct"]
 
                 available_years_fs: set = set()
                 if fcff_df is not None and not fcff_df.empty and "year" in fcff_df.columns:
@@ -800,7 +786,7 @@ def render_combined_dashboard_tab() -> None:
             price_above_15_pct: Optional[float] = None
 
             try:
-                price_df = get_annual_price_change_series(conn, cid)
+                price_df = company_series["price_change"]
                 if not price_df.empty:
                     price_df = price_df.dropna(subset=["price_change"]).copy()
 

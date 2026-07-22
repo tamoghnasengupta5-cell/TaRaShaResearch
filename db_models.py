@@ -119,6 +119,54 @@ net_income_ttm = Table(
     Column("net_income", Float, nullable=False),
 )
 
+net_income_to_common_annual = Table(
+    "net_income_to_common_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("net_income_to_common", Float, nullable=False),
+)
+
+net_income_to_common_quarterly = Table(
+    "net_income_to_common_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("net_income_to_common", Float, nullable=False),
+)
+
+earnings_from_discontinued_operations_annual = Table(
+    "earnings_from_discontinued_operations_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("earnings_from_discontinued_operations", Float, nullable=False),
+)
+
+earnings_from_discontinued_operations_quarterly = Table(
+    "earnings_from_discontinued_operations_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("earnings_from_discontinued_operations", Float, nullable=False),
+)
+
+minority_interest_in_earnings_annual = Table(
+    "minority_interest_in_earnings_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("minority_interest_in_earnings", Float, nullable=False),
+)
+
+minority_interest_in_earnings_quarterly = Table(
+    "minority_interest_in_earnings_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("minority_interest_in_earnings", Float, nullable=False),
+)
+
 eff_tax_rate_annual = Table(
     "eff_tax_rate_annual",
     metadata,
@@ -525,6 +573,22 @@ capital_expenditures_quarterly = Table(
     Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
     Column("quarter_end", Text, primary_key=True),
     Column("capital_expenditures", Float, nullable=False),
+)
+
+common_dividends_paid_annual = Table(
+    "common_dividends_paid_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("common_dividends_paid", Float, nullable=False),
+)
+
+common_dividends_paid_quarterly = Table(
+    "common_dividends_paid_quarterly",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("quarter_end", Text, primary_key=True),
+    Column("common_dividends_paid", Float, nullable=False),
 )
 
 operating_cash_flow_annual = Table(
@@ -1065,4 +1129,59 @@ app_backfill_state = Table(
     Column("name", Text, primary_key=True),
     Column("completed_at", Text),
     Column("source_signature", Text),
+)
+
+# These tables were historically created by feature modules at runtime. Keeping
+# them in shared metadata makes SQLite-to-PostgreSQL migrations complete.
+price_annual = Table(
+    "price_annual",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("fiscal_year", Integer, primary_key=True),
+    Column("price_change", Float, nullable=False),
+)
+
+relative_valuation_market_metrics = Table(
+    "relative_valuation_market_metrics",
+    metadata,
+    Column("company_id", Integer, ForeignKey("companies.id", ondelete="CASCADE"), primary_key=True),
+    Column("enterprise_value", Float),
+    Column("enterprise_value_source", Text),
+    Column("enterprise_value_as_of", Text),
+    Column("enterprise_value_detail", Text),
+    Column("trailing_pe", Float),
+    Column("trailing_pe_source", Text),
+    Column("trailing_pe_as_of", Text),
+    Column("trailing_pe_detail", Text),
+    Column("forward_pe", Float),
+    Column("forward_pe_source", Text),
+    Column("forward_pe_as_of", Text),
+    Column("forward_pe_detail", Text),
+    Column("updated_at", Text),
+)
+
+ttc_score_formula = Table(
+    "ttc_score_formula",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("score_type", Text, nullable=False),
+    Column("component", Text, nullable=False),
+    Column("weight", Float, nullable=False),
+    Column("threshold", Float, nullable=False),
+    Column("mode", Text, nullable=False),
+    Column("sort_order", Integer, nullable=False),
+    UniqueConstraint("score_type", "component", name="uq_ttc_score_formula_type_component"),
+)
+
+valuation_saved_dashboards = Table(
+    "valuation_saved_dashboards",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("name", Text, nullable=False, unique=True),
+    Column("company_ids_json", Text, nullable=False),
+    Column("result_json", Text),
+    Column("score_year_range", Text),
+    Column("terminal_year", Integer),
+    Column("created_at", Text, nullable=False),
+    Column("updated_at", Text, nullable=False),
 )

@@ -15,6 +15,12 @@ METRIC_TABLES_FOR_CLEANUP: List[str] = [
     "pretax_income_ttm",
     "net_income_annual",
     "net_income_ttm",
+    "net_income_to_common_annual",
+    "net_income_to_common_quarterly",
+    "earnings_from_discontinued_operations_annual",
+    "earnings_from_discontinued_operations_quarterly",
+    "minority_interest_in_earnings_annual",
+    "minority_interest_in_earnings_quarterly",
     "eff_tax_rate_annual",
     "eff_tax_rate_ttm",
     "ebit_annual",
@@ -23,6 +29,8 @@ METRIC_TABLES_FOR_CLEANUP: List[str] = [
     "interest_expense_ttm",
     "research_and_development_expense_annual",
     "capital_expenditures_annual",
+    "common_dividends_paid_annual",
+    "common_dividends_paid_quarterly",
     "operating_cash_flow_annual",
     "operating_cash_flow_ttm",
     "depreciation_amortization_annual",
@@ -439,10 +447,10 @@ def render_admin_tab():
             """
             SELECT
                 year,
-                usa_rf   AS 'USA (Rf) %',
-                india_rf AS 'India (Rf) %',
-                china_rf AS 'China (Rf) %',
-                japan_rf AS 'Japan (Rf) %'
+                usa_rf   AS "USA (Rf) %",
+                india_rf AS "India (Rf) %",
+                china_rf AS "China (Rf) %",
+                japan_rf AS "Japan (Rf) %"
             FROM risk_free_rates
             ORDER BY year DESC
             """,
@@ -603,8 +611,8 @@ def render_admin_tab():
             """
             SELECT
                 year,
-                nasdaq_composite AS 'NASDAQ Composite %',
-                sp500            AS 'S&P 500 %'
+                nasdaq_composite AS "NASDAQ Composite %",
+                sp500            AS "S&P 500 %"
             FROM index_annual_price_movement
             ORDER BY year DESC
             """,
@@ -940,9 +948,9 @@ def render_admin_tab():
         mctr_df = read_df(
             """
             SELECT
-                country AS 'Country',
-                effective_rate AS 'Effective Marginal Corporate Tax Rate',
-                notes AS 'Breakdown & Notes'
+                country AS "Country",
+                effective_rate AS "Effective Marginal Corporate Tax Rate",
+                notes AS "Breakdown & Notes"
             FROM marginal_corporate_tax_rates
             ORDER BY country
             """,
@@ -1563,7 +1571,4 @@ WeightedScore = sum(value_i * weight_i) / sum(weight_i)
                     use_container_width=True,
                     hide_index=True,
                 )
-
-
-
 

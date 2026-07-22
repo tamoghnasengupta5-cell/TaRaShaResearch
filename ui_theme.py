@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Mapping, Optional
 
 import pandas as pd
@@ -42,6 +43,34 @@ DASHBOARD_COLUMN_LABELS: Dict[str, str] = {
     "Above 15% Year%": "Years >15%",
 }
 
+_TAXONOMY_PICTURE_COLUMNS = {
+    "Industry",
+    "Industry Bucket",
+    "Category",
+    "Master Category",
+    "Sub-Category",
+    "Sub-category",
+}
+
+_TAXONOMY_PICTURE_KEYWORDS = [
+    ("semiconductor|chip|foundry|electronics|hardware", "🔬"),
+    ("software|technology|tech|cloud|ai|digital|internet|data|platform|cyber", "💻"),
+    ("pharma|health|medical|biotech|life science|hospital|diagnostic|drug", "💊"),
+    ("bank|financial|finance|insurance|fintech|lending|credit|asset management", "🏦"),
+    ("auto|vehicle|mobility|transport|logistics|rail|airline|shipping", "🚗"),
+    ("energy|oil|gas|power|utility|renewable|solar|wind|electric", "⚡"),
+    ("consumer|retail|apparel|fmcg|food|beverage|lifestyle|restaurant", "🛒"),
+    ("industrial|capital goods|manufacturing|machinery|engineering|automation", "🏭"),
+    ("chemical|materials|metal|steel|cement|mining|commodity|paper|packaging", "🧪"),
+    ("real estate|reit|property|construction|infrastructure|building", "🏗️"),
+    ("telecom|communication|media|entertainment|advertising|broadcast", "📡"),
+    ("education|learning|training|school|university", "🎓"),
+    ("agri|agriculture|farm|crop|fertilizer", "🌾"),
+    ("travel|hotel|hospitality|tourism|leisure", "🧳"),
+]
+
+_TAXONOMY_DEFAULT_PICTURE = "📊"
+
 
 def format_company_option(name: object, ticker: object = "") -> str:
     company_name = str(name or "").strip()
@@ -64,6 +93,39 @@ def company_label_map(companies_df: pd.DataFrame) -> Dict[int, str]:
     return labels
 
 
+def _taxonomy_picture_for_value(value: object) -> str:
+    text = str(value or "").strip().casefold()
+    if not text or text in {"(no bucket)", "no bucket", "none", "nan"}:
+        return "🏷️"
+    for pattern, picture in _TAXONOMY_PICTURE_KEYWORDS:
+        if re.search(pattern, text):
+            return picture
+    return _TAXONOMY_DEFAULT_PICTURE
+
+
+def taxonomy_picture_label(value: object) -> str:
+    text = str(value or "").strip()
+    if not text or text.lower() == "nan":
+        return ""
+    parts = [part.strip() for part in text.split(",") if part.strip()]
+    if len(parts) > 1:
+        return ", ".join(taxonomy_picture_label(part) for part in parts)
+    picture = _taxonomy_picture_for_value(text)
+    if text.startswith(picture):
+        return text
+    return f"{picture} {text}"
+
+
+def add_taxonomy_pictures(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for column in out.columns:
+        if str(column) in _TAXONOMY_PICTURE_COLUMNS:
+            out[column] = out[column].map(taxonomy_picture_label)
+    return out
+
+
 def install_dataframe_defaults() -> None:
     """Apply consistent defaults to Streamlit dataframe calls without changing call sites."""
     if getattr(st, "_tarasha_dataframe_defaults_installed", False):
@@ -75,6 +137,8 @@ def install_dataframe_defaults() -> None:
         kwargs.setdefault("use_container_width", True)
         kwargs.setdefault("hide_index", True)
         kwargs.setdefault("row_height", 30)
+        if isinstance(data, pd.DataFrame):
+            data = add_taxonomy_pictures(data)
         frame = getattr(data, "data", data)
         if isinstance(frame, pd.DataFrame):
             kwargs.setdefault("height", table_height(frame, row_height=int(kwargs.get("row_height") or 30)))
@@ -196,7 +260,7 @@ def display_table_frame(
     if label_map is None:
         label_map = DASHBOARD_COLUMN_LABELS
     rename_map = {column: label_map[column] for column in df.columns if column in label_map}
-    return df.rename(columns=rename_map)
+    return add_taxonomy_pictures(df.rename(columns=rename_map))
 
 
 def _source_column(display_column: str, label_map: Mapping[str, str]) -> str:
@@ -265,6 +329,9 @@ def render_dashboard_table(
 ) -> Any:
     frame = getattr(data, "data", data)
     if isinstance(frame, pd.DataFrame):
+        if isinstance(data, pd.DataFrame):
+            data = add_taxonomy_pictures(data)
+            frame = data
         config = infer_column_config(frame, existing=column_config, help_map=help_map)
         if height is None:
             height = table_height(frame, row_height=row_height)

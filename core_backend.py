@@ -7,11 +7,13 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from sqlalchemy import inspect
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import db_models
 from db_orm import (
@@ -299,6 +301,177 @@ def _read_df(sql: str, conn, params=None) -> pd.DataFrame:
 def read_df(sql: str, conn, params=None) -> pd.DataFrame:
     """Public helper for reading dataframes using the active DB backend."""
     return _read_df(sql, conn, params=params)
+
+
+def _bulk_upsert_rows(conn, table_name: str, rows: List[Dict[str, object]]) -> int:
+    """Upsert one metric family with one statement and no implicit commit."""
+    if not rows:
+        return 0
+    table = db_models.metadata.tables[table_name]
+    conflict_columns = [column.name for column in table.primary_key.columns]
+    update_columns = [column.name for column in table.columns if column.name not in conflict_columns]
+    session = getattr(conn, "session", None)
+    if session is not None:
+        dialect_name = session.get_bind().dialect.name
+        if dialect_name == "postgresql":
+            statement = postgresql_insert(table).values(rows)
+        elif dialect_name == "sqlite":
+            statement = sqlite_insert(table).values(rows)
+        else:
+            raise RuntimeError(f"Bulk upsert is not implemented for {dialect_name!r}")
+        statement = statement.on_conflict_do_update(
+            index_elements=conflict_columns,
+            set_={name: getattr(statement.excluded, name) for name in update_columns},
+        )
+        session.execute(statement)
+        return len(rows)
+
+    columns = [column.name for column in table.columns]
+    placeholders = ", ".join(["?"] * len(columns))
+    update_sql = ", ".join(f"{name}=excluded.{name}" for name in update_columns)
+    sql = (
+        f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders}) "
+        f"ON CONFLICT ({', '.join(conflict_columns)}) DO UPDATE SET {update_sql}"
+    )
+    conn.executemany(sql, [tuple(row.get(name) for name in columns) for row in rows])
+    return len(rows)
+
+
+def bulk_upsert_company_metrics(
+    conn,
+    company_id: int,
+    *,
+    annual_metrics: Mapping[str, Tuple[str, Mapping[int, object]]],
+    ttm_metrics: Mapping[str, Tuple[str, str, object]],
+    quarterly_metrics: Mapping[str, Tuple[str, Mapping[str, object]]] | None = None,
+) -> Dict[str, int]:
+    """Persist one parsed company using one upsert per physical table.
+
+    The caller owns the transaction boundary. The existing Research tables and
+    Consumer views remain unchanged; only the write strategy is different.
+    """
+    counts = {"annual": 0, "ttm": 0, "quarterly": 0}
+    for table_name, (value_column, values) in annual_metrics.items():
+        rows = []
+        for year, value in (values or {}).items():
+            if value is None:
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(numeric_value):
+                continue
+            rows.append(
+                {
+                    "company_id": int(company_id),
+                    "fiscal_year": int(year),
+                    value_column: numeric_value,
+                }
+            )
+        counts["annual"] += _bulk_upsert_rows(conn, table_name, rows)
+
+    for table_name, (value_column, as_of, value) in ttm_metrics.items():
+        if not as_of or value is None:
+            continue
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(numeric_value):
+            continue
+        counts["ttm"] += _bulk_upsert_rows(
+            conn,
+            table_name,
+            [{"company_id": int(company_id), "as_of": str(as_of), value_column: numeric_value}],
+        )
+
+    for table_name, (value_column, values) in (quarterly_metrics or {}).items():
+        rows = []
+        for quarter_end, value in (values or {}).items():
+            if not quarter_end or value is None:
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                continue
+            if not np.isfinite(numeric_value):
+                continue
+            rows.append(
+                {
+                    "company_id": int(company_id),
+                    "quarter_end": str(quarter_end),
+                    value_column: numeric_value,
+                }
+            )
+        counts["quarterly"] += _bulk_upsert_rows(conn, table_name, rows)
+    return counts
+
+
+COMBINED_DASHBOARD_METRICS: Dict[str, Tuple[str, str]] = {
+    "accumulated_profit": ("accumulated_profit_annual", "accumulated_profit"),
+    "roe": ("roe_annual", "roe"),
+    "roce": ("roce_annual", "roce"),
+    "interest_load_pct": ("interest_load_annual", "interest_load_pct"),
+    "revenue": ("revenues_annual", "revenue"),
+    "pretax_income": ("pretax_income_annual", "pretax_income"),
+    "net_income": ("net_income_annual", "net_income"),
+    "nopat": ("nopat_annual", "nopat"),
+    "margin": ("op_margin_annual", "margin"),
+    "fcff": ("fcff_annual", "fcff"),
+    "spread_pct": ("roic_wacc_spread_annual", "spread_pct"),
+    "price_change": ("price_change_annual", "price_change"),
+}
+
+
+def get_combined_dashboard_series_batch(
+    conn,
+    company_ids: List[int],
+) -> Dict[int, Dict[str, pd.DataFrame]]:
+    """Fetch every annual series used by Combined Dashboard in one round trip."""
+    normalized_ids = sorted({int(company_id) for company_id in company_ids})
+    result: Dict[int, Dict[str, pd.DataFrame]] = {
+        company_id: {
+            metric: pd.DataFrame(columns=["year", metric])
+            for metric in COMBINED_DASHBOARD_METRICS
+        }
+        for company_id in normalized_ids
+    }
+    if not normalized_ids:
+        return result
+
+    selected_values = ", ".join("(?)" for _ in normalized_ids)
+    unions = []
+    for metric, (table_name, value_column) in COMBINED_DASHBOARD_METRICS.items():
+        unions.append(
+            "SELECT metric.company_id, "
+            f"'{metric}' AS metric, metric.fiscal_year AS year, "
+            f"metric.{value_column} AS value "
+            f"FROM {table_name} metric "
+            "JOIN selected_companies selected ON selected.company_id = metric.company_id"
+        )
+    sql = (
+        f"WITH selected_companies(company_id) AS (VALUES {selected_values}), "
+        "dashboard_metrics AS ("
+        + " UNION ALL ".join(unions)
+        + ") SELECT company_id, metric, year, value FROM dashboard_metrics "
+        "ORDER BY company_id, metric, year"
+    )
+    frame = read_df(sql, conn, params=tuple(normalized_ids))
+    if frame.empty:
+        return result
+
+    for (company_id, metric), group in frame.groupby(["company_id", "metric"], sort=False):
+        metric_name = str(metric)
+        if metric_name not in COMBINED_DASHBOARD_METRICS:
+            continue
+        metric_frame = group[["year", "value"]].copy()
+        metric_frame["year"] = pd.to_numeric(metric_frame["year"], errors="coerce")
+        metric_frame = metric_frame.dropna(subset=["year"]).sort_values("year")
+        metric_frame["year"] = metric_frame["year"].astype(int)
+        metric_frame = metric_frame.rename(columns={"value": metric_name}).reset_index(drop=True)
+        result[int(company_id)][metric_name] = metric_frame
+    return result
 
 
 def get_company_group_id(conn, name: str, create: bool = False) -> Optional[int]:
@@ -2514,27 +2687,65 @@ def _extract_latest_ttm_from_revenue_minus_gross_profit(file_bytes: bytes) -> Tu
 
     return non_empty[-1][0], non_empty[-1][1]
 
-def extract_annual_series_by_rowlabel(file_bytes: bytes, rowlabel: str, fallbacks: Optional[List[str]] = None) -> Dict[int, float]:
+def extract_annual_series_by_rowlabel(
+    file_bytes: bytes,
+    rowlabel: str,
+    fallbacks: Optional[List[str]] = None,
+    *,
+    default_missing: Optional[float] = None,
+) -> Dict[int, float]:
     df = _read_sheet(file_bytes, "Income-Annual")
     targets = [rowlabel] + (fallbacks or [])
-    row = _find_row(df, targets)
+    try:
+        row = _find_row(df, targets)
+    except ValueError:
+        if default_missing is None:
+            raise
+        row = None
     series = {}
     for col in df.columns:
         if col == 'Date':
             continue
         try:
             year = int(str(col)[:4])
-            val = row[col]
-            if pd.notna(val):
+            val = default_missing if row is None else row[col]
+            if pd.isna(val):
+                val = default_missing
+            if val is not None:
                 series[year] = float(val)
         except Exception:
             continue
     return dict(sorted(series.items(), key=lambda kv: kv[0]))
 
-def extract_latest_ttm_by_rowlabel(file_bytes: bytes, rowlabel: str, fallbacks: Optional[List[str]] = None) -> Tuple[str, float]:
+def extract_latest_ttm_by_rowlabel(
+    file_bytes: bytes,
+    rowlabel: str,
+    fallbacks: Optional[List[str]] = None,
+    *,
+    default_missing: Optional[float] = None,
+) -> Tuple[str, float]:
     df = _read_sheet(file_bytes, "Income-TTM")
     targets = [rowlabel] + (fallbacks or [])
-    row = _find_row(df, targets)
+    try:
+        row = _find_row(df, targets)
+    except ValueError:
+        if default_missing is None:
+            raise
+        row = None
+
+    # Optional statement items must use the latest TTM period even when its
+    # cell (or the entire row) is absent. Falling back to an older non-empty
+    # TTM value would populate the current year with stale data.
+    if default_missing is not None:
+        as_of = _latest_sheet_column_label(_normalize_first_column_to_date(df))
+        if row is None:
+            return as_of, float(default_missing)
+        for col in df.columns:
+            if str(col) != str(as_of):
+                continue
+            val = row[col]
+            return as_of, float(default_missing if pd.isna(val) else val)
+        return as_of, float(default_missing)
 
     non_empty = []
     for col in df.columns:
@@ -2764,8 +2975,17 @@ def _extract_quarterly_series_by_rowlabel(
     fallbacks: Optional[List[str]] = None,
     *,
     default_missing: Optional[float] = None,
+    fallback_period_sheet_name: Optional[str] = None,
 ) -> Dict[str, float]:
-    df = _read_sheet(file_bytes, sheet_name)
+    try:
+        df = _read_sheet(file_bytes, sheet_name)
+    except ValueError:
+        if default_missing is None or not fallback_period_sheet_name:
+            raise
+        # Some providers omit an entire optional statement tab. Use another
+        # quarterly statement only to recover the period columns; the missing
+        # metric row will then be populated with the configured default.
+        df = _read_sheet(file_bytes, fallback_period_sheet_name)
     df = _normalize_first_column_to_date(df)
     targets = [rowlabel] + (fallbacks or [])
     try:
@@ -2814,6 +3034,42 @@ def extract_quarterly_operating_income_series(file_bytes: bytes) -> Dict[str, fl
     )
 
 
+def extract_quarterly_net_income_to_common_series(file_bytes: bytes) -> Dict[str, float]:
+    """Extract quarterly net income to common without changing source signs."""
+    return _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Income-Quarterly",
+        "Net Income to Common",
+        fallbacks=[
+            "Net Income Available to Common Shareholders",
+            "Net Income Applicable to Common Shares",
+        ],
+        default_missing=0.0,
+    )
+
+
+def extract_quarterly_earnings_from_discontinued_operations_series(file_bytes: bytes) -> Dict[str, float]:
+    """Extract quarterly discontinued-operations earnings without changing source signs."""
+    return _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Income-Quarterly",
+        "Earnings From Discontinued Operations",
+        fallbacks=["Income from Discontinued Operations", "Discontinued Operations"],
+        default_missing=0.0,
+    )
+
+
+def extract_quarterly_minority_interest_in_earnings_series(file_bytes: bytes) -> Dict[str, float]:
+    """Extract quarterly minority-interest earnings without changing source signs."""
+    return _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Income-Quarterly",
+        "Minority Interest in Earnings",
+        fallbacks=["Minority Interest In Earnings", "Minority Interest"],
+        default_missing=0.0,
+    )
+
+
 def extract_quarterly_accounts_receivable_series(file_bytes: bytes) -> Dict[str, float]:
     return _extract_quarterly_series_by_rowlabel(
         file_bytes,
@@ -2846,6 +3102,19 @@ def extract_quarterly_capital_expenditures_series(file_bytes: bytes) -> Dict[str
             "Purchase of property, plant & equipment",
         ],
     )
+
+
+def extract_quarterly_common_dividends_paid_series(file_bytes: bytes) -> Dict[str, float]:
+    """Extract quarterly common dividends as a positive cash-outflow magnitude."""
+    series = _extract_quarterly_series_by_rowlabel(
+        file_bytes,
+        "Cash-Flow-Quarterly",
+        "Common Dividends Paid",
+        fallbacks=["Common Dividend Paid", "Dividends Paid to Common Stockholders"],
+        default_missing=0.0,
+        fallback_period_sheet_name="Income-Quarterly",
+    )
+    return {quarter_end: abs(float(value)) for quarter_end, value in series.items()}
 
 
 def extract_quarterly_operating_cash_flow_series(file_bytes: bytes) -> Dict[str, float]:
@@ -2884,6 +3153,69 @@ def _finite_float(value) -> Optional[float]:
     return fv if np.isfinite(fv) else None
 
 
+INCREMENTAL_MARGIN_NEAR_FLAT_REVENUE_THRESHOLD = 0.02
+INCREMENTAL_MARGIN_NEAR_FLAT_NEGATIVE_CAP = -0.20
+
+
+def calculate_scenario_incremental_operating_margin(
+    current_revenue,
+    current_operating_income,
+    prior_revenue,
+    prior_operating_income,
+    *,
+    near_flat_revenue_threshold: float = INCREMENTAL_MARGIN_NEAR_FLAT_REVENUE_THRESHOLD,
+    near_flat_negative_cap: float = INCREMENTAL_MARGIN_NEAR_FLAT_NEGATIVE_CAP,
+) -> Dict[str, object]:
+    """Calculate a scenario-aware, higher-is-better incremental margin.
+
+    Expansion uses the conventional ``delta OI / delta revenue`` ratio.
+    Contraction uses ``delta OI / abs(delta revenue)`` so an OI decline is
+    negative while an OI improvement is positive. Near-flat negative results
+    are floored at ``near_flat_negative_cap``. If revenue is exactly unchanged,
+    the change in operating margin is used as a proxy.
+    """
+    rev = _finite_float(current_revenue)
+    oi = _finite_float(current_operating_income)
+    prior_rev = _finite_float(prior_revenue)
+    prior_oi = _finite_float(prior_operating_income)
+    if any(value is None for value in (rev, oi, prior_rev, prior_oi)):
+        return {"value": None, "scenario": "missing_data", "turnaround": False}
+
+    delta_revenue = rev - prior_rev
+    delta_operating_income = oi - prior_oi
+    turnaround = prior_oi < 0.0 and oi > 0.0
+
+    if delta_revenue == 0.0:
+        if rev == 0.0 or prior_rev == 0.0:
+            value = None
+        else:
+            value = (oi / rev) - (prior_oi / prior_rev)
+        return {
+            "value": value,
+            "scenario": "unchanged_revenue_operating_margin_proxy",
+            "turnaround": turnaround,
+        }
+
+    directional_margin = delta_operating_income / abs(delta_revenue)
+    average_revenue = (abs(rev) + abs(prior_rev)) / 2.0
+    is_near_flat = (
+        average_revenue > 0.0
+        and abs(delta_revenue) < float(near_flat_revenue_threshold) * average_revenue
+    )
+    if is_near_flat:
+        return {
+            "value": max(float(near_flat_negative_cap), directional_margin),
+            "scenario": "near_flat_revenue",
+            "turnaround": turnaround,
+        }
+
+    if delta_revenue > 0.0:
+        scenario = "expansion_oi_up" if delta_operating_income >= 0.0 else "expansion_oi_down"
+    else:
+        scenario = "contraction_oi_up" if delta_operating_income >= 0.0 else "contraction_oi_down"
+    return {"value": directional_margin, "scenario": scenario, "turnaround": turnaround}
+
+
 def _weighted_median(values: List[Optional[float]], weights: List[int]) -> Optional[float]:
     expanded: List[float] = []
     for value, weight in zip(values, weights):
@@ -2914,7 +3246,7 @@ def calculate_business_quarter_trend_details(
     quarterly_inputs: Dict[str, Dict[str, float]],
     quarter_range: int = 16,
     component_weights: Optional[Dict[str, float]] = None,
-) -> Dict[str, Optional[float]]:
+) -> Dict[str, object]:
     if quarter_range <= 4 or quarter_range % 4 != 0:
         raise ValueError("Quarter range must be greater than 4 and a multiple of 4.")
 
@@ -2943,6 +3275,7 @@ def calculate_business_quarter_trend_details(
             "weighted_median_bill_to_revenue": None,
             "weighted_median_days_sales_outstanding": None,
             "weighted_median_capex_to_ocf": None,
+            "incremental_operating_margin_turnaround_periods": [],
         }
 
     selected_quarters = quarters[:quarter_range]
@@ -2959,6 +3292,7 @@ def calculate_business_quarter_trend_details(
     bill_to_revenue: List[Optional[float]] = []
     dso: List[Optional[float]] = []
     capex_to_ocf: List[Optional[float]] = []
+    incremental_turnaround_periods: List[Tuple[str, str]] = []
 
     yoy_length = quarter_range - 4
     for i, quarter in enumerate(selected_quarters[:yoy_length]):
@@ -2975,17 +3309,15 @@ def calculate_business_quarter_trend_details(
         prior_om = operating_margin[i + 4]
         operating_margin_change.append(current_om - prior_om if current_om is not None and prior_om is not None else None)
 
-        if rev is not None and oi is not None and prior_rev is not None and prior_oi is not None:
-            delta_rev = rev - prior_rev
-            delta_oi = oi - prior_oi
-            if delta_rev == 0:
-                incremental_operating_margin.append(0.0)
-            elif delta_oi < 0 and delta_rev < 0:
-                incremental_operating_margin.append(-1.0 * delta_oi / delta_rev)
-            else:
-                incremental_operating_margin.append(delta_oi / delta_rev)
-        else:
-            incremental_operating_margin.append(None)
+        incremental_result = calculate_scenario_incremental_operating_margin(
+            rev,
+            oi,
+            prior_rev,
+            prior_oi,
+        )
+        incremental_operating_margin.append(incremental_result["value"])
+        if incremental_result["turnaround"]:
+            incremental_turnaround_periods.append((prior_year_quarter, quarter))
 
         dr = _finite_float(deferred_revenue.get(quarter, 0.0))
         prev_dr = _finite_float(deferred_revenue.get(next_older_quarter, 0.0))
@@ -3026,6 +3358,7 @@ def calculate_business_quarter_trend_details(
         "weighted_median_bill_to_revenue": btr,
         "weighted_median_days_sales_outstanding": dso_value,
         "weighted_median_capex_to_ocf": cocf,
+        "incremental_operating_margin_turnaround_periods": incremental_turnaround_periods,
     }
 
     if any(v is None for v in (rg, om, omc, iom, btr, dso_value, cocf)):
@@ -3204,6 +3537,78 @@ def extract_latest_ttm_pretax_income(file_bytes: bytes) -> Tuple[str, float]:
 def extract_annual_net_income_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = ["Net income", "Net Income (Loss)", "Net Earnings", "Net Profit"]
     return extract_annual_series_by_rowlabel(file_bytes, "Net Income", fallbacks=fallbacks)
+
+
+def extract_annual_net_income_to_common_series(file_bytes: bytes) -> Dict[int, float]:
+    """Extract annual net income to common without changing source signs."""
+    fallbacks = [
+        "Net Income Available to Common Shareholders",
+        "Net Income Applicable to Common Shares",
+    ]
+    return extract_annual_series_by_rowlabel(
+        file_bytes,
+        "Net Income to Common",
+        fallbacks=fallbacks,
+        default_missing=0.0,
+    )
+
+
+def extract_latest_ttm_net_income_to_common(file_bytes: bytes) -> Tuple[str, float]:
+    """Extract latest TTM net income to common without changing source signs."""
+    fallbacks = [
+        "Net Income Available to Common Shareholders",
+        "Net Income Applicable to Common Shares",
+    ]
+    return extract_latest_ttm_by_rowlabel(
+        file_bytes,
+        "Net Income to Common",
+        fallbacks=fallbacks,
+        default_missing=0.0,
+    )
+
+
+def extract_annual_earnings_from_discontinued_operations_series(file_bytes: bytes) -> Dict[int, float]:
+    """Extract annual discontinued-operations earnings without changing source signs."""
+    fallbacks = ["Income from Discontinued Operations", "Discontinued Operations"]
+    return extract_annual_series_by_rowlabel(
+        file_bytes,
+        "Earnings From Discontinued Operations",
+        fallbacks=fallbacks,
+        default_missing=0.0,
+    )
+
+
+def extract_latest_ttm_earnings_from_discontinued_operations(file_bytes: bytes) -> Tuple[str, float]:
+    """Extract latest TTM discontinued-operations earnings without changing source signs."""
+    fallbacks = ["Income from Discontinued Operations", "Discontinued Operations"]
+    return extract_latest_ttm_by_rowlabel(
+        file_bytes,
+        "Earnings From Discontinued Operations",
+        fallbacks=fallbacks,
+        default_missing=0.0,
+    )
+
+
+def extract_annual_minority_interest_in_earnings_series(file_bytes: bytes) -> Dict[int, float]:
+    """Extract annual minority-interest earnings without changing source signs."""
+    fallbacks = ["Minority Interest In Earnings", "Minority Interest"]
+    return extract_annual_series_by_rowlabel(
+        file_bytes,
+        "Minority Interest in Earnings",
+        fallbacks=fallbacks,
+        default_missing=0.0,
+    )
+
+
+def extract_latest_ttm_minority_interest_in_earnings(file_bytes: bytes) -> Tuple[str, float]:
+    """Extract latest TTM minority-interest earnings without changing source signs."""
+    fallbacks = ["Minority Interest In Earnings", "Minority Interest"]
+    return extract_latest_ttm_by_rowlabel(
+        file_bytes,
+        "Minority Interest in Earnings",
+        fallbacks=fallbacks,
+        default_missing=0.0,
+    )
 
 def extract_latest_ttm_net_income(file_bytes: bytes) -> Tuple[str, float]:
     fallbacks = ["Net income", "Net Income (Loss)", "Net Earnings", "Net Profit"]
@@ -3699,29 +4104,64 @@ def _extract_comprehensive_income_defaults(
 
 
 
-def extract_cf_annual_series_by_rowlabel(file_bytes: bytes, rowlabel: str, fallbacks: Optional[List[str]] = None) -> Dict[int, float]:
+def extract_cf_annual_series_by_rowlabel(
+    file_bytes: bytes,
+    rowlabel: str,
+    fallbacks: Optional[List[str]] = None,
+    *,
+    default_missing: Optional[float] = None,
+) -> Dict[int, float]:
     """Extract an annual series from the Cash-Flow-Annual sheet by row label."""
     df = _read_sheet(file_bytes, "Cash-Flow-Annual")
     targets = [rowlabel] + (fallbacks or [])
-    row = _find_row(df, targets)
+    try:
+        row = _find_row(df, targets)
+    except ValueError:
+        if default_missing is None:
+            raise
+        row = None
     series: Dict[int, float] = {}
     for col in df.columns:
         if col == 'Date':
             continue
         try:
             year = int(str(col)[:4])
-            val = row[col]
-            if pd.notna(val):
+            val = default_missing if row is None else row[col]
+            if pd.isna(val):
+                val = default_missing
+            if val is not None:
                 series[year] = float(val)
         except Exception:
             continue
     return dict(sorted(series.items(), key=lambda kv: kv[0]))
 
-def extract_cf_latest_ttm_by_rowlabel(file_bytes: bytes, rowlabel: str, fallbacks: Optional[List[str]] = None) -> Tuple[str, float]:
+def extract_cf_latest_ttm_by_rowlabel(
+    file_bytes: bytes,
+    rowlabel: str,
+    fallbacks: Optional[List[str]] = None,
+    *,
+    default_missing: Optional[float] = None,
+) -> Tuple[str, float]:
     """Extract the most recent TTM value from the Cash-Flow-TTM sheet by row label."""
     df = _read_sheet(file_bytes, "Cash-Flow-TTM")
     targets = [rowlabel] + (fallbacks or [])
-    row = _find_row(df, targets)
+    try:
+        row = _find_row(df, targets)
+    except ValueError:
+        if default_missing is None:
+            raise
+        row = None
+
+    if default_missing is not None:
+        as_of = _latest_sheet_column_label(_normalize_first_column_to_date(df))
+        if row is None:
+            return as_of, float(default_missing)
+        for col in df.columns:
+            if str(col) != str(as_of):
+                continue
+            val = row[col]
+            return as_of, float(default_missing if pd.isna(val) else val)
+        return as_of, float(default_missing)
 
     non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
     for col in df.columns:
@@ -3850,6 +4290,30 @@ def extract_latest_ttm_capital_expenditures(file_bytes: bytes) -> Tuple[str, flo
         "Purchase of property, plant & equipment",
     ]
     return extract_cf_latest_ttm_by_rowlabel(file_bytes, "Capital Expenditures", fallbacks=fallbacks)
+
+
+def extract_annual_common_dividends_paid_series(file_bytes: bytes) -> Dict[int, float]:
+    """Extract annual common dividends as a positive cash-outflow magnitude."""
+    fallbacks = ["Common Dividend Paid", "Dividends Paid to Common Stockholders"]
+    series = extract_cf_annual_series_by_rowlabel(
+        file_bytes,
+        "Common Dividends Paid",
+        fallbacks=fallbacks,
+        default_missing=0.0,
+    )
+    return {year: abs(float(value)) for year, value in series.items()}
+
+
+def extract_latest_ttm_common_dividends_paid(file_bytes: bytes) -> Tuple[str, float]:
+    """Extract latest TTM common dividends as a positive cash-outflow magnitude."""
+    fallbacks = ["Common Dividend Paid", "Dividends Paid to Common Stockholders"]
+    as_of, value = extract_cf_latest_ttm_by_rowlabel(
+        file_bytes,
+        "Common Dividends Paid",
+        fallbacks=fallbacks,
+        default_missing=0.0,
+    )
+    return as_of, abs(float(value))
 
 def extract_annual_depreciation_amortization_series(file_bytes: bytes) -> Dict[int, float]:
     fallbacks = [
@@ -4582,13 +5046,68 @@ def extract_latest_ttm_shareholders_equity(file_bytes: bytes) -> Tuple[str, floa
     fallbacks = ["Total Equity", "Total Shareholders' Equity", "Total Stockholders' Equity"]
     return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Shareholders Equity", fallbacks=fallbacks)
 
+def _extract_retained_earnings_defaults(
+    file_bytes: bytes,
+    *,
+    default_value: float = 0.0,
+) -> Tuple[Dict[int, float], Tuple[str, float]]:
+    """Return annual + latest TTM Retained Earnings, defaulting missing/blank values to 0."""
+    targets = ["Retained Earnings"]
+
+    annual_df = _read_sheet(file_bytes, "Balance-Sheet-Annual")
+    annual_df = _normalize_first_column_to_date(annual_df)
+    try:
+        annual_row = _find_row(annual_df, targets)
+    except Exception:
+        annual_row = None
+
+    annual_series: Dict[int, float] = {}
+    for col in annual_df.columns:
+        if col == "Date":
+            continue
+        try:
+            year = int(str(col)[:4])
+        except Exception:
+            continue
+        if annual_row is None:
+            annual_series[year] = default_value
+            continue
+        val = annual_row[col]
+        annual_series[year] = float(val) if pd.notna(val) else default_value
+
+    ttm_df = _read_sheet(file_bytes, "Balance-Sheet-TTM")
+    ttm_df = _normalize_first_column_to_date(ttm_df)
+    ttm_as_of = _latest_sheet_column_label(ttm_df)
+    try:
+        ttm_row = _find_row(ttm_df, targets)
+    except Exception:
+        ttm_row = None
+
+    if ttm_row is None:
+        return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
+    non_empty: List[Tuple[str, float, Optional[pd.Timestamp]]] = []
+    for col in ttm_df.columns:
+        if col == "Date":
+            continue
+        val = ttm_row[col]
+        if pd.notna(val):
+            non_empty.append((str(col), float(val), _parse_date_label(col)))
+
+    if non_empty:
+        dated = [x for x in non_empty if x[2] is not None]
+        latest = max(dated, key=lambda t: t[2]) if dated else non_empty[-1]
+        return dict(sorted(annual_series.items())), (latest[0], latest[1])
+
+    return dict(sorted(annual_series.items())), (ttm_as_of, default_value)
+
 def extract_annual_retained_earnings_series(file_bytes: bytes) -> Dict[int, float]:
-    fallbacks: List[str] = []
-    return extract_bs_annual_series_by_rowlabel(file_bytes, "Retained Earnings", fallbacks=fallbacks)
+    annual_series, _ = _extract_retained_earnings_defaults(file_bytes)
+    return annual_series
 
 def extract_latest_ttm_retained_earnings(file_bytes: bytes) -> Tuple[str, float]:
-    fallbacks: List[str] = []
-    return extract_bs_latest_ttm_by_rowlabel(file_bytes, "Retained Earnings", fallbacks=fallbacks)
+    _, latest_ttm = _extract_retained_earnings_defaults(file_bytes)
+    return latest_ttm
 
 def extract_annual_comprehensive_income_series(file_bytes: bytes) -> Dict[int, float]:
     annual_series, _ = _extract_comprehensive_income_defaults(file_bytes)
@@ -6996,14 +7515,15 @@ def upsert_annual_capital_expenditures(conn: sqlite3.Connection, company_id: int
     session = getattr(conn, "session", None)
     if session is not None:
         for year, val in year_to_capex.items():
+            normalized_val = abs(float(val))
             existing = session.query(CapitalExpendituresAnnual).filter(
                 CapitalExpendituresAnnual.company_id == company_id,
                 CapitalExpendituresAnnual.fiscal_year == year,
             ).one_or_none()
             if existing is None:
-                session.add(CapitalExpendituresAnnual(company_id=company_id, fiscal_year=year, capital_expenditures=val))
+                session.add(CapitalExpendituresAnnual(company_id=company_id, fiscal_year=year, capital_expenditures=normalized_val))
             else:
-                existing.capital_expenditures = val
+                existing.capital_expenditures = normalized_val
         session.commit()
         return
 
@@ -7023,7 +7543,7 @@ def upsert_annual_capital_expenditures(conn: sqlite3.Connection, company_id: int
             VALUES(?, ?, ?)
             ON CONFLICT(company_id, fiscal_year) DO UPDATE SET capital_expenditures=excluded.capital_expenditures
             """,
-            (company_id, int(year), float(capex)),
+            (company_id, int(year), abs(float(capex))),
         )
     conn.commit()
 
@@ -7034,7 +7554,9 @@ def get_annual_capital_expenditures_series(conn: sqlite3.Connection, company_id:
         (company_id,),
     )
     rows = cur.fetchall()
-    return {int(y): float(v) for y, v in rows}
+    # Normalize legacy rows written before the positive-outflow contract was
+    # enforced, so FCFF/FCFE calculations remain correct without a data rewrite.
+    return {int(y): abs(float(v)) for y, v in rows}
 
 
 def _upsert_annual_metric_generic(
@@ -8650,4 +9172,3 @@ def compute_and_store_fcfe(conn: sqlite3.Connection, company_id: int) -> None:
         year_to_fcfe[int(y)] = float(fcfe)
 
     upsert_annual_fcfe(conn, company_id, year_to_fcfe)
-

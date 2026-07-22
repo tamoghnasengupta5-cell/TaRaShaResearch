@@ -1,3 +1,4 @@
+import io
 from typing import Dict, List, Tuple
 
 import pandas as pd
@@ -5,7 +6,7 @@ import streamlit as st
 
 from core import *  # noqa: F401,F403
 from ui_lazy_tabs import lazy_tab_bar
-from ui_theme import company_label_map, render_dashboard_table
+from ui_theme import add_taxonomy_pictures, company_label_map, render_dashboard_table
 
 
 _PERCENT_DETAIL_COLUMNS = [
@@ -202,6 +203,17 @@ def _build_dashboard_rows(
                 "Weighted Median Bill-to-Revenue": details["weighted_median_bill_to_revenue"],
                 "Weighted Median Days Sales Outstanding": details["weighted_median_days_sales_outstanding"],
                 "Weighted Median Capex / OCF": _pct(details["weighted_median_capex_to_ocf"]),
+                "Incremental Margin Note": (
+                    "Operating income moved from a loss to a profit in: "
+                    + ", ".join(
+                        f"{prior_period} to {current_period}"
+                        for prior_period, current_period in details[
+                            "incremental_operating_margin_turnaround_periods"
+                        ]
+                    )
+                    if details["incremental_operating_margin_turnaround_periods"]
+                    else ""
+                ),
             }
         )
         progress.progress(idx / total, text=f"Computed {idx} of {total} companies")
@@ -220,6 +232,51 @@ def _build_dashboard_rows(
 
 def _pct(value):
     return None if value is None else float(value) * 100.0
+
+
+def _quarterly_business_trend_excel_bytes(dashboard_df: pd.DataFrame) -> bytes:
+    export_df = add_taxonomy_pictures(dashboard_df)
+    for column in _PERCENT_DETAIL_COLUMNS:
+        if column in export_df.columns:
+            export_df[column] = pd.to_numeric(export_df[column], errors="coerce") / 100.0
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        sheet_name = "Quarterly Business Trend"
+        export_df.to_excel(writer, index=False, sheet_name=sheet_name)
+        worksheet = writer.sheets[sheet_name]
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+
+        number_formats = {
+            "Business Quarter Trend Score": "0.0",
+            "Weighted Median Revenue Growth": "0.00%",
+            "Weighted Median Operating Margin": "0.00%",
+            "Weighted Median Operating Margin Change": "0.00%",
+            "Weighted Median Incremental Operating Margin": "0.00%",
+            "Weighted Median Bill-to-Revenue": '0.00"x"',
+            "Weighted Median Days Sales Outstanding": '0.0 "days"',
+            "Weighted Median Capex / OCF": "0.00%",
+        }
+
+        for column_idx, column_name in enumerate(export_df.columns, start=1):
+            number_format = number_formats.get(column_name)
+            if not number_format:
+                continue
+            for row_idx in range(2, worksheet.max_row + 1):
+                worksheet.cell(row=row_idx, column=column_idx).number_format = number_format
+
+        for column_cells in worksheet.columns:
+            header = str(column_cells[0].value or "")
+            max_len = len(header)
+            for cell in column_cells[1:]:
+                value = cell.value
+                if value is None:
+                    continue
+                max_len = max(max_len, len(str(value)))
+            worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_len + 2, 10), 42)
+
+    return output.getvalue()
 
 
 def render_quarterly_business_trend_dashboard_tab() -> None:
@@ -268,6 +325,16 @@ def render_quarterly_business_trend_dashboard_tab() -> None:
         column_config=column_config,
         key="quarterly_business_trend_dashboard",
     )
+    for _, note_row in dashboard_df[dashboard_df["Incremental Margin Note"] != ""].iterrows():
+        st.success(f"{note_row['Company']}: {note_row['Incremental Margin Note']}")
+    st.download_button(
+        "Download Dashboard Excel",
+        data=_quarterly_business_trend_excel_bytes(dashboard_df),
+        file_name=f"quarterly_business_trend_score_{quarter_range}_quarters.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="quarterly_business_trend_excel_download",
+        on_click="ignore",
+    )
 
 
 def render_quarterly_business_trend_formula_tab() -> None:
@@ -291,6 +358,13 @@ def render_quarterly_business_trend_formula_tab() -> None:
         - `Capex / OCF Score = CLAMP((30% - Weighted Median Capex / OCF) / 30% * 100)`
 
         `CLAMP(x)` means `MAX(0, MIN(100, x))`.
+
+        Incremental operating margin is scenario-adjusted before its weighted median is calculated:
+        - Revenue up: `(Current OI - Prior OI) / (Current Revenue - Prior Revenue)`.
+        - Revenue down: `(Current OI - Prior OI) / ABS(Current Revenue - Prior Revenue)`.
+        - Revenue change below 2% of average revenue: negative results are capped at `-20%`.
+        - Revenue exactly unchanged: change in operating margin is used as the proxy.
+        - A loss-to-profit transition is identified with a green dashboard note.
         """
     )
 

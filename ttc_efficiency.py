@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+import io
 import re
+from typing import Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -9,16 +10,10 @@ import streamlit as st
 
 from core import (
     TTC_SECTIONS,
-    compute_and_store_cost_of_equity,
-    compute_and_store_fcff_and_reinvestment_rate,
-    compute_and_store_levered_beta,
-    compute_and_store_pre_tax_cost_of_debt,
-    compute_and_store_roic_wacc_spread,
-    compute_and_store_total_equity_and_roe,
-    compute_and_store_wacc,
     compute_growth_stats,
     compute_margin_growth_stats,
     compute_margin_stats,
+    calculate_scenario_incremental_operating_margin,
     exclude_recent_zero_accumulated_profit_for_stats,
     get_db,
     get_annual_accumulated_profit_series,
@@ -37,7 +32,7 @@ from core import (
     read_df,
     replace_ttc_assumptions_section,
 )
-from ui_theme import company_label_map
+from ui_theme import add_taxonomy_pictures, company_label_map
 
 _SECTIONS = TTC_SECTIONS
 _FILTER_COLUMNS = [
@@ -67,6 +62,33 @@ def _slug(text: str) -> str:
         .strip()
         .replace(" ", "_")
     )
+
+
+def _excel_bytes(df: pd.DataFrame, sheet_name: str) -> bytes:
+    export_df = add_taxonomy_pictures(df)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        export_df.to_excel(writer, index=False, sheet_name=sheet_name)
+        worksheet = writer.sheets[sheet_name]
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = worksheet.dimensions
+
+        for column_idx, column_name in enumerate(export_df.columns, start=1):
+            if "Score" in str(column_name):
+                for row_idx in range(2, worksheet.max_row + 1):
+                    worksheet.cell(row=row_idx, column=column_idx).number_format = "0.0"
+
+        for column_cells in worksheet.columns:
+            header = str(column_cells[0].value or "")
+            max_len = len(header)
+            for cell in column_cells[1:]:
+                value = cell.value
+                if value is None:
+                    continue
+                max_len = max(max_len, len(str(value)))
+            worksheet.column_dimensions[column_cells[0].column_letter].width = min(max(max_len + 2, 10), 42)
+
+    return output.getvalue()
 
 
 def _parse_assumptions_sections(conn) -> Dict[str, List[Dict[str, object]]]:
@@ -536,6 +558,25 @@ def _score_cash_flow(
     return 100.0 * _clamp01(score_raw)
 
 
+def _capex_outflow(value: float) -> float:
+    """Return CapEx using TaRaSha's canonical positive-outflow convention.
+
+    ``abs`` also protects TTC calculations from legacy rows that were stored
+    with the source spreadsheet's negative cash-flow sign.
+    """
+    return abs(float(value))
+
+
+def _free_cash_flow(operating_cash_flow: float, capex: float) -> float:
+    """Calculate FCF when CapEx is represented as an outflow magnitude."""
+    return float(operating_cash_flow) - _capex_outflow(capex)
+
+
+def _capital_intensity(capex: float, revenue: float) -> float:
+    """Calculate the positive share of revenue consumed by CapEx."""
+    return _capex_outflow(capex) / float(revenue)
+
+
 def _load_series(conn, table: str, value_col: str, company_id: int) -> Dict[int, float]:
     df = read_df(
         f"SELECT fiscal_year AS year, {value_col} AS value FROM {table} WHERE company_id = ?",
@@ -545,6 +586,139 @@ def _load_series(conn, table: str, value_col: str, company_id: int) -> Dict[int,
     if df is None or df.empty:
         return {}
     return {int(r["year"]): float(r["value"]) for _, r in df.iterrows() if pd.notna(r["value"])}
+
+
+_TTC_COMBINED_ANNUAL_METRICS: Dict[str, Tuple[str, str]] = {
+    "revenue": ("revenues_annual", "revenue"),
+    "cost_of_revenue": ("cost_of_revenue_annual", "cost_of_revenue"),
+    "sga": ("sga_annual", "sga"),
+    "operating_income": ("operating_income_annual", "operating_income"),
+    "ebit": ("ebit_annual", "ebit"),
+    "total_debt": ("total_debt_annual", "total_debt"),
+    "cash_and_cash_equivalents": ("cash_and_cash_equivalents_annual", "cash_and_cash_equivalents"),
+    "accounts_receivable": ("accounts_receivable_annual", "accounts_receivable"),
+    "inventory": ("inventory_annual", "inventory"),
+    "accounts_payable": ("accounts_payable_annual", "accounts_payable"),
+    "total_current_assets": ("total_current_assets_annual", "total_current_assets"),
+    "total_current_liabilities": ("total_current_liabilities_annual", "total_current_liabilities"),
+    "current_debt": ("current_debt_annual", "current_debt"),
+    "shareholders_equity": ("shareholders_equity_annual", "shareholders_equity"),
+    "ebitda": ("ebitda_annual", "ebitda"),
+    "interest_expense": ("interest_expense_annual", "interest_expense"),
+    "operating_cash_flow": ("operating_cash_flow_annual", "operating_cash_flow"),
+    "capital_expenditures": ("capital_expenditures_annual", "capital_expenditures"),
+    "net_income": ("net_income_annual", "net_income"),
+    "net_ppe": ("net_ppe_annual", "net_ppe"),
+    "short_term_investments": ("short_term_investments_annual", "short_term_investments"),
+    "goodwill_and_intangibles": ("goodwill_and_intangibles_annual", "goodwill_and_intangibles"),
+    "other_long_term_assets": ("other_long_term_assets_annual", "other_long_term_assets"),
+    "deferred_revenue": ("deferred_revenue_annual", "deferred_revenue"),
+    "deferred_tax_liabilities": ("deferred_tax_liabilities_annual", "deferred_tax_liabilities"),
+    "other_long_term_liabilities": ("other_long_term_liabilities_annual", "other_long_term_liabilities"),
+    "accumulated_profit": ("accumulated_profit_annual", "accumulated_profit"),
+    "roe": ("roe_annual", "roe"),
+    "roce": ("roce_annual", "roce"),
+    "interest_load_pct": ("interest_load_annual", "interest_load_pct"),
+    "pretax_income": ("pretax_income_annual", "pretax_income"),
+    "nopat": ("nopat_annual", "nopat"),
+    "margin": ("op_margin_annual", "margin"),
+    "fcff": ("fcff_annual", "fcff"),
+    "spread_pct": ("roic_wacc_spread_annual", "spread_pct"),
+}
+
+_TTC_COMBINED_TTM_METRICS: Dict[str, Tuple[str, str]] = {
+    "revenue": ("revenues_ttm", "revenue"),
+    "cost_of_revenue": ("cost_of_revenue_ttm", "cost_of_revenue"),
+    "accounts_receivable": ("accounts_receivable_ttm", "accounts_receivable"),
+    "inventory": ("inventory_ttm", "inventory"),
+    "accounts_payable": ("accounts_payable_ttm", "accounts_payable"),
+    "total_current_assets": ("total_current_assets_ttm", "total_current_assets"),
+    "cash_and_cash_equivalents": ("cash_and_cash_equivalents_ttm", "cash_and_cash_equivalents"),
+    "short_term_investments": ("short_term_investments_ttm", "short_term_investments"),
+    "total_current_liabilities": ("total_current_liabilities_ttm", "total_current_liabilities"),
+    "current_debt": ("current_debt_ttm", "current_debt"),
+    "operating_cash_flow": ("operating_cash_flow_ttm", "operating_cash_flow"),
+    "net_income": ("net_income_ttm", "net_income"),
+    "net_ppe": ("net_ppe_ttm", "net_ppe"),
+    "goodwill_and_intangibles": ("goodwill_and_intangibles_ttm", "goodwill_and_intangibles"),
+    "other_long_term_assets": ("other_long_term_assets_ttm", "other_long_term_assets"),
+    "deferred_revenue": ("deferred_revenue_ttm", "deferred_revenue"),
+    "deferred_tax_liabilities": ("deferred_tax_liabilities_ttm", "deferred_tax_liabilities"),
+    "other_long_term_liabilities": ("other_long_term_liabilities_ttm", "other_long_term_liabilities"),
+}
+
+
+def _load_ttc_combined_series_batch(
+    conn,
+    company_ids: List[int],
+) -> Dict[int, Dict[str, Dict[str, Dict[int, float]]]]:
+    """Load every Combined Score input for all selected companies in one query."""
+    ids = sorted({int(company_id) for company_id in company_ids})
+    metric_names = set(_TTC_COMBINED_ANNUAL_METRICS) | set(_TTC_COMBINED_TTM_METRICS)
+    result: Dict[int, Dict[str, Dict[str, Dict[int, float]]]] = {
+        company_id: {
+            "annual": {metric: {} for metric in metric_names},
+            "with_ttm": {metric: {} for metric in metric_names},
+        }
+        for company_id in ids
+    }
+    if not ids:
+        return result
+
+    selected_values = ", ".join("(?)" for _ in ids)
+    unions: List[str] = []
+    for metric, (table, value_column) in _TTC_COMBINED_ANNUAL_METRICS.items():
+        unions.append(
+            "SELECT source.company_id, 'annual' AS series_kind, "
+            f"'{metric}' AS metric, CAST(source.fiscal_year AS TEXT) AS period, "
+            f"source.{value_column} AS value FROM {table} source "
+            "JOIN selected_companies selected ON selected.company_id = source.company_id"
+        )
+    for metric, (table, value_column) in _TTC_COMBINED_TTM_METRICS.items():
+        unions.append(
+            "SELECT source.company_id, 'ttm' AS series_kind, "
+            f"'{metric}' AS metric, source.as_of AS period, "
+            f"source.{value_column} AS value FROM {table} source "
+            "JOIN selected_companies selected ON selected.company_id = source.company_id"
+        )
+    sql = (
+        f"WITH selected_companies(company_id) AS (VALUES {selected_values}), combined_inputs AS ("
+        + " UNION ALL ".join(unions)
+        + ") SELECT company_id, series_kind, metric, period, value FROM combined_inputs "
+        "ORDER BY company_id, series_kind, metric, period"
+    )
+    frame = read_df(sql, conn, params=tuple(ids))
+    if frame is not None and not frame.empty:
+        for row in frame.itertuples(index=False):
+            if pd.isna(row.value):
+                continue
+            try:
+                year = int(str(row.period)[:4])
+                value = float(row.value)
+            except (TypeError, ValueError):
+                continue
+            company_id = int(row.company_id)
+            metric = str(row.metric)
+            series_kind = str(row.series_kind)
+            if company_id in result and metric in result[company_id]["annual"]:
+                if series_kind == "annual":
+                    result[company_id]["annual"][metric][year] = value
+                elif series_kind == "ttm":
+                    result[company_id]["with_ttm"][metric][year] = value
+
+    for company in result.values():
+        for metric in metric_names:
+            merged = dict(company["annual"][metric])
+            merged.update(company["with_ttm"][metric])
+            company["with_ttm"][metric] = merged
+    return result
+
+
+def _series_dict_to_frame(values: Mapping[int, float], value_column: str) -> pd.DataFrame:
+    return pd.DataFrame(
+        [(int(year), float(value)) for year, value in sorted(values.items())],
+        columns=["year", value_column],
+    )
 
 
 def _merge_ttm_into_annual(
@@ -563,6 +737,12 @@ def _merge_ttm_into_annual(
         )
     except Exception:
         # Some metrics are annual-only in certain deployments.
+        # PostgreSQL leaves the transaction aborted after a failed statement;
+        # clear it before the dashboard continues with another metric/company.
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return out
     if ttm_df is None or ttm_df.empty:
         return out
@@ -715,6 +895,7 @@ def _compute_value_creation_filter_metrics(
     yr_end: int,
     growth_weight_map: Dict[str, float],
     stddev_weight_map: Dict[str, float],
+    preloaded_annual: Optional[Mapping[str, Mapping[int, float]]] = None,
 ) -> Dict[str, Optional[float]]:
     out: Dict[str, Optional[float]] = {
         "Total Scaled Volatility-Adjusted Score": None,
@@ -733,15 +914,24 @@ def _compute_value_creation_filter_metrics(
     pl_scaled: Optional[float] = None
     fs_scaled: Optional[float] = None
 
+    def metric_frame(metric: str, fallback) -> pd.DataFrame:
+        if preloaded_annual is not None:
+            return _series_dict_to_frame(preloaded_annual.get(metric, {}), metric)
+        return fallback()
+
     # Balance sheet component for total score + ROE/ROCE filters
     try:
-        compute_and_store_total_equity_and_roe(conn, company_id)
-
-        ann_acc = get_annual_accumulated_profit_series(conn, company_id)
+        ann_acc = metric_frame(
+            "accumulated_profit",
+            lambda: get_annual_accumulated_profit_series(conn, company_id),
+        )
         ann_acc_stats = exclude_recent_zero_accumulated_profit_for_stats(ann_acc)
-        ann_roe = get_annual_roe_series(conn, company_id)
-        ann_roce = get_annual_roce_series(conn, company_id)
-        ann_interest_load = get_annual_interest_load_series(conn, company_id)
+        ann_roe = metric_frame("roe", lambda: get_annual_roe_series(conn, company_id))
+        ann_roce = metric_frame("roce", lambda: get_annual_roce_series(conn, company_id))
+        ann_interest_load = metric_frame(
+            "interest_load_pct",
+            lambda: get_annual_interest_load_series(conn, company_id),
+        )
 
         med_acc_g: Optional[float] = None
         std_acc_g: Optional[float] = None
@@ -820,7 +1010,7 @@ def _compute_value_creation_filter_metrics(
 
     # P&L component for total score + margin/revenue filters
     try:
-        ann_rev = get_annual_series(conn, company_id)
+        ann_rev = metric_frame("revenue", lambda: get_annual_series(conn, company_id))
         med_rev_g: Optional[float] = None
         std_rev_g: Optional[float] = None
         if ann_rev is not None and not ann_rev.empty:
@@ -833,7 +1023,10 @@ def _compute_value_creation_filter_metrics(
                 abs_denom=True,
             )
 
-        ann_pt = get_annual_pretax_income_series(conn, company_id)
+        ann_pt = metric_frame(
+            "pretax_income",
+            lambda: get_annual_pretax_income_series(conn, company_id),
+        )
         med_pt_g: Optional[float] = None
         std_pt_g: Optional[float] = None
         if ann_pt is not None and not ann_pt.empty:
@@ -846,7 +1039,7 @@ def _compute_value_creation_filter_metrics(
                 abs_denom=True,
             )
 
-        ann_ni = get_annual_net_income_series(conn, company_id)
+        ann_ni = metric_frame("net_income", lambda: get_annual_net_income_series(conn, company_id))
         med_ni_g: Optional[float] = None
         std_ni_g: Optional[float] = None
         if ann_ni is not None and not ann_ni.empty:
@@ -859,7 +1052,7 @@ def _compute_value_creation_filter_metrics(
                 abs_denom=True,
             )
 
-        ann_nopat = get_annual_nopat_series(conn, company_id)
+        ann_nopat = metric_frame("nopat", lambda: get_annual_nopat_series(conn, company_id))
         med_nopat_g: Optional[float] = None
         std_nopat_g: Optional[float] = None
         if ann_nopat is not None and not ann_nopat.empty:
@@ -872,7 +1065,7 @@ def _compute_value_creation_filter_metrics(
                 abs_denom=True,
             )
 
-        ann_om = get_annual_op_margin_series(conn, company_id)
+        ann_om = metric_frame("margin", lambda: get_annual_op_margin_series(conn, company_id))
         med_om: Optional[float] = None
         std_om: Optional[float] = None
         om_is_fraction = True
@@ -950,15 +1143,11 @@ def _compute_value_creation_filter_metrics(
 
     # FCFF + spread component for total score + spread/fcff filters
     try:
-        compute_and_store_fcff_and_reinvestment_rate(conn, company_id)
-        compute_and_store_levered_beta(conn, company_id)
-        compute_and_store_cost_of_equity(conn, company_id)
-        compute_and_store_pre_tax_cost_of_debt(conn, company_id)
-        compute_and_store_wacc(conn, company_id)
-        compute_and_store_roic_wacc_spread(conn, company_id)
-
-        fcff_df = get_annual_fcff_series(conn, company_id)
-        spread_df = get_annual_roic_wacc_spread_series(conn, company_id)
+        fcff_df = metric_frame("fcff", lambda: get_annual_fcff_series(conn, company_id))
+        spread_df = metric_frame(
+            "spread_pct",
+            lambda: get_annual_roic_wacc_spread_series(conn, company_id),
+        )
 
         med_fcff_g: Optional[float] = None
         std_fcff_g: Optional[float] = None
@@ -1354,6 +1543,7 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
         gross_margin_vals: List[float] = []
         sga_ratio_vals: List[float] = []
         incremental_vals: List[float] = []
+        incremental_turnaround_periods: List[Tuple[int, int]] = []
 
         for y in years_in_range:
             rev = revenue.get(y)
@@ -1373,9 +1563,16 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
                 rev_prev = revenue.get(y - 1)
                 oi_prev = op_income.get(y - 1)
                 if rev_prev is not None and oi_prev is not None:
-                    denom = float(rev) - float(rev_prev)
-                    if denom != 0:
-                        incremental_vals.append((float(oi) - float(oi_prev)) / denom)
+                    incremental_result = calculate_scenario_incremental_operating_margin(
+                        rev,
+                        oi,
+                        rev_prev,
+                        oi_prev,
+                    )
+                    if incremental_result["value"] is not None:
+                        incremental_vals.append(float(incremental_result["value"]))
+                    if incremental_result["turnaround"]:
+                        incremental_turnaround_periods.append((y - 1, y))
 
         op_margin_med = _median(op_margin_vals)
         op_margin_std = _stdev_sample(op_margin_vals)
@@ -1411,6 +1608,15 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
                 "Gross Margin %": gross_margin_med,
                 "SG&A Ratio": sga_ratio_med,
                 "Incremental Margin % [Pricing Power + Operating Leverage]": incremental_med,
+                "Incremental Margin Note": (
+                    "Operating income moved from a loss to a profit in: "
+                    + ", ".join(
+                        f"FY{prior_year} to FY{current_year}"
+                        for prior_year, current_year in incremental_turnaround_periods
+                    )
+                    if incremental_turnaround_periods
+                    else ""
+                ),
                 "Income Statement Efficiency Score (0-100)": score,
             }
         )
@@ -1427,10 +1633,6 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
         na_position="last",
     )
     progress_bar.progress(100, text="Income statement score computation complete.")
-    df = _apply_ttc_filters(df, "ttc_income_statement")
-    if df.empty:
-        st.info("No companies match the selected filters.")
-        return
 
     if view_mode == "Dashboard View":
         show_cols = [
@@ -1449,6 +1651,7 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
             "Gross Margin %",
             "SG&A Ratio",
             "Incremental Margin % [Pricing Power + Operating Leverage]",
+            "Incremental Margin Note",
             "Income Statement Efficiency Score (0-100)",
         ]
 
@@ -1491,6 +1694,9 @@ def render_through_the_cycle_income_statement_score_tab() -> None:
             use_container_width=True,
             hide_index=True,
         )
+
+    for _, note_row in df[df["Incremental Margin Note"] != ""].iterrows():
+        st.success(f"{note_row['Company Name']}: {note_row['Incremental Margin Note']}")
 
 
 
@@ -1742,10 +1948,6 @@ def render_through_the_cycle_balance_sheet_score_tab() -> None:
         na_position="last",
     )
     progress_bar.progress(100, text="Balance sheet score computation complete.")
-    df = _apply_ttc_filters(df, "ttc_balance_sheet")
-    if df.empty:
-        st.info("No companies match the selected filters.")
-        return
 
     if view_mode == "Dashboard View":
         show_cols = [
@@ -2131,10 +2333,6 @@ def render_through_the_cycle_working_capital_score_tab() -> None:
         na_position="last",
     )
     progress_bar.progress(100, text="Working capital score computation complete.")
-    df = _apply_ttc_filters(df, "ttc_working_capital")
-    if df.empty:
-        st.info("No companies match the selected filters.")
-        return
 
     if view_mode == "Dashboard View":
         show_cols = [
@@ -2318,7 +2516,8 @@ def render_through_the_cycle_cash_flow_score_tab() -> None:
 
         revenue = _merge_ttm_into_annual(conn, revenue, "revenues_ttm", "revenue", cid)
         cfo = _merge_ttm_into_annual(conn, cfo, "operating_cash_flow_ttm", "operating_cash_flow", cid)
-        capex = _merge_ttm_into_annual(conn, capex, "capital_expenditures_ttm", "capital_expenditures", cid)
+        # CapEx is annual-only in the current schema; there is no
+        # capital_expenditures_ttm table.
         net_income = _merge_ttm_into_annual(conn, net_income, "net_income_ttm", "net_income", cid)
         net_ppe = _merge_ttm_into_annual(conn, net_ppe, "net_ppe_ttm", "net_ppe", cid)
         current_assets = _merge_ttm_into_annual(
@@ -2453,8 +2652,11 @@ def render_through_the_cycle_cash_flow_score_tab() -> None:
             oltl_y = other_long_term_liabilities.get(y)
 
             fcf_y: Optional[float] = None
-            if cfo_y is not None and capex_y is not None:
-                fcf_y = float(cfo_y) + float(capex_y)
+            capex_outflow_y: Optional[float] = None
+            if capex_y is not None:
+                capex_outflow_y = _capex_outflow(capex_y)
+            if cfo_y is not None and capex_outflow_y is not None:
+                fcf_y = _free_cash_flow(cfo_y, capex_outflow_y)
 
             if rev is not None and float(rev) != 0.0 and cfo_y is not None:
                 ocf_margin_vals.append(float(cfo_y) / float(rev))
@@ -2465,8 +2667,8 @@ def render_through_the_cycle_cash_flow_score_tab() -> None:
             if cfo_y is not None and ni_y is not None and float(ni_y) != 0.0:
                 cfo_net_income_vals.append(float(cfo_y) / float(ni_y))
 
-            if rev is not None and float(rev) != 0.0 and capex_y is not None:
-                capital_intensity_vals.append((-1.0 * float(capex_y)) / float(rev))
+            if rev is not None and float(rev) != 0.0 and capex_outflow_y is not None:
+                capital_intensity_vals.append(_capital_intensity(capex_outflow_y, rev))
 
             if (
                 fcf_y is not None
@@ -2547,10 +2749,6 @@ def render_through_the_cycle_cash_flow_score_tab() -> None:
         na_position="last",
     )
     progress_bar.progress(100, text="Cash flow score computation complete.")
-    df = _apply_ttc_filters(df, "ttc_cash_flow")
-    if df.empty:
-        st.info("No companies match the selected filters.")
-        return
 
     if view_mode == "Dashboard View":
         show_cols = [
@@ -2608,7 +2806,7 @@ def render_through_the_cycle_combined_score_tab() -> None:
 
     mode = st.radio(
         "Analyze by",
-        ["Company", "Industry Bucket"],
+        ["Company", "Industry Bucket", "Category / Sub-Category"],
         horizontal=True,
         key="ttc_combined_mode",
     )
@@ -2624,7 +2822,7 @@ def render_through_the_cycle_combined_score_tab() -> None:
             key="ttc_combined_companies",
         )
         company_ids = [int(company_id) for company_id in selected]
-    else:
+    elif mode == "Industry Bucket":
         groups_df = read_df(
             "SELECT id, name FROM company_groups ORDER BY name",
             conn,
@@ -2648,9 +2846,61 @@ def render_through_the_cycle_combined_score_tab() -> None:
             )
             if bucket_members_df is not None and not bucket_members_df.empty:
                 company_ids = [int(x) for x in bucket_members_df["company_id"].tolist()]
+    else:
+        categories_df = read_df(
+            """
+            SELECT
+                c.name AS master_category,
+                s.id AS subcategory_id,
+                s.name AS subcategory
+            FROM relative_valuation_categories c
+            JOIN relative_valuation_subcategories s
+                ON s.category_id = c.id
+            ORDER BY c.name, s.name
+            """,
+            conn,
+        )
+        if categories_df is None or categories_df.empty:
+            st.info("No categories found yet.")
+            return
+
+        master_categories = sorted(categories_df["master_category"].dropna().astype(str).unique().tolist())
+        if not master_categories:
+            st.info("No categories found yet.")
+            return
+        selected_master = st.selectbox(
+            "Select category",
+            options=master_categories,
+            key="ttc_combined_category",
+        )
+        subcategory_rows = categories_df[categories_df["master_category"] == selected_master].copy()
+        subcategory_id_to_name = {
+            int(row["subcategory_id"]): str(row["subcategory"])
+            for _, row in subcategory_rows.iterrows()
+        }
+        selected_subcategory_ids = st.multiselect(
+            "Select one or more sub-categories",
+            options=list(subcategory_id_to_name.keys()),
+            format_func=lambda subcategory_id: subcategory_id_to_name.get(int(subcategory_id), str(subcategory_id)),
+            key="ttc_combined_subcategories",
+        )
+        if selected_subcategory_ids:
+            subcategory_ids = sorted({int(subcategory_id) for subcategory_id in selected_subcategory_ids})
+            placeholders = ",".join(["?"] * len(subcategory_ids))
+            category_members_df = read_df(
+                f"""
+                SELECT DISTINCT company_id
+                FROM relative_valuation_company_assignments
+                WHERE subcategory_id IN ({placeholders})
+                """,
+                conn,
+                params=subcategory_ids,
+            )
+            if category_members_df is not None and not category_members_df.empty:
+                company_ids = [int(x) for x in category_members_df["company_id"].tolist()]
 
     if not company_ids:
-        st.info("Select at least one company or industry bucket to compute scores.")
+        st.info("Select at least one company, industry bucket, or sub-category to compute scores.")
         return
     company_ids = sorted(set(company_ids))
 
@@ -2694,7 +2944,12 @@ def render_through_the_cycle_combined_score_tab() -> None:
     company_lookup = {int(row["id"]): row for _, row in companies_df.iterrows()}
 
     rows: List[Dict[str, object]] = []
-    progress_bar = st.progress(0, text="Starting combined score computation...")
+    progress_bar = st.progress(0, text="Loading combined score inputs...")
+    try:
+        combined_series = _load_ttc_combined_series_batch(conn, company_ids)
+    except Exception as exc:
+        st.error(f"Unable to load Combined Score inputs: {exc}")
+        return
     progress_total = max(len(company_ids), 1)
 
     for idx, cid in enumerate(company_ids, start=1):
@@ -2707,169 +2962,65 @@ def render_through_the_cycle_combined_score_tab() -> None:
             text=f"Computing {row['name']} ({idx}/{progress_total})...",
         )
 
-        revenue_ann = _load_series(conn, "revenues_annual", "revenue", cid)
-        cogs_ann = _load_series(conn, "cost_of_revenue_annual", "cost_of_revenue", cid)
-        sga_ann = _load_series(conn, "sga_annual", "sga", cid)
-        operating_income_ann = _load_series(conn, "operating_income_annual", "operating_income", cid)
-        if not operating_income_ann:
-            operating_income_ann = _load_series(conn, "ebit_annual", "ebit", cid)
+        company_inputs = combined_series.get(cid)
+        if company_inputs is None:
+            continue
+        annual_inputs = company_inputs["annual"]
+        ttm_inputs = company_inputs["with_ttm"]
 
-        total_debt_ann = _load_series(conn, "total_debt_annual", "total_debt", cid)
-        cash_ann = _load_series(conn, "cash_and_cash_equivalents_annual", "cash_and_cash_equivalents", cid)
-        accounts_receivable_ann = _load_series(conn, "accounts_receivable_annual", "accounts_receivable", cid)
-        inventory_ann = _load_series(conn, "inventory_annual", "inventory", cid)
-        accounts_payable_ann = _load_series(conn, "accounts_payable_annual", "accounts_payable", cid)
-        total_current_assets_ann = _load_series(conn, "total_current_assets_annual", "total_current_assets", cid)
-        total_current_liabilities_ann = _load_series(conn, "total_current_liabilities_annual", "total_current_liabilities", cid)
-        current_debt_ann = _load_series(conn, "current_debt_annual", "current_debt", cid)
-        shareholders_equity_ann = _load_series(conn, "shareholders_equity_annual", "shareholders_equity", cid)
-        ebitda_ann = _load_series(conn, "ebitda_annual", "ebitda", cid)
-        interest_expense_ann = _load_series(conn, "interest_expense_annual", "interest_expense", cid)
+        revenue_ann = annual_inputs["revenue"]
+        cogs_ann = annual_inputs["cost_of_revenue"]
+        sga_ann = annual_inputs["sga"]
+        operating_income_ann = annual_inputs["operating_income"] or annual_inputs["ebit"]
+        total_debt_ann = annual_inputs["total_debt"]
+        cash_ann = annual_inputs["cash_and_cash_equivalents"]
+        accounts_receivable_ann = annual_inputs["accounts_receivable"]
+        inventory_ann = annual_inputs["inventory"]
+        accounts_payable_ann = annual_inputs["accounts_payable"]
+        total_current_assets_ann = annual_inputs["total_current_assets"]
+        total_current_liabilities_ann = annual_inputs["total_current_liabilities"]
+        current_debt_ann = annual_inputs["current_debt"]
+        shareholders_equity_ann = annual_inputs["shareholders_equity"]
+        ebitda_ann = annual_inputs["ebitda"]
+        interest_expense_ann = annual_inputs["interest_expense"]
+        ocf_ann = annual_inputs["operating_cash_flow"]
+        capex_ann = annual_inputs["capital_expenditures"]
+        net_income_ann = annual_inputs["net_income"]
+        net_ppe_ann = annual_inputs["net_ppe"]
+        short_term_investments_ann = annual_inputs["short_term_investments"]
+        goodwill_and_intangibles_ann = annual_inputs["goodwill_and_intangibles"]
+        other_long_term_assets_ann = annual_inputs["other_long_term_assets"]
+        deferred_revenue_ann = annual_inputs["deferred_revenue"]
+        deferred_tax_liabilities_ann = annual_inputs["deferred_tax_liabilities"]
+        other_long_term_liabilities_ann = annual_inputs["other_long_term_liabilities"]
 
-        ocf_ann = _load_series(conn, "operating_cash_flow_annual", "operating_cash_flow", cid)
-        capex_ann = _load_series(conn, "capital_expenditures_annual", "capital_expenditures", cid)
-        net_income_ann = _load_series(conn, "net_income_annual", "net_income", cid)
-        net_ppe_ann = _load_series(conn, "net_ppe_annual", "net_ppe", cid)
-        short_term_investments_ann = _load_series(conn, "short_term_investments_annual", "short_term_investments", cid)
-        goodwill_and_intangibles_ann = _load_series(conn, "goodwill_and_intangibles_annual", "goodwill_and_intangibles", cid)
-        other_long_term_assets_ann = _load_series(conn, "other_long_term_assets_annual", "other_long_term_assets", cid)
-        deferred_revenue_ann = _load_series(conn, "deferred_revenue_annual", "deferred_revenue", cid)
-        deferred_tax_liabilities_ann = _load_series(
-            conn,
-            "deferred_tax_liabilities_annual",
-            "deferred_tax_liabilities",
-            cid,
-        )
-        other_long_term_liabilities_ann = _load_series(
-            conn,
-            "other_long_term_liabilities_annual",
-            "other_long_term_liabilities",
-            cid,
-        )
-
-        revenue_wc = _merge_ttm_into_annual(conn, revenue_ann, "revenues_ttm", "revenue", cid)
-        cogs_wc = _merge_ttm_into_annual(conn, cogs_ann, "cost_of_revenue_ttm", "cost_of_revenue", cid)
-        accounts_receivable_wc = _merge_ttm_into_annual(
-            conn,
-            accounts_receivable_ann,
-            "accounts_receivable_ttm",
-            "accounts_receivable",
-            cid,
-        )
-        inventory_wc = _merge_ttm_into_annual(conn, inventory_ann, "inventory_ttm", "inventory", cid)
-        accounts_payable_wc = _merge_ttm_into_annual(
-            conn,
-            accounts_payable_ann,
-            "accounts_payable_ttm",
-            "accounts_payable",
-            cid,
-        )
-        total_current_assets_wc = _merge_ttm_into_annual(
-            conn,
-            total_current_assets_ann,
-            "total_current_assets_ttm",
-            "total_current_assets",
-            cid,
-        )
-        cash_wc = _merge_ttm_into_annual(
-            conn,
-            cash_ann,
-            "cash_and_cash_equivalents_ttm",
-            "cash_and_cash_equivalents",
-            cid,
-        )
-        short_term_investments_wc = _merge_ttm_into_annual(
-            conn,
-            short_term_investments_ann,
-            "short_term_investments_ttm",
-            "short_term_investments",
-            cid,
-        )
-        total_current_liabilities_wc = _merge_ttm_into_annual(
-            conn,
-            total_current_liabilities_ann,
-            "total_current_liabilities_ttm",
-            "total_current_liabilities",
-            cid,
-        )
-        current_debt_wc = _merge_ttm_into_annual(
-            conn,
-            current_debt_ann,
-            "current_debt_ttm",
-            "current_debt",
-            cid,
-        )
+        revenue_wc = ttm_inputs["revenue"]
+        cogs_wc = ttm_inputs["cost_of_revenue"]
+        accounts_receivable_wc = ttm_inputs["accounts_receivable"]
+        inventory_wc = ttm_inputs["inventory"]
+        accounts_payable_wc = ttm_inputs["accounts_payable"]
+        total_current_assets_wc = ttm_inputs["total_current_assets"]
+        cash_wc = ttm_inputs["cash_and_cash_equivalents"]
+        short_term_investments_wc = ttm_inputs["short_term_investments"]
+        total_current_liabilities_wc = ttm_inputs["total_current_liabilities"]
+        current_debt_wc = ttm_inputs["current_debt"]
         cash_and_equivalents_wc = _build_cash_and_equivalents_series(cash_wc, short_term_investments_wc)
 
-        revenue_cf = _merge_ttm_into_annual(conn, revenue_ann, "revenues_ttm", "revenue", cid)
-        ocf_cf = _merge_ttm_into_annual(conn, ocf_ann, "operating_cash_flow_ttm", "operating_cash_flow", cid)
-        capex_cf = _merge_ttm_into_annual(conn, capex_ann, "capital_expenditures_ttm", "capital_expenditures", cid)
-        net_income_cf = _merge_ttm_into_annual(conn, net_income_ann, "net_income_ttm", "net_income", cid)
-        net_ppe_cf = _merge_ttm_into_annual(conn, net_ppe_ann, "net_ppe_ttm", "net_ppe", cid)
-        total_current_assets_cf = _merge_ttm_into_annual(
-            conn,
-            total_current_assets_ann,
-            "total_current_assets_ttm",
-            "total_current_assets",
-            cid,
-        )
-        total_current_liabilities_cf = _merge_ttm_into_annual(
-            conn,
-            total_current_liabilities_ann,
-            "total_current_liabilities_ttm",
-            "total_current_liabilities",
-            cid,
-        )
-        current_debt_cf = _merge_ttm_into_annual(conn, current_debt_ann, "current_debt_ttm", "current_debt", cid)
-        cash_cf = _merge_ttm_into_annual(
-            conn,
-            cash_ann,
-            "cash_and_cash_equivalents_ttm",
-            "cash_and_cash_equivalents",
-            cid,
-        )
-        short_term_investments_cf = _merge_ttm_into_annual(
-            conn,
-            short_term_investments_ann,
-            "short_term_investments_ttm",
-            "short_term_investments",
-            cid,
-        )
-        goodwill_and_intangibles_cf = _merge_ttm_into_annual(
-            conn,
-            goodwill_and_intangibles_ann,
-            "goodwill_and_intangibles_ttm",
-            "goodwill_and_intangibles",
-            cid,
-        )
-        other_long_term_assets_cf = _merge_ttm_into_annual(
-            conn,
-            other_long_term_assets_ann,
-            "other_long_term_assets_ttm",
-            "other_long_term_assets",
-            cid,
-        )
-        deferred_revenue_cf = _merge_ttm_into_annual(
-            conn,
-            deferred_revenue_ann,
-            "deferred_revenue_ttm",
-            "deferred_revenue",
-            cid,
-        )
-        deferred_tax_liabilities_cf = _merge_ttm_into_annual(
-            conn,
-            deferred_tax_liabilities_ann,
-            "deferred_tax_liabilities_ttm",
-            "deferred_tax_liabilities",
-            cid,
-        )
-        other_long_term_liabilities_cf = _merge_ttm_into_annual(
-            conn,
-            other_long_term_liabilities_ann,
-            "other_long_term_liabilities_ttm",
-            "other_long_term_liabilities",
-            cid,
-        )
+        revenue_cf = ttm_inputs["revenue"]
+        ocf_cf = ttm_inputs["operating_cash_flow"]
+        capex_cf = annual_inputs["capital_expenditures"]
+        net_income_cf = ttm_inputs["net_income"]
+        net_ppe_cf = ttm_inputs["net_ppe"]
+        total_current_assets_cf = ttm_inputs["total_current_assets"]
+        total_current_liabilities_cf = ttm_inputs["total_current_liabilities"]
+        current_debt_cf = ttm_inputs["current_debt"]
+        cash_cf = ttm_inputs["cash_and_cash_equivalents"]
+        short_term_investments_cf = ttm_inputs["short_term_investments"]
+        goodwill_and_intangibles_cf = ttm_inputs["goodwill_and_intangibles"]
+        other_long_term_assets_cf = ttm_inputs["other_long_term_assets"]
+        deferred_revenue_cf = ttm_inputs["deferred_revenue"]
+        deferred_tax_liabilities_cf = ttm_inputs["deferred_tax_liabilities"]
+        other_long_term_liabilities_cf = ttm_inputs["other_long_term_liabilities"]
         cash_equivalents_ex_sti_cf = _build_cash_and_equivalents_series(cash_cf, short_term_investments_cf)
 
         available_years = sorted(
@@ -3116,8 +3267,11 @@ def render_through_the_cycle_combined_score_tab() -> None:
             oltl_y = other_long_term_liabilities_cf.get(y)
 
             fcf_y: Optional[float] = None
-            if cfo_y is not None and capex_y is not None:
-                fcf_y = float(cfo_y) + float(capex_y)
+            capex_outflow_y: Optional[float] = None
+            if capex_y is not None:
+                capex_outflow_y = _capex_outflow(capex_y)
+            if cfo_y is not None and capex_outflow_y is not None:
+                fcf_y = _free_cash_flow(cfo_y, capex_outflow_y)
 
             if rev_y is not None and float(rev_y) != 0.0 and cfo_y is not None:
                 ocf_margin_vals.append(float(cfo_y) / float(rev_y))
@@ -3128,8 +3282,8 @@ def render_through_the_cycle_combined_score_tab() -> None:
             if cfo_y is not None and ni_y is not None and float(ni_y) != 0.0:
                 cfo_net_income_vals.append(float(cfo_y) / float(ni_y))
 
-            if rev_y is not None and float(rev_y) != 0.0 and capex_y is not None:
-                capital_intensity_vals.append((-1.0 * float(capex_y)) / float(rev_y))
+            if rev_y is not None and float(rev_y) != 0.0 and capex_outflow_y is not None:
+                capital_intensity_vals.append(_capital_intensity(capex_outflow_y, rev_y))
 
             if (
                 fcf_y is not None
@@ -3188,6 +3342,7 @@ def render_through_the_cycle_combined_score_tab() -> None:
             yr_end,
             growth_weight_map,
             stddev_weight_map,
+            preloaded_annual=annual_inputs,
         )
 
         rows.append(
@@ -3216,10 +3371,6 @@ def render_through_the_cycle_combined_score_tab() -> None:
         na_position="last",
     )
     progress_bar.progress(100, text="Combined score computation complete.")
-    df = _apply_ttc_filters(df, "ttc_combined")
-    if df.empty:
-        st.info("No companies match the selected filters.")
-        return
 
     if view_mode == "Dashboard View":
         show_cols = [
@@ -3240,10 +3391,20 @@ def render_through_the_cycle_combined_score_tab() -> None:
             "Overall Score (0-400)",
         ]
 
+    export_df = df[show_cols].copy()
     st.dataframe(
-        df[show_cols],
+        export_df,
         use_container_width=True,
         hide_index=True,
+    )
+    export_year_range = _slug(year_range.strip()) or "selected_years"
+    st.download_button(
+        "Download Combined Score Excel",
+        data=_excel_bytes(export_df, "TTC Combined Score"),
+        file_name=f"ttc_combined_score_{export_year_range}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="ttc_combined_score_excel_download",
+        on_click="ignore",
     )
 
 
@@ -3494,7 +3655,12 @@ def render_through_the_cycle_formula_tab() -> None:
             <p>Operating Margin term = CLAMP01(max(0, median(Operating Income / Revenue)) / Threshold)</p>
             <p>Gross Margin term = CLAMP01(max(0, median((Revenue - COGS) / Revenue)) / Threshold)</p>
             <p>SG&amp;A Ratio term = CLAMP01(1 - max(0, median(SG&amp;A / Revenue)) / Threshold)</p>
-            <p>Incremental Margin term = CLAMP01(max(0, median((OI_t - OI_t-1) / (Rev_t - Rev_t-1))) / Threshold)</p>
+            <p>Incremental Margin term = CLAMP01(max(0, median(Scenario-Adjusted Incremental Margin)) / Threshold)</p>
+            <p class="ttc-note">
+              Scenario adjustment: revenue growth uses ΔOI / ΔRevenue; revenue contraction uses ΔOI / ABS(ΔRevenue);
+              a revenue change below 2% of average revenue floors negative results at -20%; unchanged revenue uses
+              the change in operating margin. Loss-to-profit transitions receive a green note.
+            </p>
             <p>Op Margin Volatility term = CLAMP01(1 - max(0, stdev(Operating Margin)) / Threshold)</p>
           </div>
 
@@ -3538,11 +3704,11 @@ def render_through_the_cycle_formula_tab() -> None:
           <div class="ttc-box ttc-cf">
             <h4>Cash Flow Efficiency Score (0-100)</h4>
             <p>Score = 100 * CLAMP01(sum(weight_i * term_i))</p>
-            <p>FCF = Operating Cash Flow + Capex</p>
+            <p>FCF = Operating Cash Flow - CapEx Outflow</p>
             <p>OCF Margin = OCF / Revenue</p>
             <p>FCF Margin = FCF / Revenue</p>
             <p>CFO/Net Income = OCF / Net Income</p>
-            <p>Capital Intensity = (-Capex) / Revenue</p>
+            <p>Capital Intensity = CapEx Outflow / Revenue</p>
             <p>
               Invested Capital = Net PPE + Net Working Capital + (Goodwill + Intangibles + Other LT Assets)
               - (Deferred Revenue + Deferred Tax Liabilities + Other LT Liabilities)

@@ -208,19 +208,20 @@ def _run_bulk_upload_batch(
                 )
 
             bytes_data = file_path.read_bytes()
-            result = ingest_financials_bytes(
-                bytes_data,
-                manifest_row["company_name"],
-                ticker,
-                conn,
-                country=manifest_row["country"],
-            )
+            with conn.transaction():
+                result = ingest_financials_bytes(
+                    bytes_data,
+                    manifest_row["company_name"],
+                    ticker,
+                    conn,
+                    country=manifest_row["country"],
+                )
 
-            bucket_id = get_company_group_id(conn, manifest_row["industry_bucket"], create=True)
-            if bucket_id is None:
-                raise ValueError("Failed to create or find industry bucket.")
-            add_company_group_members(conn, bucket_id, [result["company_id"]])
-            _compute_bucket_dependent_metrics(conn, result["company_id"])
+                bucket_id = get_company_group_id(conn, manifest_row["industry_bucket"], create=True)
+                if bucket_id is None:
+                    raise ValueError("Failed to create or find industry bucket.")
+                add_company_group_members(conn, bucket_id, [result["company_id"]])
+                _compute_bucket_dependent_metrics(conn, result["company_id"])
 
             progress.progress(100)
             _render_bulk_status(status_placeholder, company_label, "Success", "100%", "#1f7a1f")
@@ -246,7 +247,6 @@ def _run_bulk_upload_batch(
                 f"{ticker}\t{company_label}\tERROR\tNA\t{file_path.name}\t0\t\t{e}"
             )
 
-    conn.commit()
     batch_number = (start_index // batch_size) + 1
     batch_start = start_index + 1
     log_path = _write_bulk_batch_log(
@@ -274,7 +274,158 @@ def _run_bulk_upload_batch(
     }
 
 
-def ingest_financials_bytes(
+def _persist_parsed_company_metrics(conn, company_id: int, values: dict[str, object]) -> Dict[str, int]:
+    """Persist parsed statement values with batched, set-based upserts."""
+    annual_debt_equity: Dict[int, float] = {}
+    for year in set(values["annual_total_debt"]) & set(values["annual_market_capitalization"]):
+        try:
+            market_cap = float(values["annual_market_capitalization"][year])
+            if market_cap:
+                annual_debt_equity[int(year)] = float(values["annual_total_debt"][year]) / market_cap
+        except (TypeError, ValueError):
+            continue
+
+    annual_metrics = {
+        "revenues_annual": ("revenue", values["annual_rev"]),
+        "cost_of_revenue_annual": ("cost_of_revenue", values["annual_cogs"]),
+        "sga_annual": ("sga", values["annual_sga"]),
+        "ebitda_annual": ("ebitda", values["annual_ebitda"]),
+        "op_margin_annual": ("margin", values["annual_om"]),
+        "pretax_income_annual": ("pretax_income", values["annual_pt"]),
+        "net_income_annual": ("net_income", values["annual_ni"]),
+        "net_income_to_common_annual": (
+            "net_income_to_common",
+            values["annual_net_income_to_common"],
+        ),
+        "earnings_from_discontinued_operations_annual": (
+            "earnings_from_discontinued_operations",
+            values["annual_earnings_from_discontinued_operations"],
+        ),
+        "minority_interest_in_earnings_annual": (
+            "minority_interest_in_earnings",
+            values["annual_minority_interest_in_earnings"],
+        ),
+        "eff_tax_rate_annual": ("eff_tax_rate", values["annual_tax"]),
+        "ebit_annual": ("ebit", values["annual_ebit"]),
+        "interest_expense_annual": ("interest_expense", values["annual_interest_expense"]),
+        "operating_income_annual": ("operating_income", values["annual_operating_income"]),
+        "interest_coverage_annual": ("interest_coverage_ratio", values["annual_interest_coverage"]),
+        "interest_load_annual": ("interest_load_pct", values["annual_interest_load_pct"]),
+        "nopat_annual": ("nopat", values["annual_nopat"]),
+        "shareholders_equity_annual": ("shareholders_equity", values["annual_se"]),
+        "short_term_investments_annual": ("short_term_investments", values["annual_short_term_investments"]),
+        "accounts_receivable_annual": ("accounts_receivable", values["annual_accounts_receivable"]),
+        "inventory_annual": ("inventory", values["annual_inventory"]),
+        "accounts_payable_annual": ("accounts_payable", values["annual_accounts_payable"]),
+        "retained_earnings_annual": ("retained_earnings", values["annual_re"]),
+        "comprehensive_income_annual": ("comprehensive_income", values["annual_ci"]),
+        "accumulated_profit_annual": ("accumulated_profit", values["annual_accumulated_profit"]),
+        "total_equity_annual": ("total_equity", values["annual_total_equity"]),
+        "average_equity_annual": ("average_equity", values["annual_average_equity"]),
+        "roe_annual": ("roe", values["annual_roe"]),
+        "total_assets_annual": ("total_assets", values["annual_total_assets"]),
+        "total_current_assets_annual": ("total_current_assets", values["annual_total_current_assets"]),
+        "total_current_liabilities_annual": ("total_current_liabilities", values["annual_total_current_liabilities"]),
+        "total_long_term_liabilities_annual": ("total_long_term_liabilities", values["annual_total_long_term_liabilities"]),
+        "total_debt_annual": ("total_debt", values["annual_total_debt"]),
+        "market_capitalization_annual": ("market_capitalization", values["annual_market_capitalization"]),
+        "last_close_price_annual": ("last_close_price", values["annual_last_close_price"]),
+        "roic_direct_upload_annual": ("roic_pct", values["annual_roic_direct_upload"]),
+        "debt_equity_annual": ("debt_equity", annual_debt_equity),
+        "current_debt_annual": ("current_debt", values["annual_current_debt"]),
+        "cash_and_cash_equivalents_annual": ("cash_and_cash_equivalents", values["annual_cash_and_cash_equivalents"]),
+        "shares_outstanding_basic_annual": ("shares_outstanding_basic", values["annual_shares_outstanding_basic"]),
+        "long_term_investments_annual": ("long_term_investments", values["annual_long_term_investments"]),
+        "capital_employed_annual": ("capital_employed", values["annual_capital_employed"]),
+        "roce_annual": ("roce", values["annual_roce"]),
+        "invested_capital_annual": ("invested_capital", values["annual_invested_capital"]),
+        "non_cash_working_capital_annual": ("non_cash_working_capital", values["annual_non_cash_working_capital"]),
+        "revenue_yield_non_cash_working_capital_annual": ("revenue_yield_ncwc", values["annual_revenue_yield_non_cash_working_capital"]),
+        "research_and_development_expense_annual": ("research_and_development_expense", values["annual_rd"]),
+        "net_debt_issued_paid_annual": ("net_debt_issued_paid", values["annual_net_debt_issued_paid"]),
+        "capital_expenditures_annual": ("capital_expenditures", values["annual_capex"]),
+        "common_dividends_paid_annual": ("common_dividends_paid", values["annual_common_dividends_paid"]),
+        "depreciation_amortization_annual": ("depreciation_amortization", values["annual_da"]),
+        "operating_cash_flow_annual": ("operating_cash_flow", values["annual_operating_cash_flow"]),
+        "net_ppe_annual": ("net_ppe", values["annual_net_ppe"]),
+        "goodwill_and_intangibles_annual": ("goodwill_and_intangibles", values["annual_goodwill_and_intangibles"]),
+        "other_long_term_assets_annual": ("other_long_term_assets", values["annual_other_long_term_assets"]),
+        "deferred_revenue_annual": ("deferred_revenue", values["annual_deferred_revenue"]),
+        "deferred_tax_liabilities_annual": ("deferred_tax_liabilities", values["annual_deferred_tax_liabilities"]),
+        "other_long_term_liabilities_annual": ("other_long_term_liabilities", values["annual_other_long_term_liabilities"]),
+    }
+    ttm_metrics = {
+        "revenues_ttm": ("revenue", values["as_of_rev"], values["ttm_rev"]),
+        "cost_of_revenue_ttm": ("cost_of_revenue", values["as_of_cogs"], values["ttm_cogs"]),
+        "sga_ttm": ("sga", values["as_of_sga"], values["ttm_sga"]),
+        "ebitda_ttm": ("ebitda", values["as_of_ebitda"], values["ttm_ebitda"]),
+        "op_margin_ttm": ("margin", values["as_of_om"], values["ttm_om"]),
+        "pretax_income_ttm": ("pretax_income", values["as_of_pt"], values["ttm_pt"]),
+        "net_income_ttm": ("net_income", values["as_of_ni"], values["ttm_ni"]),
+        "eff_tax_rate_ttm": ("eff_tax_rate", values["as_of_tax"], values["ttm_tax"]),
+        "ebit_ttm": ("ebit", values["as_of_ebit"], values["ttm_ebit"]),
+        "interest_expense_ttm": ("interest_expense", values["as_of_interest_expense"], values["ttm_interest_expense"]),
+        "operating_income_ttm": ("operating_income", values["as_of_operating_income"], values["ttm_operating_income"]),
+        "shareholders_equity_ttm": ("shareholders_equity", values["as_of_se"], values["ttm_se"]),
+        "short_term_investments_ttm": ("short_term_investments", values["as_of_short_term_investments"], values["ttm_short_term_investments"]),
+        "accounts_receivable_ttm": ("accounts_receivable", values["as_of_accounts_receivable"], values["ttm_accounts_receivable"]),
+        "inventory_ttm": ("inventory", values["as_of_inventory"], values["ttm_inventory"]),
+        "accounts_payable_ttm": ("accounts_payable", values["as_of_accounts_payable"], values["ttm_accounts_payable"]),
+        "retained_earnings_ttm": ("retained_earnings", values["as_of_re"], values["ttm_re"]),
+        "comprehensive_income_ttm": ("comprehensive_income", values["as_of_ci"], values["ttm_ci"]),
+        "total_assets_ttm": ("total_assets", values["as_of_total_assets"], values["ttm_total_assets"]),
+        "total_current_assets_ttm": ("total_current_assets", values["as_of_total_current_assets"], values["ttm_total_current_assets"]),
+        "total_current_liabilities_ttm": ("total_current_liabilities", values["as_of_total_current_liabilities"], values["ttm_total_current_liabilities"]),
+        "total_long_term_liabilities_ttm": ("total_long_term_liabilities", values["as_of_total_long_term_liabilities"], values["ttm_total_long_term_liabilities"]),
+        "total_debt_ttm": ("total_debt", values["as_of_total_debt"], values["ttm_total_debt"]),
+        "last_close_price_ttm": ("last_close_price", values["as_of_last_close_price"], values["ttm_last_close_price"]),
+        "current_debt_ttm": ("current_debt", values["as_of_current_debt"], values["ttm_current_debt"]),
+        "cash_and_cash_equivalents_ttm": ("cash_and_cash_equivalents", values["as_of_cash_and_cash_equivalents"], values["ttm_cash_and_cash_equivalents"]),
+        "shares_outstanding_basic_ttm": ("shares_outstanding_basic", values["as_of_shares_outstanding_basic"], values["ttm_shares_outstanding_basic"]),
+        "long_term_investments_ttm": ("long_term_investments", values["as_of_long_term_investments"], values["ttm_long_term_investments"]),
+        "operating_cash_flow_ttm": ("operating_cash_flow", values["as_of_operating_cash_flow"], values["ttm_operating_cash_flow"]),
+        "net_ppe_ttm": ("net_ppe", values["as_of_net_ppe"], values["ttm_net_ppe"]),
+        "goodwill_and_intangibles_ttm": ("goodwill_and_intangibles", values["as_of_goodwill_and_intangibles"], values["ttm_goodwill_and_intangibles"]),
+        "other_long_term_assets_ttm": ("other_long_term_assets", values["as_of_other_long_term_assets"], values["ttm_other_long_term_assets"]),
+        "deferred_revenue_ttm": ("deferred_revenue", values["as_of_deferred_revenue"], values["ttm_deferred_revenue"]),
+        "deferred_tax_liabilities_ttm": ("deferred_tax_liabilities", values["as_of_deferred_tax_liabilities"], values["ttm_deferred_tax_liabilities"]),
+        "other_long_term_liabilities_ttm": ("other_long_term_liabilities", values["as_of_other_long_term_liabilities"], values["ttm_other_long_term_liabilities"]),
+    }
+    quarterly_inputs = values.get("quarterly_trend_inputs") or {}
+    quarterly_metrics = {
+        "revenues_quarterly": ("revenue", quarterly_inputs.get("revenue", {})),
+        "operating_income_quarterly": ("operating_income", quarterly_inputs.get("operating_income", {})),
+        "deferred_revenue_quarterly": ("deferred_revenue", quarterly_inputs.get("deferred_revenue", {})),
+        "accounts_receivable_quarterly": ("accounts_receivable", quarterly_inputs.get("accounts_receivable", {})),
+        "capital_expenditures_quarterly": ("capital_expenditures", quarterly_inputs.get("capital_expenditures", {})),
+        "operating_cash_flow_quarterly": ("operating_cash_flow", quarterly_inputs.get("operating_cash_flow", {})),
+        "net_income_to_common_quarterly": (
+            "net_income_to_common",
+            values["quarterly_net_income_to_common"],
+        ),
+        "earnings_from_discontinued_operations_quarterly": (
+            "earnings_from_discontinued_operations",
+            values["quarterly_earnings_from_discontinued_operations"],
+        ),
+        "minority_interest_in_earnings_quarterly": (
+            "minority_interest_in_earnings",
+            values["quarterly_minority_interest_in_earnings"],
+        ),
+        "common_dividends_paid_quarterly": (
+            "common_dividends_paid",
+            values["quarterly_common_dividends_paid"],
+        ),
+    }
+    return bulk_upsert_company_metrics(
+        conn,
+        company_id,
+        annual_metrics=annual_metrics,
+        ttm_metrics=ttm_metrics,
+        quarterly_metrics=quarterly_metrics,
+    )
+
+
+def _ingest_financials_bytes_impl(
     bytes_data: bytes,
     company: str,
     ticker: str,
@@ -295,6 +446,13 @@ def ingest_financials_bytes(
     except Exception as exc:
         ingest_warnings.append(f"Quarterly trend inputs were not stored: {exc}")
 
+    quarterly_earnings_from_discontinued_operations = (
+        extract_quarterly_earnings_from_discontinued_operations_series(bytes_data)
+    )
+    quarterly_minority_interest_in_earnings = extract_quarterly_minority_interest_in_earnings_series(bytes_data)
+    quarterly_common_dividends_paid = extract_quarterly_common_dividends_paid_series(bytes_data)
+    quarterly_net_income_to_common = extract_quarterly_net_income_to_common_series(bytes_data)
+
     # Extract Revenue (annual + TTM)
     annual_rev = extract_annual_revenue_series(bytes_data)
     as_of_rev, ttm_rev = extract_latest_ttm_revenue(bytes_data)
@@ -303,6 +461,43 @@ def ingest_financials_bytes(
     try:
         ttm_year = int(str(as_of_rev)[:4])
         annual_rev[ttm_year] = float(ttm_rev)
+    except Exception:
+        pass
+
+    # Preserve spreadsheet signs and use the latest TTM value for the current year.
+    annual_net_income_to_common = extract_annual_net_income_to_common_series(bytes_data)
+    as_of_net_income_to_common, ttm_net_income_to_common = extract_latest_ttm_net_income_to_common(bytes_data)
+    try:
+        ttm_net_income_to_common_year = int(str(as_of_net_income_to_common)[:4])
+        annual_net_income_to_common[ttm_net_income_to_common_year] = float(ttm_net_income_to_common)
+    except Exception:
+        pass
+
+    # Preserve spreadsheet signs: gains remain positive and losses remain negative.
+    annual_earnings_from_discontinued_operations = (
+        extract_annual_earnings_from_discontinued_operations_series(bytes_data)
+    )
+    as_of_earnings_from_discontinued_operations, ttm_earnings_from_discontinued_operations = (
+        extract_latest_ttm_earnings_from_discontinued_operations(bytes_data)
+    )
+    try:
+        ttm_discontinued_operations_year = int(str(as_of_earnings_from_discontinued_operations)[:4])
+        annual_earnings_from_discontinued_operations[ttm_discontinued_operations_year] = float(
+            ttm_earnings_from_discontinued_operations
+        )
+    except Exception:
+        pass
+
+    # Preserve spreadsheet signs: gains remain positive and losses remain negative.
+    annual_minority_interest_in_earnings = extract_annual_minority_interest_in_earnings_series(bytes_data)
+    as_of_minority_interest_in_earnings, ttm_minority_interest_in_earnings = (
+        extract_latest_ttm_minority_interest_in_earnings(bytes_data)
+    )
+    try:
+        ttm_minority_interest_year = int(str(as_of_minority_interest_in_earnings)[:4])
+        annual_minority_interest_in_earnings[ttm_minority_interest_year] = float(
+            ttm_minority_interest_in_earnings
+        )
     except Exception:
         pass
 
@@ -441,8 +636,22 @@ def ingest_financials_bytes(
     except Exception:
         pass
 
-    # Store CapEx as positive numbers (sheet often shows outflows as negatives)
-    annual_capex = {y: -float(v) for y, v in annual_capex.items()}
+    # Canonical DB contract: CapEx is a positive cash-outflow magnitude.
+    # Most source sheets use negative values, but abs() also handles providers
+    # or exceptional rows that already report the outflow as positive.
+    annual_capex = {y: abs(float(v)) for y, v in annual_capex.items()}
+
+    # Extract Common Dividends Paid and store the cash outflow as a positive magnitude.
+    annual_common_dividends_paid = extract_annual_common_dividends_paid_series(bytes_data)
+    as_of_common_dividends_paid, ttm_common_dividends_paid = extract_latest_ttm_common_dividends_paid(bytes_data)
+    try:
+        ttm_common_dividends_year = int(str(as_of_common_dividends_paid)[:4])
+        annual_common_dividends_paid[ttm_common_dividends_year] = abs(float(ttm_common_dividends_paid))
+    except Exception:
+        pass
+    annual_common_dividends_paid = {
+        year: abs(float(value)) for year, value in annual_common_dividends_paid.items()
+    }
 
     # Extract Depreciation & Amortization (annual + TTM) from Cash Flow
     annual_da = extract_annual_depreciation_amortization_series(bytes_data)
@@ -929,154 +1138,37 @@ def ingest_financials_bytes(
         except Exception:
             continue
 
-    # Store
+    # Persist the complete company in set-based statements. Derived metrics run
+    # against the same transaction and become visible atomically at commit.
     cid = upsert_company(conn, company, ticker, country=country)
-    if quarterly_trend_inputs:
-        quarterly_upload_counts = upsert_quarterly_business_trend_inputs(conn, cid, quarterly_trend_inputs)
+    persisted_counts = _persist_parsed_company_metrics(conn, cid, locals())
+    quarterly_upload_counts = {
+        key: len(values)
+        for key, values in quarterly_trend_inputs.items()
+        if isinstance(values, dict)
+    }
+    quarterly_upload_counts.update(
+        {
+            "earnings_from_discontinued_operations": len(
+                quarterly_earnings_from_discontinued_operations
+            ),
+            "minority_interest_in_earnings": len(quarterly_minority_interest_in_earnings),
+            "common_dividends_paid": len(quarterly_common_dividends_paid),
+            "net_income_to_common": len(quarterly_net_income_to_common),
+        }
+    )
 
-    upsert_annual_revenues(conn, cid, annual_rev)
-    upsert_annual_cost_of_revenue(conn, cid, annual_cogs)
-    upsert_ttm_cost_of_revenue(conn, cid, as_of_cogs, ttm_cogs)
-    upsert_annual_sga(conn, cid, annual_sga)
-    upsert_ttm_sga(conn, cid, as_of_sga, ttm_sga)
-    upsert_annual_ebitda(conn, cid, annual_ebitda)
-    upsert_ttm_ebitda(conn, cid, as_of_ebitda, ttm_ebitda)
-    upsert_ttm(conn, cid, as_of_rev, ttm_rev)
-
-    upsert_annual_op_margin(conn, cid, annual_om)
-    upsert_ttm_op_margin(conn, cid, as_of_om, ttm_om)
-
-    upsert_annual_pretax_income(conn, cid, annual_pt)
-    upsert_ttm_pretax_income(conn, cid, as_of_pt, ttm_pt)
-
-    upsert_annual_net_income(conn, cid, annual_ni)
-    upsert_ttm_net_income(conn, cid, as_of_ni, ttm_ni)
-
-    upsert_annual_eff_tax_rate(conn, cid, annual_tax)
-    upsert_ttm_eff_tax_rate(conn, cid, as_of_tax, ttm_tax)
-
-    upsert_annual_ebit(conn, cid, annual_ebit)
-    upsert_ttm_ebit(conn, cid, as_of_ebit, ttm_ebit)
-
-    upsert_annual_interest_expense(conn, cid, annual_interest_expense)
-    upsert_ttm_interest_expense(conn, cid, as_of_interest_expense, ttm_interest_expense)
-
-    upsert_annual_operating_income(conn, cid, annual_operating_income)
-    upsert_ttm_operating_income(conn, cid, as_of_operating_income, ttm_operating_income)
-
-    upsert_annual_interest_coverage(conn, cid, annual_interest_coverage)
-    upsert_annual_interest_load(conn, cid, annual_interest_load_pct)
-
-    try:
-        compute_and_store_default_spread(conn, cid)
-    except Exception:
-        pass
-
-    try:
-        compute_and_store_pre_tax_cost_of_debt(conn, cid)
-    except Exception:
-        pass
-
-    upsert_annual_nopat(conn, cid, annual_nopat)
-
-    upsert_annual_shareholders_equity(conn, cid, annual_se)
-    upsert_ttm_shareholders_equity(conn, cid, as_of_se, ttm_se)
-    upsert_annual_short_term_investments(conn, cid, annual_short_term_investments)
-    upsert_ttm_short_term_investments(conn, cid, as_of_short_term_investments, ttm_short_term_investments)
-    upsert_annual_accounts_receivable(conn, cid, annual_accounts_receivable)
-    upsert_ttm_accounts_receivable(conn, cid, as_of_accounts_receivable, ttm_accounts_receivable)
-    upsert_annual_inventory(conn, cid, annual_inventory)
-    upsert_ttm_inventory(conn, cid, as_of_inventory, ttm_inventory)
-    upsert_annual_accounts_payable(conn, cid, annual_accounts_payable)
-    upsert_ttm_accounts_payable(conn, cid, as_of_accounts_payable, ttm_accounts_payable)
-
-    upsert_annual_retained_earnings(conn, cid, annual_re)
-    upsert_ttm_retained_earnings(conn, cid, as_of_re, ttm_re)
-
-    upsert_annual_comprehensive_income(conn, cid, annual_ci)
-    upsert_ttm_comprehensive_income(conn, cid, as_of_ci, ttm_ci)
-
-    upsert_annual_accumulated_profit(conn, cid, annual_accumulated_profit)
-    upsert_annual_total_equity(conn, cid, annual_total_equity)
-    upsert_annual_average_equity(conn, cid, annual_average_equity)
-    upsert_annual_roe(conn, cid, annual_roe)
-
-    upsert_annual_total_assets(conn, cid, annual_total_assets)
-    upsert_ttm_total_assets(conn, cid, as_of_total_assets, ttm_total_assets)
-
-    upsert_annual_total_current_assets(conn, cid, annual_total_current_assets)
-    upsert_ttm_total_current_assets(conn, cid, as_of_total_current_assets, ttm_total_current_assets)
-
-    upsert_annual_total_current_liabilities(conn, cid, annual_total_current_liabilities)
-    upsert_ttm_total_current_liabilities(conn, cid, as_of_total_current_liabilities, ttm_total_current_liabilities)
-
-    upsert_annual_total_long_term_liabilities(conn, cid, annual_total_long_term_liabilities)
-    upsert_ttm_total_long_term_liabilities(conn, cid, as_of_total_long_term_liabilities, ttm_total_long_term_liabilities)
-
-    upsert_annual_total_debt(conn, cid, annual_total_debt)
-    upsert_ttm_total_debt(conn, cid, as_of_total_debt, ttm_total_debt)
-
-    upsert_annual_market_capitalization(conn, cid, annual_market_capitalization)
-    upsert_annual_last_close_price(conn, cid, annual_last_close_price)
-    upsert_ttm_last_close_price(conn, cid, as_of_last_close_price, ttm_last_close_price)
-
-    if annual_roic_direct_upload:
-        upsert_annual_roic_direct_upload(conn, cid, annual_roic_direct_upload)
-
-    # Debt/Equity (Derived) = Total Debt / Market Capitalization
-    annual_debt_equity: Dict[int, float] = {}
-    try:
-        common_de_years = sorted(
-            set(annual_total_debt.keys())
-            & set(annual_market_capitalization.keys())
-        )
-        for y in common_de_years:
-            denom = float(annual_market_capitalization[y])
-            if denom == 0.0:
-                continue
-            annual_debt_equity[int(y)] = float(annual_total_debt[y]) / denom
-    except Exception:
-        annual_debt_equity = {}
-
-    if annual_debt_equity:
-        upsert_annual_debt_equity(conn, cid, annual_debt_equity)
-
-    upsert_annual_current_debt(conn, cid, annual_current_debt)
-    upsert_ttm_current_debt(conn, cid, as_of_current_debt, ttm_current_debt)
-
-    upsert_annual_cash_and_cash_equivalents(conn, cid, annual_cash_and_cash_equivalents)
-    upsert_ttm_cash_and_cash_equivalents(conn, cid, as_of_cash_and_cash_equivalents, ttm_cash_and_cash_equivalents)
-
-    upsert_annual_shares_outstanding_basic(conn, cid, annual_shares_outstanding_basic)
-    upsert_ttm_shares_outstanding_basic(conn, cid, as_of_shares_outstanding_basic, ttm_shares_outstanding_basic)
-
-    upsert_annual_long_term_investments(conn, cid, annual_long_term_investments)
-    upsert_ttm_long_term_investments(conn, cid, as_of_long_term_investments, ttm_long_term_investments)
-
-    upsert_annual_capital_employed(conn, cid, annual_capital_employed)
-    upsert_annual_roce(conn, cid, annual_roce)
-    upsert_annual_invested_capital(conn, cid, annual_invested_capital)
-    upsert_annual_non_cash_working_capital(conn, cid, annual_non_cash_working_capital)
-    upsert_annual_revenue_yield_non_cash_working_capital(conn, cid, annual_revenue_yield_non_cash_working_capital)
-
-    upsert_annual_research_and_development_expense(conn, cid, annual_rd)
-    upsert_annual_net_debt_issued_paid(conn, cid, annual_net_debt_issued_paid)
-    upsert_annual_capital_expenditures(conn, cid, annual_capex)
-    upsert_annual_depreciation_amortization(conn, cid, annual_da)
-    upsert_annual_operating_cash_flow(conn, cid, annual_operating_cash_flow)
-    upsert_ttm_operating_cash_flow(conn, cid, as_of_operating_cash_flow, ttm_operating_cash_flow)
-    upsert_annual_net_ppe(conn, cid, annual_net_ppe)
-    upsert_ttm_net_ppe(conn, cid, as_of_net_ppe, ttm_net_ppe)
-    upsert_annual_goodwill_and_intangibles(conn, cid, annual_goodwill_and_intangibles)
-    upsert_ttm_goodwill_and_intangibles(conn, cid, as_of_goodwill_and_intangibles, ttm_goodwill_and_intangibles)
-    upsert_annual_other_long_term_assets(conn, cid, annual_other_long_term_assets)
-    upsert_ttm_other_long_term_assets(conn, cid, as_of_other_long_term_assets, ttm_other_long_term_assets)
-    upsert_annual_deferred_revenue(conn, cid, annual_deferred_revenue)
-    upsert_ttm_deferred_revenue(conn, cid, as_of_deferred_revenue, ttm_deferred_revenue)
-    upsert_annual_deferred_tax_liabilities(conn, cid, annual_deferred_tax_liabilities)
-    upsert_ttm_deferred_tax_liabilities(conn, cid, as_of_deferred_tax_liabilities, ttm_deferred_tax_liabilities)
-    upsert_annual_other_long_term_liabilities(conn, cid, annual_other_long_term_liabilities)
-    upsert_ttm_other_long_term_liabilities(conn, cid, as_of_other_long_term_liabilities, ttm_other_long_term_liabilities)
+    for compute_derived in (
+        compute_and_store_default_spread,
+        compute_and_store_pre_tax_cost_of_debt,
+        compute_and_store_fcff_and_reinvestment_rate,
+    ):
+        try:
+            compute_derived(conn, cid)
+        except Exception:
+            # Preserve the existing behavior: a missing input for an optional
+            # derived metric must not reject an otherwise valid statement file.
+            pass
 
     return {
         "company_id": cid,
@@ -1094,9 +1186,34 @@ def ingest_financials_bytes(
         "as_of_ni": as_of_ni,
         "ttm_ni": ttm_ni,
         "annual_nopat": annual_nopat,
+        "persisted_counts": persisted_counts,
         "quarterly_upload_counts": quarterly_upload_counts,
         "business_quarter_trend_score": business_quarter_trend_score,
     }
+
+
+def ingest_financials_bytes(
+    bytes_data: bytes,
+    company: str,
+    ticker: str,
+    conn,
+    country: Optional[str] = None,
+) -> Dict[str, object]:
+    """Parse and atomically persist one company upload."""
+    transaction = getattr(conn, "transaction", None)
+    if callable(transaction):
+        with transaction():
+            return _ingest_financials_bytes_impl(bytes_data, company, ticker, conn, country)
+
+    # Compatibility for direct sqlite3 connections used by local utilities.
+    try:
+        result = _ingest_financials_bytes_impl(bytes_data, company, ticker, conn, country)
+        conn.commit()
+        return result
+    except Exception:
+        conn.rollback()
+        raise
+
 
 def render_data_upload_tab():
     st.title("Revenue Growth & Operating Margin — Upload, Store, and Analyze")
@@ -1115,879 +1232,27 @@ def render_data_upload_tab():
             if st.button("Ingest into DB", type="primary", disabled=not (comp_input and file)):
                 try:
                     company, ticker = parse_company_and_ticker(comp_input)
-                    bytes_data = file.getvalue()
-                    quarterly_trend_inputs: Dict[str, Dict[str, float]] = {}
-                    quarterly_upload_counts: Dict[str, int] = {}
-                    business_quarter_trend_score: Optional[float] = None
-                    quarterly_warning: Optional[str] = None
-
-                    try:
-                        quarterly_trend_inputs = extract_quarterly_business_trend_inputs(bytes_data)
-                        business_quarter_trend_score = calculate_business_quarter_trend_score(
-                            quarterly_trend_inputs,
-                            component_weights=get_business_quarter_trend_weight_map(get_db()),
-                        )
-                    except Exception as exc:
-                        quarterly_warning = f"Quarterly trend inputs were not stored: {exc}"
-
-                    # Extract Revenue (annual + TTM)
-                    annual_rev = extract_annual_revenue_series(bytes_data)
-                    as_of_rev, ttm_rev = extract_latest_ttm_revenue(bytes_data)
-
-                    # Merge current-year TTM into the annual revenue series
-                    try:
-                        ttm_year = int(str(as_of_rev)[:4])
-                        annual_rev[ttm_year] = float(ttm_rev)
-                    except Exception:
-                        pass
-
-                    # Extract Cost of Revenue / COGS (annual + TTM)
-                    annual_cogs = extract_annual_cost_of_revenue_series(bytes_data)
-                    as_of_cogs, ttm_cogs = extract_latest_ttm_cost_of_revenue(bytes_data)
-
-                    # Merge current-year TTM into the annual COGS series
-                    try:
-                        ttm_cogs_year = int(str(as_of_cogs)[:4])
-                        annual_cogs[ttm_cogs_year] = float(ttm_cogs)
-                    except Exception:
-                        pass
-
-                    # Extract SG&A (annual + TTM)
-                    annual_sga = extract_annual_sga_series(bytes_data)
-                    as_of_sga, ttm_sga = extract_latest_ttm_sga(bytes_data)
-
-                    # Merge current-year TTM into the annual SG&A series
-                    try:
-                        ttm_sga_year = int(str(as_of_sga)[:4])
-                        annual_sga[ttm_sga_year] = float(ttm_sga)
-                    except Exception:
-                        pass
-
-                    # Extract Operating Margin (annual + TTM)
-                    annual_om = extract_annual_operating_margin_series(bytes_data)
-                    as_of_om, ttm_om = extract_latest_ttm_operating_margin(bytes_data)
-
-                    # Merge current-year TTM into the annual operating margin series
-                    try:
-                        ttm_om_year = int(str(as_of_om)[:4])
-                        annual_om[ttm_om_year] = float(ttm_om)
-                    except Exception:
-                        pass
-
-                    # Extract Pretax Income (annual + TTM)
-                    annual_pt = extract_annual_pretax_income_series(bytes_data)
-                    as_of_pt, ttm_pt = extract_latest_ttm_pretax_income(bytes_data)
-
-                    # Merge current-year TTM into the annual pretax income series
-                    try:
-                        ttm_pt_year = int(str(as_of_pt)[:4])
-                        annual_pt[ttm_pt_year] = float(ttm_pt)
-                    except Exception:
-                        pass
-
-                    # Extract Net Income (annual + TTM)
-                    annual_ni = extract_annual_net_income_series(bytes_data)
-                    as_of_ni, ttm_ni = extract_latest_ttm_net_income(bytes_data)
-
-                    # Merge current-year TTM into the annual net income series
-                    try:
-                        ttm_ni_year = int(str(as_of_ni)[:4])
-                        annual_ni[ttm_ni_year] = float(ttm_ni)
-                    except Exception:
-                        pass
-
-                    # Extract Effective Tax Rate (annual + TTM)
-                    annual_tax = extract_annual_effective_tax_rate_series(bytes_data)
-                    as_of_tax, ttm_tax = extract_latest_ttm_effective_tax_rate(bytes_data)
-
-                    # Merge current-year TTM into the annual effective tax rate series
-                    try:
-                        ttm_tax_year = int(str(as_of_tax)[:4])
-                        annual_tax[ttm_tax_year] = float(ttm_tax)
-                    except Exception:
-                        pass
-
-                    # Extract EBIT (annual + TTM)
-                    annual_ebit = extract_annual_ebit_series(bytes_data)
-                    as_of_ebit, ttm_ebit = extract_latest_ttm_ebit(bytes_data)
-
-                    # Merge current-year TTM into the annual EBIT series
-                    try:
-                        ttm_ebit_year = int(str(as_of_ebit)[:4])
-                        annual_ebit[ttm_ebit_year] = float(ttm_ebit)
-                    except Exception:
-                        pass
-
-                    # Extract EBITDA (annual + TTM)
-                    annual_ebitda = extract_annual_ebitda_series(bytes_data)
-                    as_of_ebitda, ttm_ebitda = extract_latest_ttm_ebitda(bytes_data)
-
-                    # Merge current-year TTM into the annual EBITDA series
-                    try:
-                        ttm_ebitda_year = int(str(as_of_ebitda)[:4])
-                        annual_ebitda[ttm_ebitda_year] = float(ttm_ebitda)
-                    except Exception:
-                        pass
-
-
-            
-                    # Extract Interest Expense (annual + TTM)
-                    annual_interest_expense = extract_annual_interest_expense_series(bytes_data)
-                    as_of_interest_expense, ttm_interest_expense = extract_latest_ttm_interest_expense(bytes_data)
-
-                    # Merge current-year TTM into the annual Interest Expense series
-                    try:
-                        ttm_ie_year = int(str(as_of_interest_expense)[:4])
-                        annual_interest_expense[ttm_ie_year] = float(ttm_interest_expense)
-                    except Exception:
-                        pass
-
-                    # Extract Operating Income (annual + TTM)
-                    annual_operating_income = extract_annual_operating_income_series(bytes_data)
-                    as_of_operating_income, ttm_operating_income = extract_latest_ttm_operating_income(bytes_data)
-
-                    # Merge current-year TTM into the annual Operating Income series
-                    try:
-                        ttm_oi_year = int(str(as_of_operating_income)[:4])
-                        annual_operating_income[ttm_oi_year] = float(ttm_operating_income)
-                    except Exception:
-                        pass
-
-
-                    
-
-                    # Extract Research & Development Expense (annual + TTM) from Income
-                    annual_rd = extract_annual_research_and_development_expense_series(bytes_data)
-                    as_of_rd, ttm_rd = extract_latest_ttm_research_and_development_expense(bytes_data)
-
-                    # Merge current-year TTM into the annual R&D expense series
-                    try:
-                        ttm_rd_year = int(str(as_of_rd)[:4])
-                        annual_rd[ttm_rd_year] = float(ttm_rd)
-                    except Exception:
-                        pass
-
-                    # Defensive: keep R&D expense positive
-                    annual_rd = {y: abs(float(v)) for y, v in annual_rd.items()}
-
-# Extract Capital Expenditures (annual + TTM) from Cash Flow
-                    annual_capex = extract_annual_capital_expenditures_series(bytes_data)
-                    as_of_capex, ttm_capex = extract_latest_ttm_capital_expenditures(bytes_data)
-
-                    # Merge current-year TTM into the annual CapEx series
-                    try:
-                        ttm_capex_year = int(str(as_of_capex)[:4])
-                        annual_capex[ttm_capex_year] = float(ttm_capex)
-                    except Exception:
-                        pass
-
-                    # Store CapEx as positive numbers (sheet often shows outflows as negatives)
-                    annual_capex = {y: -float(v) for y, v in annual_capex.items()}
-
-                    # Extract Depreciation & Amortization (annual + TTM) from Cash Flow
-                    annual_da = extract_annual_depreciation_amortization_series(bytes_data)
-                    as_of_da, ttm_da = extract_latest_ttm_depreciation_amortization(bytes_data)
-
-                    # Merge current-year TTM into the annual D&A series
-                    try:
-                        ttm_da_year = int(str(as_of_da)[:4])
-                        annual_da[ttm_da_year] = float(ttm_da)
-                    except Exception:
-                        pass
-
-
-                    # Extract Net Debt Issued/Paid (annual + TTM) from Cash Flow
-                    annual_net_debt_issued_paid = extract_annual_net_debt_issued_paid_series(bytes_data)
-                    as_of_net_debt_issued_paid, ttm_net_debt_issued_paid = extract_latest_ttm_net_debt_issued_paid(bytes_data)
-
-                    # Merge current-year TTM into the annual Net Debt Issued/Paid series
-                    try:
-                        ttm_nd_year = int(str(as_of_net_debt_issued_paid)[:4])
-                        annual_net_debt_issued_paid[ttm_nd_year] = float(ttm_net_debt_issued_paid)
-                    except Exception:
-                        pass
-
-                    # Extract Operating Cash Flow (annual + latest TTM from Cash-Flow-TTM)
-                    annual_operating_cash_flow = extract_annual_operating_cash_flow_series(bytes_data)
-                    as_of_operating_cash_flow, ttm_operating_cash_flow = extract_latest_ttm_operating_cash_flow(bytes_data)
-                    try:
-                        ttm_ocf_year = int(str(as_of_operating_cash_flow)[:4])
-                        prev_year = ttm_ocf_year - 1
-                        annual_operating_cash_flow = {
-                            int(y): float(v)
-                            for y, v in annual_operating_cash_flow.items()
-                            if int(y) <= int(prev_year)
-                        }
-                        annual_operating_cash_flow[int(ttm_ocf_year)] = float(ttm_operating_cash_flow)
-                    except Exception:
-                        pass
-
-                    # Extract Net PP&E (annual + latest TTM from Balance-Sheet-TTM)
-                    annual_net_ppe, (as_of_net_ppe, ttm_net_ppe), net_ppe_warnings = extract_net_ppe_defaults(bytes_data)
-                    try:
-                        ttm_nppe_year = int(str(as_of_net_ppe)[:4])
-                        prev_year = ttm_nppe_year - 1
-                        annual_net_ppe = {int(y): float(v) for y, v in annual_net_ppe.items() if int(y) <= int(prev_year)}
-                        annual_net_ppe[int(ttm_nppe_year)] = float(ttm_net_ppe)
-                    except Exception:
-                        pass
-
-                    # Extract Goodwill and Intangibles (annual + latest TTM from Balance-Sheet-TTM)
-                    annual_goodwill_and_intangibles = extract_annual_goodwill_and_intangibles_series(bytes_data)
-                    as_of_goodwill_and_intangibles, ttm_goodwill_and_intangibles = extract_latest_ttm_goodwill_and_intangibles(bytes_data)
-                    try:
-                        ttm_gi_year = int(str(as_of_goodwill_and_intangibles)[:4])
-                        prev_year = ttm_gi_year - 1
-                        annual_goodwill_and_intangibles = {
-                            int(y): float(v) for y, v in annual_goodwill_and_intangibles.items() if int(y) <= int(prev_year)
-                        }
-                        annual_goodwill_and_intangibles[int(ttm_gi_year)] = float(ttm_goodwill_and_intangibles)
-                    except Exception:
-                        pass
-
-                    # Extract Other Long-Term Assets (annual + latest TTM from Balance-Sheet-TTM)
-                    annual_other_long_term_assets = extract_annual_other_long_term_assets_series(bytes_data)
-                    as_of_other_long_term_assets, ttm_other_long_term_assets = extract_latest_ttm_other_long_term_assets(bytes_data)
-                    try:
-                        ttm_olta_year = int(str(as_of_other_long_term_assets)[:4])
-                        prev_year = ttm_olta_year - 1
-                        annual_other_long_term_assets = {
-                            int(y): float(v) for y, v in annual_other_long_term_assets.items() if int(y) <= int(prev_year)
-                        }
-                        annual_other_long_term_assets[int(ttm_olta_year)] = float(ttm_other_long_term_assets)
-                    except Exception:
-                        pass
-
-                    # Extract Deferred Revenue (annual + latest TTM from Balance-Sheet-TTM)
-                    annual_deferred_revenue = extract_annual_deferred_revenue_series(bytes_data)
-                    as_of_deferred_revenue, ttm_deferred_revenue = extract_latest_ttm_deferred_revenue(bytes_data)
-                    try:
-                        ttm_dr_year = int(str(as_of_deferred_revenue)[:4])
-                        prev_year = ttm_dr_year - 1
-                        annual_deferred_revenue = {
-                            int(y): float(v) for y, v in annual_deferred_revenue.items() if int(y) <= int(prev_year)
-                        }
-                        annual_deferred_revenue[int(ttm_dr_year)] = float(ttm_deferred_revenue)
-                    except Exception:
-                        pass
-
-                    # Extract Deferred Tax Liabilities (annual + latest TTM from Balance-Sheet-TTM)
-                    annual_deferred_tax_liabilities = extract_annual_deferred_tax_liabilities_series(bytes_data)
-                    as_of_deferred_tax_liabilities, ttm_deferred_tax_liabilities = extract_latest_ttm_deferred_tax_liabilities(bytes_data)
-                    try:
-                        ttm_dtl_year = int(str(as_of_deferred_tax_liabilities)[:4])
-                        prev_year = ttm_dtl_year - 1
-                        annual_deferred_tax_liabilities = {
-                            int(y): float(v) for y, v in annual_deferred_tax_liabilities.items() if int(y) <= int(prev_year)
-                        }
-                        annual_deferred_tax_liabilities[int(ttm_dtl_year)] = float(ttm_deferred_tax_liabilities)
-                    except Exception:
-                        pass
-
-                    # Extract Other Long-Term Liabilities (annual + latest TTM from Balance-Sheet-TTM)
-                    annual_other_long_term_liabilities = extract_annual_other_long_term_liabilities_series(bytes_data)
-                    as_of_other_long_term_liabilities, ttm_other_long_term_liabilities = extract_latest_ttm_other_long_term_liabilities(bytes_data)
-                    try:
-                        ttm_oltl_year = int(str(as_of_other_long_term_liabilities)[:4])
-                        prev_year = ttm_oltl_year - 1
-                        annual_other_long_term_liabilities = {
-                            int(y): float(v) for y, v in annual_other_long_term_liabilities.items() if int(y) <= int(prev_year)
-                        }
-                        annual_other_long_term_liabilities[int(ttm_oltl_year)] = float(ttm_other_long_term_liabilities)
-                    except Exception:
-                        pass
-
-                    # Extract Shareholders Equity (annual + TTM) from Balance Sheet
-                    annual_se = extract_annual_shareholders_equity_series(bytes_data)
-                    as_of_se, ttm_se = extract_latest_ttm_shareholders_equity(bytes_data)
-
-                    # Merge current-year TTM into the annual Shareholders Equity series
-                    try:
-                        ttm_se_year = int(str(as_of_se)[:4])
-                        annual_se[ttm_se_year] = float(ttm_se)
-                    except Exception:
-                        pass
-
-                    # Extract Short-Term Investments (annual + TTM) from Balance Sheet
-                    annual_short_term_investments = extract_annual_short_term_investments_series(bytes_data)
-                    as_of_short_term_investments, ttm_short_term_investments = extract_latest_ttm_short_term_investments(bytes_data)
-
-                    # Merge current-year TTM into the annual Short-Term Investments series
-                    try:
-                        ttm_sti_year = int(str(as_of_short_term_investments)[:4])
-                        annual_short_term_investments[ttm_sti_year] = float(ttm_short_term_investments)
-                    except Exception:
-                        pass
-
-                    # Extract Accounts Receivable (annual + TTM) from Balance Sheet
-                    annual_accounts_receivable = extract_annual_accounts_receivable_series(bytes_data)
-                    as_of_accounts_receivable, ttm_accounts_receivable = extract_latest_ttm_accounts_receivable(bytes_data)
-
-                    # Merge current-year TTM into the annual Accounts Receivable series
-                    try:
-                        ttm_ar_year = int(str(as_of_accounts_receivable)[:4])
-                        annual_accounts_receivable[ttm_ar_year] = float(ttm_accounts_receivable)
-                    except Exception:
-                        pass
-
-                    # Extract Inventory (annual + TTM) from Balance Sheet
-                    annual_inventory = extract_annual_inventory_series(bytes_data)
-                    as_of_inventory, ttm_inventory = extract_latest_ttm_inventory(bytes_data)
-                    try:
-                        ttm_inventory_year = int(str(as_of_inventory)[:4])
-                        annual_inventory[ttm_inventory_year] = float(ttm_inventory)
-                    except Exception:
-                        pass
-
-                    # Extract Accounts Payable (annual + TTM) from Balance Sheet
-                    annual_accounts_payable = extract_annual_accounts_payable_series(bytes_data)
-                    as_of_accounts_payable, ttm_accounts_payable = extract_latest_ttm_accounts_payable(bytes_data)
-                    try:
-                        ttm_ap_year = int(str(as_of_accounts_payable)[:4])
-                        annual_accounts_payable[ttm_ap_year] = float(ttm_accounts_payable)
-                    except Exception:
-                        pass
-
-                    # Extract Retained Earnings (annual + TTM) from Balance Sheet
-                    annual_re = extract_annual_retained_earnings_series(bytes_data)
-                    as_of_re, ttm_re = extract_latest_ttm_retained_earnings(bytes_data)
-
-                    # Merge current-year TTM into the annual Retained Earnings series
-                    try:
-                        ttm_re_year = int(str(as_of_re)[:4])
-                        annual_re[ttm_re_year] = float(ttm_re)
-                    except Exception:
-                        pass
-
-                    # Extract Comprehensive Income (annual + TTM) from Balance Sheet
-                    annual_ci = extract_annual_comprehensive_income_series(bytes_data)
-                    as_of_ci, ttm_ci = extract_latest_ttm_comprehensive_income(bytes_data)
-
-                    # Merge current-year TTM into the annual Comprehensive Income series
-                    try:
-                        ttm_ci_year = int(str(as_of_ci)[:4])
-                        annual_ci[ttm_ci_year] = float(ttm_ci)
-                    except Exception:
-                        pass
-
-
-
-                    # Extract Total Assets (annual + TTM) from Balance Sheet
-                    annual_total_assets = extract_annual_total_assets_series(bytes_data)
-                    as_of_total_assets, ttm_total_assets = extract_latest_ttm_total_assets(bytes_data)
-                    try:
-                        ttm_ta_year = int(str(as_of_total_assets)[:4])
-                        annual_total_assets[ttm_ta_year] = float(ttm_total_assets)
-                    except Exception:
-                        pass
-
-
-                    # Extract Total Current Assets (annual + TTM) from Balance Sheet
-                    annual_total_current_assets = extract_annual_total_current_assets_series(bytes_data)
-                    as_of_total_current_assets, ttm_total_current_assets = extract_latest_ttm_total_current_assets(bytes_data)
-                    try:
-                        ttm_tca_year = int(str(as_of_total_current_assets)[:4])
-                        annual_total_current_assets[ttm_tca_year] = float(ttm_total_current_assets)
-                    except Exception:
-                        pass
-
-                    # Extract Total Current Liabilities (annual + TTM) from Balance Sheet
-                    annual_total_current_liabilities = extract_annual_total_current_liabilities_series(bytes_data)
-                    as_of_total_current_liabilities, ttm_total_current_liabilities = extract_latest_ttm_total_current_liabilities(bytes_data)
-                    try:
-                        ttm_tcl_year = int(str(as_of_total_current_liabilities)[:4])
-                        annual_total_current_liabilities[ttm_tcl_year] = float(ttm_total_current_liabilities)
-                    except Exception:
-                        pass
-
-                    # Extract Total Long-Term Liabilities (annual + TTM) from Balance Sheet
-                    annual_total_long_term_liabilities = extract_annual_total_long_term_liabilities_series(bytes_data)
-                    as_of_total_long_term_liabilities, ttm_total_long_term_liabilities = extract_latest_ttm_total_long_term_liabilities(bytes_data)
-                    try:
-                        ttm_tltl_year = int(str(as_of_total_long_term_liabilities)[:4])
-                        annual_total_long_term_liabilities[ttm_tltl_year] = float(ttm_total_long_term_liabilities)
-                    except Exception:
-                        pass
-
-                    # Extract Total Debt (annual + TTM) from Balance Sheet
-                    annual_total_debt = extract_annual_total_debt_series(bytes_data)
-                    as_of_total_debt, ttm_total_debt = extract_latest_ttm_total_debt(bytes_data)
-                    try:
-                        ttm_td_year = int(str(as_of_total_debt)[:4])
-                        annual_total_debt[ttm_td_year] = float(ttm_total_debt)
-                    except Exception:
-                        pass
-
-                    # Extract Market Capitalization (annual + latest TTM) from Ratios
-                    annual_market_capitalization = extract_annual_market_capitalization_series(bytes_data)
-                    as_of_market_capitalization, ttm_market_capitalization = extract_latest_ttm_market_capitalization(bytes_data)
-
-                    # Use annual ratios up to the prior fiscal year, and the latest Ratios-TTM value for the current year
-                    try:
-                        ttm_mc_year = int(str(as_of_market_capitalization)[:4])
-                        prev_year = ttm_mc_year - 1
-                        # Keep only years up to the prior year from Ratios-Annual
-                        annual_market_capitalization = {
-                            int(y): float(v)
-                            for y, v in annual_market_capitalization.items()
-                            if int(y) <= int(prev_year)
-                        }
-                        annual_market_capitalization[int(ttm_mc_year)] = float(ttm_market_capitalization)
-                    except Exception:
-                        pass
-
-                    # Extract Last Close Price (annual + latest TTM) from Ratios
-                    annual_last_close_price = extract_annual_last_close_price_series(bytes_data)
-                    as_of_last_close_price, ttm_last_close_price = extract_latest_ttm_last_close_price(bytes_data)
-                    try:
-                        ttm_lcp_year = int(str(as_of_last_close_price)[:4])
-                        prev_year = ttm_lcp_year - 1
-                        annual_last_close_price = {
-                            int(y): float(v)
-                            for y, v in annual_last_close_price.items()
-                            if int(y) <= int(prev_year)
-                        }
-                        annual_last_close_price[int(ttm_lcp_year)] = float(ttm_last_close_price)
-                    except Exception:
-                        pass
-
-                    # Extract Return on Invested Capital (ROIC)% (annual + latest TTM) from Ratios
-                    annual_roic_direct_upload = extract_annual_roic_direct_upload_series(bytes_data)
-                    as_of_roic, ttm_roic = extract_latest_ttm_roic_direct_upload(bytes_data)
-
-                    def _to_pct_points(v: float) -> float:
-                        # Many ratios come as fractions (0.26 == 26%). For ROIC we store percentage points.
-                        fv = float(v)
-                        return fv * 100.0 if abs(fv) <= 1.5 else fv
-
-                    # Use annual ratios up to the prior fiscal year, and the latest Ratios-TTM value for the current year
-                    try:
-                        ttm_roic_year = int(str(as_of_roic)[:4])
-                        prev_year = ttm_roic_year - 1
-                        annual_roic_direct_upload = {
-                            int(y): _to_pct_points(v)
-                            for y, v in annual_roic_direct_upload.items()
-                            if int(y) <= int(prev_year)
-                        }
-                        annual_roic_direct_upload[int(ttm_roic_year)] = _to_pct_points(ttm_roic)
-                    except Exception:
-                        annual_roic_direct_upload = {int(y): _to_pct_points(v) for y, v in annual_roic_direct_upload.items()}
-
-                    # Extract Shares Outstanding (Basic) (annual + TTM) from Income
-                    annual_shares_outstanding_basic = extract_annual_shares_outstanding_basic_series(bytes_data)
-                    as_of_shares_outstanding_basic, ttm_shares_outstanding_basic = extract_latest_ttm_shares_outstanding_basic(bytes_data)
-                    try:
-                        ttm_sob_year = int(str(as_of_shares_outstanding_basic)[:4])
-                        annual_shares_outstanding_basic[ttm_sob_year] = float(ttm_shares_outstanding_basic)
-                    except Exception:
-                        pass
-
-                    # Extract Current Debt (annual + TTM) from Balance Sheet
-                    annual_current_debt = extract_annual_current_debt_series(bytes_data)
-                    as_of_current_debt, ttm_current_debt = extract_latest_ttm_current_debt(bytes_data)
-                    try:
-                        ttm_cd_year = int(str(as_of_current_debt)[:4])
-                        annual_current_debt[ttm_cd_year] = float(ttm_current_debt)
-                    except Exception:
-                        pass
-
-                    # Extract Cash & Cash Equivalents (annual + TTM) from Balance Sheet
-                    annual_cash_and_cash_equivalents = extract_annual_cash_and_cash_equivalents_series(bytes_data)
-                    as_of_cash_and_cash_equivalents, ttm_cash_and_cash_equivalents = extract_latest_ttm_cash_and_cash_equivalents(bytes_data)
-                    try:
-                        ttm_cce_year = int(str(as_of_cash_and_cash_equivalents)[:4])
-                        annual_cash_and_cash_equivalents[ttm_cce_year] = float(ttm_cash_and_cash_equivalents)
-                    except Exception:
-                        pass
-
-                    # Extract Long-Term Investments (annual + TTM) from Balance Sheet
-                    annual_long_term_investments = extract_annual_long_term_investments_series(bytes_data)
-                    as_of_long_term_investments, ttm_long_term_investments = extract_latest_ttm_long_term_investments(bytes_data)
-                    try:
-                        ttm_lti_year = int(str(as_of_long_term_investments)[:4])
-                        annual_long_term_investments[ttm_lti_year] = float(ttm_long_term_investments)
-                    except Exception:
-                        pass
-
-                    # Compute NOPAT (Net Operating Profit After Tax) per year
-                    annual_nopat: Dict[int, float] = {}
-                    for year, ebit_val in annual_ebit.items():
-                        tax_rate = annual_tax.get(year)
-                        if tax_rate is None:
-                            continue
-                        try:
-                            annual_nopat[year] = float(ebit_val) * (1.0 - float(tax_rate))
-                        except Exception:
-                            continue
-                        pass
-
-
-            
-                    # Compute Interest Coverage Ratio (Operating Income / Interest Expense) per year
-                    annual_interest_coverage: Dict[int, float] = {}
-                    # Use all years where we have Operating Income; treat blank or zero Interest Expense as 0.01
-                    ic_years = set(annual_operating_income.keys())
-                    for year in ic_years:
-                        try:
-                            raw_ie = annual_interest_expense.get(year)
-                            if raw_ie is None:
-                                ie_val = 0.01
-                            else:
-                                ie_float = float(raw_ie)
-                                if math.isnan(ie_float) or ie_float == 0.0:
-                                    ie_val = 0.01
-                                else:
-                                    ie_val = ie_float
-                            oi_val = float(annual_operating_income.get(year, 0.0))
-                            annual_interest_coverage[year] = oi_val / ie_val
-                        except Exception:
-                            continue
-
-                    # Compute Interest Load % per year from Interest Coverage Ratio
-                    annual_interest_load_pct: Dict[int, float] = {}
-                    for year, cov in annual_interest_coverage.items():
-                        try:
-                            cov_val = float(cov)
-                            if cov_val == 0.0 or math.isnan(cov_val):
-                                # Sentinel for zero or undefined coverage
-                                annual_interest_load_pct[year] = 0.001
-                            else:
-                                annual_interest_load_pct[year] = (1.0 / cov_val) * 100.0
-                        except Exception:
-                            # If any conversion or math error occurs, fall back to a tiny sentinel value
-                            annual_interest_load_pct[year] = 0.001
-
-        # Compute Accumulated Profit (Retained Earnings + Comprehensive Income) per year
-                    annual_accumulated_profit: Dict[int, float] = {}
-                    common_years = set(annual_re.keys()) & set(annual_ci.keys())
-                    for year in common_years:
-                        try:
-                            re_val = float(annual_re[year])
-                            ci_val = float(annual_ci[year])
-                            annual_accumulated_profit[year] = re_val + ci_val
-                        except Exception:
-                            continue
-
-                                        # Compute Total Equity per year (Total Equity = Shareholders Equity)
-                    annual_total_equity: Dict[int, float] = {}
-                    for year, se_raw in annual_se.items():
-                        try:
-                            annual_total_equity[int(year)] = float(se_raw)
-                        except Exception:
-                            continue
-
-                    # Compute Average Equity per year:
-                    # Average Equity (year Y) = 0.5 × (Shareholders Equity(Y−1) + Shareholders Equity(Y))
-                    annual_average_equity: Dict[int, float] = {}
-                    for year in sorted(annual_total_equity.keys()):
-                        prev_year = year - 1
-                        if prev_year in annual_total_equity:
-                            try:
-                                avg_eq = 0.5 * (float(annual_total_equity[prev_year]) + float(annual_total_equity[year]))
-                                annual_average_equity[year] = avg_eq
-                            except Exception:
-                                continue
-
-# Compute ROE (Return on Equity) per year = Net Income of current year / Average Equity of current year
-                    annual_roe: Dict[int, float] = {}
-                    for year, avg_eq in annual_average_equity.items():
-                        ni_val = annual_ni.get(year)
-                        if ni_val is None:
-                            continue
-                        try:
-                            avg_eq_f = float(avg_eq)
-                            if avg_eq_f != 0.0:
-                                annual_roe[year] = float(ni_val) / avg_eq_f
-                        except Exception:
-                            continue
-
-
-
-
-                    # Compute Capital Employed per year = Shareholders Equity + Total Long-Term Liabilities
-                    annual_capital_employed: Dict[int, float] = {}
-                    common_ce_years = set(annual_se.keys()) & set(annual_total_long_term_liabilities.keys())
-                    for year in common_ce_years:
-                        try:
-                            se_val = float(annual_se[year])
-                            tlt_liab_val = float(annual_total_long_term_liabilities[year])
-                            annual_capital_employed[year] = se_val + tlt_liab_val
-                        except Exception:
-                            continue
-
-            
-                    # Compute ROCE (Return on Capital Employed) per year = EBIT ÷ Average Capital Employed
-                    annual_roce: Dict[int, float] = {}
-                    ce_years_sorted = sorted(annual_capital_employed.keys())
-                    for year in ce_years_sorted:
-                        prev_year = year - 1
-                        if prev_year not in annual_capital_employed:
-                            continue
-                        ebit_val = annual_ebit.get(year)
-                        if ebit_val is None:
-                            continue
-                        try:
-                            ce_current = float(annual_capital_employed[year])
-                            ce_prev = float(annual_capital_employed[prev_year])
-                            avg_ce = 0.5 * (ce_current + ce_prev)
-                            if avg_ce != 0.0:
-                                annual_roce[year] = float(ebit_val) / avg_ce
-                        except Exception:
-                            continue
-
-        # Compute Invested Capital per year = Shareholders Equity + Total Debt − Cash & Cash Equivalents − Long-Term Investments
-                    annual_invested_capital: Dict[int, float] = {}
-                    common_ic_years = (
-                        set(annual_se.keys())
-                        & set(annual_total_debt.keys())
-                        & set(annual_cash_and_cash_equivalents.keys())
-                        & set(annual_long_term_investments.keys())
+                    result = ingest_financials_bytes(
+                        file.getvalue(),
+                        company,
+                        ticker,
+                        get_db(),
                     )
-                    for year in common_ic_years:
-                        try:
-                            se_val = float(annual_se[year])
-                            debt_val = float(annual_total_debt[year])
-                            cash_val = float(annual_cash_and_cash_equivalents[year])
-                            lti_val = float(annual_long_term_investments[year])
-                            annual_invested_capital[year] = se_val + debt_val - cash_val - lti_val
-                        except Exception:
-                            continue
-
-
-                    # Compute Non-Cash Working Capital per year
-                    annual_non_cash_working_capital: Dict[int, float] = {}
-                    common_ncwc_years = (
-                        set(annual_total_current_assets.keys())
-                        & set(annual_cash_and_cash_equivalents.keys())
-                        & set(annual_total_current_liabilities.keys())
-                        & set(annual_current_debt.keys())
-                    )
-                    for year in common_ncwc_years:
-                        try:
-                            tca_val = float(annual_total_current_assets[year])
-                            cce_val = float(annual_cash_and_cash_equivalents[year])
-                            tcl_val = float(annual_total_current_liabilities[year])
-                            cd_val = float(annual_current_debt[year])
-                            annual_non_cash_working_capital[year] = (tca_val - cce_val) - (tcl_val - cd_val)
-                        except Exception:
-                            continue
-
-
-                    # Compute Revenue Yield of Non-Cash Working Capital % per year
-                    # Revenue Yield of Non-Cash Working Capital % = 1 - (Non-Cash Working Capital / Revenue)
-                    annual_revenue_yield_non_cash_working_capital: Dict[int, float] = {}
-                    common_ry_years = set(annual_non_cash_working_capital.keys()) & set(annual_rev.keys())
-                    for year in common_ry_years:
-                        try:
-                            ncwc_val = float(annual_non_cash_working_capital[year])
-                            rev_val = float(annual_rev[year])
-                            if rev_val == 0:
-                                continue
-                            annual_revenue_yield_non_cash_working_capital[year] = 1.0 - (ncwc_val / rev_val)
-                        except Exception:
-                            continue
-
-                    # Store
-                    conn = get_db()
-                    cid = upsert_company(conn, company, ticker)
-                    if quarterly_trend_inputs:
-                        quarterly_upload_counts = upsert_quarterly_business_trend_inputs(conn, cid, quarterly_trend_inputs)
-            
-                    # Remember last ingested company for default selection in dropdown
-                    st.session_state["last_ingested_company_id"] = cid
-
-                    upsert_annual_revenues(conn, cid, annual_rev)
-                    upsert_annual_cost_of_revenue(conn, cid, annual_cogs)
-                    upsert_ttm_cost_of_revenue(conn, cid, as_of_cogs, ttm_cogs)
-                    upsert_annual_sga(conn, cid, annual_sga)
-                    upsert_ttm_sga(conn, cid, as_of_sga, ttm_sga)
-                    upsert_annual_ebitda(conn, cid, annual_ebitda)
-                    upsert_ttm_ebitda(conn, cid, as_of_ebitda, ttm_ebitda)
-                    upsert_ttm(conn, cid, as_of_rev, ttm_rev)
-
-                    upsert_annual_op_margin(conn, cid, annual_om)
-                    upsert_ttm_op_margin(conn, cid, as_of_om, ttm_om)
-
-                    upsert_annual_pretax_income(conn, cid, annual_pt)
-                    upsert_ttm_pretax_income(conn, cid, as_of_pt, ttm_pt)
-
-                    upsert_annual_net_income(conn, cid, annual_ni)
-                    upsert_ttm_net_income(conn, cid, as_of_ni, ttm_ni)
-
-                    upsert_annual_eff_tax_rate(conn, cid, annual_tax)
-                    upsert_ttm_eff_tax_rate(conn, cid, as_of_tax, ttm_tax)
-
-                    upsert_annual_ebit(conn, cid, annual_ebit)
-                    upsert_ttm_ebit(conn, cid, as_of_ebit, ttm_ebit)
-
-                    upsert_annual_interest_expense(conn, cid, annual_interest_expense)
-                    upsert_ttm_interest_expense(conn, cid, as_of_interest_expense, ttm_interest_expense)
-
-                    upsert_annual_operating_income(conn, cid, annual_operating_income)
-                    upsert_ttm_operating_income(conn, cid, as_of_operating_income, ttm_operating_income)
-
-                    upsert_annual_interest_coverage(conn, cid, annual_interest_coverage)
-                    upsert_annual_interest_load(conn, cid, annual_interest_load_pct)
-
-                    # Derived: Default Spread (synthetic) from Interest Coverage Ratio
-                    try:
-                        compute_and_store_default_spread(conn, cid)
-                    except Exception:
-                        pass
-
-                    # Derived: Pre-Tax Cost of Debt = US Risk Free Rate + Default Spread
-                    try:
-                        compute_and_store_pre_tax_cost_of_debt(conn, cid)
-                    except Exception:
-                        pass
-
-                    upsert_annual_nopat(conn, cid, annual_nopat)
-
-                    upsert_annual_shareholders_equity(conn, cid, annual_se)
-                    upsert_ttm_shareholders_equity(conn, cid, as_of_se, ttm_se)
-                    upsert_annual_short_term_investments(conn, cid, annual_short_term_investments)
-                    upsert_ttm_short_term_investments(conn, cid, as_of_short_term_investments, ttm_short_term_investments)
-                    upsert_annual_accounts_receivable(conn, cid, annual_accounts_receivable)
-                    upsert_ttm_accounts_receivable(conn, cid, as_of_accounts_receivable, ttm_accounts_receivable)
-                    upsert_annual_inventory(conn, cid, annual_inventory)
-                    upsert_ttm_inventory(conn, cid, as_of_inventory, ttm_inventory)
-                    upsert_annual_accounts_payable(conn, cid, annual_accounts_payable)
-                    upsert_ttm_accounts_payable(conn, cid, as_of_accounts_payable, ttm_accounts_payable)
-
-                    upsert_annual_retained_earnings(conn, cid, annual_re)
-                    upsert_ttm_retained_earnings(conn, cid, as_of_re, ttm_re)
-
-                    upsert_annual_comprehensive_income(conn, cid, annual_ci)
-                    upsert_ttm_comprehensive_income(conn, cid, as_of_ci, ttm_ci)
-
-                    upsert_annual_accumulated_profit(conn, cid, annual_accumulated_profit)
-                    upsert_annual_total_equity(conn, cid, annual_total_equity)
-                    upsert_annual_average_equity(conn, cid, annual_average_equity)
-                    upsert_annual_roe(conn, cid, annual_roe)
-
-
-                    upsert_annual_total_assets(conn, cid, annual_total_assets)
-                    upsert_ttm_total_assets(conn, cid, as_of_total_assets, ttm_total_assets)
-
-                    upsert_annual_total_current_assets(conn, cid, annual_total_current_assets)
-                    upsert_ttm_total_current_assets(conn, cid, as_of_total_current_assets, ttm_total_current_assets)
-
-                    upsert_annual_total_current_liabilities(conn, cid, annual_total_current_liabilities)
-                    upsert_ttm_total_current_liabilities(conn, cid, as_of_total_current_liabilities, ttm_total_current_liabilities)
-
-                    upsert_annual_total_long_term_liabilities(conn, cid, annual_total_long_term_liabilities)
-                    upsert_ttm_total_long_term_liabilities(conn, cid, as_of_total_long_term_liabilities, ttm_total_long_term_liabilities)
-
-                    upsert_annual_total_debt(conn, cid, annual_total_debt)
-                    upsert_ttm_total_debt(conn, cid, as_of_total_debt, ttm_total_debt)
-
-                    upsert_annual_market_capitalization(conn, cid, annual_market_capitalization)
-                    upsert_annual_last_close_price(conn, cid, annual_last_close_price)
-                    upsert_ttm_last_close_price(conn, cid, as_of_last_close_price, ttm_last_close_price)
-
-
-                    if annual_roic_direct_upload:
-                        upsert_annual_roic_direct_upload(conn, cid, annual_roic_direct_upload)
-
-                    # Debt/Equity (Derived) = Total Debt / Market Capitalization
-                    annual_debt_equity: Dict[int, float] = {}
-                    try:
-                        common_de_years = sorted(
-                            set(annual_total_debt.keys())
-                            & set(annual_market_capitalization.keys())
-                        )
-                        for y in common_de_years:
-                            denom = float(annual_market_capitalization[y])
-                            if denom == 0.0:
-                                continue
-                            annual_debt_equity[int(y)] = float(annual_total_debt[y]) / denom
-                    except Exception:
-                        annual_debt_equity = {}
-
-                    if annual_debt_equity:
-                        upsert_annual_debt_equity(conn, cid, annual_debt_equity)
-
-
-                    # Levered Beta (Derived) = Unlevered Beta(bucket) * (1 + (1 - TaxRateUSA) * Debt/Equity)
-                    try:
-                        compute_and_store_levered_beta(conn, cid)
-                    except Exception:
-                        pass
-
-                    # Derived: Cost of Equity = US Risk Free Rate + Levered Beta * US Implied ERP
-                    try:
-                        compute_and_store_cost_of_equity(conn, cid)
-                    except Exception:
-                        pass
-
-                    # Derived: WACC = (D/V)*Rd*(1-T) + (E/V)*Re
-                    try:
-                        compute_and_store_wacc(conn, cid)
-                    except Exception:
-                        pass
-
-                    # Derived: Spread% = ROIC% - WACC% (both stored as percentage points)
-                    try:
-                        compute_and_store_roic_wacc_spread(conn, cid)
-                    except Exception:
-                        pass
-
-
-
-
-                    upsert_annual_current_debt(conn, cid, annual_current_debt)
-                    upsert_ttm_current_debt(conn, cid, as_of_current_debt, ttm_current_debt)
-
-                    upsert_annual_cash_and_cash_equivalents(conn, cid, annual_cash_and_cash_equivalents)
-                    upsert_ttm_cash_and_cash_equivalents(conn, cid, as_of_cash_and_cash_equivalents, ttm_cash_and_cash_equivalents)
-
-                    upsert_annual_shares_outstanding_basic(conn, cid, annual_shares_outstanding_basic)
-                    upsert_ttm_shares_outstanding_basic(conn, cid, as_of_shares_outstanding_basic, ttm_shares_outstanding_basic)
-
-                    upsert_annual_long_term_investments(conn, cid, annual_long_term_investments)
-                    upsert_ttm_long_term_investments(conn, cid, as_of_long_term_investments, ttm_long_term_investments)
-
-                    upsert_annual_capital_employed(conn, cid, annual_capital_employed)
-                    upsert_annual_roce(conn, cid, annual_roce)
-                    upsert_annual_invested_capital(conn, cid, annual_invested_capital)
-                    upsert_annual_non_cash_working_capital(conn, cid, annual_non_cash_working_capital)
-                    upsert_annual_revenue_yield_non_cash_working_capital(conn, cid, annual_revenue_yield_non_cash_working_capital)
-
-                    upsert_annual_research_and_development_expense(conn, cid, annual_rd)
-                    upsert_annual_net_debt_issued_paid(conn, cid, annual_net_debt_issued_paid)
-                    upsert_annual_capital_expenditures(conn, cid, annual_capex)
-                    upsert_annual_depreciation_amortization(conn, cid, annual_da)
-                    upsert_annual_operating_cash_flow(conn, cid, annual_operating_cash_flow)
-                    upsert_ttm_operating_cash_flow(conn, cid, as_of_operating_cash_flow, ttm_operating_cash_flow)
-                    upsert_annual_net_ppe(conn, cid, annual_net_ppe)
-                    upsert_ttm_net_ppe(conn, cid, as_of_net_ppe, ttm_net_ppe)
-                    upsert_annual_goodwill_and_intangibles(conn, cid, annual_goodwill_and_intangibles)
-                    upsert_ttm_goodwill_and_intangibles(conn, cid, as_of_goodwill_and_intangibles, ttm_goodwill_and_intangibles)
-                    upsert_annual_other_long_term_assets(conn, cid, annual_other_long_term_assets)
-                    upsert_ttm_other_long_term_assets(conn, cid, as_of_other_long_term_assets, ttm_other_long_term_assets)
-                    upsert_annual_deferred_revenue(conn, cid, annual_deferred_revenue)
-                    upsert_ttm_deferred_revenue(conn, cid, as_of_deferred_revenue, ttm_deferred_revenue)
-                    upsert_annual_deferred_tax_liabilities(conn, cid, annual_deferred_tax_liabilities)
-                    upsert_ttm_deferred_tax_liabilities(conn, cid, as_of_deferred_tax_liabilities, ttm_deferred_tax_liabilities)
-                    upsert_annual_other_long_term_liabilities(conn, cid, annual_other_long_term_liabilities)
-                    upsert_ttm_other_long_term_liabilities(conn, cid, as_of_other_long_term_liabilities, ttm_other_long_term_liabilities)
+                    quarterly_counts = result.get("quarterly_upload_counts", {})
+                    quarterly_rows = sum(int(value) for value in quarterly_counts.values())
+                    persisted_counts = result.get("persisted_counts", {})
+                    persisted_rows = sum(int(value) for value in persisted_counts.values())
+                    score = result.get("business_quarter_trend_score")
                     st.success(
-                        f"Ingested {company} ({ticker}). "
-                        f"Annual revenue years (with TTM year merged): {len(annual_rev)}; "
-                        f"TTM Rev as of {as_of_rev}: {ttm_rev:,.2f}. "
-                        f"Annual OpMargin years: {len(annual_om)}; TTM OpMargin as of {as_of_om}: {ttm_om}. "
-                        f"Annual Pretax Income years: {len(annual_pt)}; TTM Pretax as of {as_of_pt}: {ttm_pt:,.2f}. "
-                        f"Annual Net Income years: {len(annual_ni)}; TTM Net Income as of {as_of_ni}: {ttm_ni:,.2f}. "
-                        f"NOPAT years (derived from EBIT and Effective Tax Rate): {len(annual_nopat)}. "
-                        f"Quarterly trend rows: {sum(quarterly_upload_counts.values())}"
-                        + (f"; Business Quarter Trend Score: {business_quarter_trend_score}" if business_quarter_trend_score is not None else "")
+                        f"Ingested {company} ({ticker}) atomically: "
+                        f"{persisted_rows} statement values and {quarterly_rows} quarterly values. "
+                        f"TTM revenue as of {result['as_of_rev']}: {result['ttm_rev']:,.2f}."
+                        + (f" Business Quarter Trend Score: {score}" if score is not None else "")
                     )
-                    if quarterly_warning:
-                        st.warning(quarterly_warning)
-                    for warning in net_ppe_warnings:
+                    for warning in result.get("warnings", []):
                         st.warning(warning)
-                except Exception as e:
-                    st.error(f"Upload failed: {e}")
+                except Exception as exc:
+                    st.error(f"Upload failed: {exc}")
 
         st.markdown("---")
 
