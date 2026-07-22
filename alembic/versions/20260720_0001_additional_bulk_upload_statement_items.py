@@ -1,7 +1,7 @@
 """add annual and quarterly stores for additional bulk-upload statement items
 
 Revision ID: 20260720_0001
-Revises: 20260712_0001
+Revises: 20260718_0006
 Create Date: 2026-07-20
 """
 
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "20260720_0001"
-down_revision = "20260712_0001"
+down_revision = "20260718_0006"
 branch_labels = None
 depends_on = None
 

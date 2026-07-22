@@ -1,7 +1,7 @@
 """expose consumer common-income bridge facts
 
 Revision ID: 20260720_0007
-Revises: 20260718_0006
+Revises: 20260720_0001
 Create Date: 2026-07-20
 """
 
@@ -10,7 +10,7 @@ from sqlalchemy import text
 
 
 revision = "20260720_0007"
-down_revision = "20260718_0006"
+down_revision = "20260720_0001"
 branch_labels = None
 depends_on = None
 
