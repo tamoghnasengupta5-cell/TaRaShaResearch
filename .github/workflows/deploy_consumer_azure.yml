@@ -62,8 +62,8 @@ jobs:
 
           read -r resource_group plan_id <<< "$research_app"
           plan_name="${plan_id##*/}"
-          node_runtime="$(az webapp list-runtimes --os linux --query "[?contains(@, 'NODE') && contains(@, '22')] | [0]" --output tsv)"
-          node_runtime="${node_runtime:-NODE:22-lts}"
+          node_runtime="$(az webapp list-runtimes --os linux --query "[?runtime == 'Node.js' && contains(version, '22')].config | [0]" --output tsv)"
+          node_runtime="${node_runtime:-NODE|22-lts}"
 
           existing_app="$(az webapp list --query "[?name=='${AZURE_WEBAPP_NAME}'] | [0].name" --output tsv)"
           if [[ -z "$existing_app" ]]; then
@@ -71,7 +71,6 @@ jobs:
               --resource-group "$resource_group" \
               --plan "$plan_name" \
               --name "$AZURE_WEBAPP_NAME" \
-              --runtime "$node_runtime" \
               --output none
           fi
 
