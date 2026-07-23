@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { learningCards, metricMeta } from "./data/demo";
-import { authenticateUser, getSecurityQuestion, registerUser, resetPassword } from "./authStore";
+import { authenticateUser, getSecurityQuestion, registerUser, resetPassword, SECURITY_QUESTIONS } from "./authStore";
 import type { AuthenticatedUser } from "./authStore";
 import { formatMetric, latest, percentChange } from "./domain";
 import { liveDataEnabled, MAX_SESSION_COMPANIES, MAX_YEAR_RANGE, pullCompanyResearch, recalculateIndustryConstituents, searchCompanyCatalog } from "./liveData";
@@ -191,6 +191,11 @@ function Home({ navigate, isAuthenticated }: {
 
 function LoginPage({ onAuthenticated, navigate }: { onAuthenticated: (user: AuthenticatedUser) => void; navigate: (page: Page) => void }) {
   const [mode, setMode] = useState<"login" | "register" | "forgot">("login");
+  const [registeredUsername, setRegisteredUsername] = useState("");
+  const showLogin = (username = registeredUsername) => {
+    setRegisteredUsername(username);
+    setMode("login");
+  };
   return <section className="auth-page">
     <div className="auth-intro">
       <p className="eyebrow">Private research workspace</p>
@@ -200,18 +205,18 @@ function LoginPage({ onAuthenticated, navigate }: { onAuthenticated: (user: Auth
     </div>
     <div className="auth-panel">
       <div className="auth-tabs" role="tablist">
-        <button role="tab" aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => setMode("login")}>Existing user</button>
+        <button role="tab" aria-selected={mode === "login"} className={mode === "login" ? "active" : ""} onClick={() => showLogin()}>Existing user</button>
         <button role="tab" aria-selected={mode === "register"} className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>New user</button>
       </div>
-      {mode === "login" && <LoginForm onAuthenticated={onAuthenticated} showForgot={() => setMode("forgot")} />}
-      {mode === "register" && <RegistrationForm onAuthenticated={onAuthenticated} />}
-      {mode === "forgot" && <ForgotPasswordForm returnToLogin={() => setMode("login")} />}
+      {mode === "login" && <LoginForm onAuthenticated={onAuthenticated} showForgot={() => setMode("forgot")} initialUsername={registeredUsername} />}
+      {mode === "register" && <RegistrationForm onRegistered={setRegisteredUsername} showLogin={showLogin} />}
+      {mode === "forgot" && <ForgotPasswordForm returnToLogin={() => showLogin()} />}
     </div>
   </section>;
 }
 
-function LoginForm({ onAuthenticated, showForgot }: { onAuthenticated: (user: AuthenticatedUser) => void; showForgot: () => void }) {
-  const [username, setUsername] = useState("");
+function LoginForm({ onAuthenticated, showForgot, initialUsername = "" }: { onAuthenticated: (user: AuthenticatedUser) => void; showForgot: () => void; initialUsername?: string }) {
+  const [username, setUsername] = useState(initialUsername);
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -231,21 +236,30 @@ function LoginForm({ onAuthenticated, showForgot }: { onAuthenticated: (user: Au
   </form>;
 }
 
-function RegistrationForm({ onAuthenticated }: { onAuthenticated: (user: AuthenticatedUser) => void }) {
+function RegistrationForm({ onRegistered, showLogin }: { onRegistered: (username: string) => void; showLogin: (username: string) => void }) {
   const [fields, setFields] = useState({ name: "", securityQuestion: "", securityAnswer: "", username: "", password: "" });
   const [message, setMessage] = useState<string | null>(null);
+  const [createdUsername, setCreatedUsername] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const update = (key: keyof typeof fields, value: string) => setFields((current) => ({ ...current, [key]: value }));
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setBusy(true); setMessage(null);
-    try { onAuthenticated(await registerUser(fields)); }
+    try {
+      const user = await registerUser(fields);
+      setCreatedUsername(user.username);
+      onRegistered(user.username);
+    }
     catch (error) { setMessage(error instanceof Error ? error.message : "Registration failed."); }
     finally { setBusy(false); }
   };
+  if (createdUsername) return <div className="auth-form registration-success">
+    <div><small>Account created</small><h2>Registration complete</h2><p>Your account has been created. Sign in to begin a new authenticated session.</p></div>
+    <div className="auth-message success" role="status"><strong>{createdUsername}</strong> is created successfully, login <a href="#/login" onClick={(event) => { event.preventDefault(); showLogin(createdUsername); }}>here</a>.</div>
+  </div>;
   return <form className="auth-form registration-form" onSubmit={submit}>
     <div><small>Create your workspace</small><h2>Register</h2><p>Your recovery answer is checked only when you reset your password.</p></div>
     <label>Name<input autoComplete="name" value={fields.name} onChange={(event) => update("name", event.target.value)} required /></label>
-    <label>Security question<input value={fields.securityQuestion} onChange={(event) => update("securityQuestion", event.target.value)} placeholder="A question only you can answer" required /></label>
+    <label>Security question<select value={fields.securityQuestion} onChange={(event) => update("securityQuestion", event.target.value)} required><option value="" disabled>Select a security question</option>{SECURITY_QUESTIONS.map((question) => <option key={question} value={question}>{question}</option>)}</select></label>
     <label>Answer<input type="password" autoComplete="off" value={fields.securityAnswer} onChange={(event) => update("securityAnswer", event.target.value)} required /></label>
     <label>Username<input autoComplete="username" value={fields.username} onChange={(event) => update("username", event.target.value)} required /></label>
     <label>Password<input type="password" autoComplete="new-password" minLength={8} value={fields.password} onChange={(event) => update("password", event.target.value)} required /><small>At least 8 characters</small></label>

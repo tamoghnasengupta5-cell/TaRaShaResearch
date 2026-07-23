@@ -9,6 +9,16 @@ export interface RegistrationInput extends AuthenticatedUser {
   password: string;
 }
 
+export const SECURITY_QUESTIONS = [
+  "What was the name of your first pet?",
+  "What was the name of the street you grew up on?",
+  "What was the name of your first school?",
+  "What was your childhood nickname?",
+  "What is the first name of your oldest cousin?",
+  "What was the make of your first car?",
+  "What was the first company you worked for?",
+] as const;
+
 interface StoredUser extends AuthenticatedUser {
   securityQuestion: string;
   passwordSalt: string;
@@ -62,7 +72,9 @@ export async function registerUser(input: RegistrationInput, storage: Storage = 
   const securityQuestion = input.securityQuestion.trim();
   if (name.length < 2) throw new Error("Enter your full name.");
   if (!/^[a-zA-Z0-9._-]{3,32}$/.test(username)) throw new Error("Username must be 3–32 characters and use only letters, numbers, dots, hyphens, or underscores.");
-  if (securityQuestion.length < 5) throw new Error("Enter a security question you will remember.");
+  if (!SECURITY_QUESTIONS.includes(securityQuestion as typeof SECURITY_QUESTIONS[number])) {
+    throw new Error("Choose a security question from the list.");
+  }
   if (!input.securityAnswer.trim()) throw new Error("Enter an answer to your security question.");
   if (input.password.length < 8) throw new Error("Password must contain at least 8 characters.");
 

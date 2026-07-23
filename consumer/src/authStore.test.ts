@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { authenticateUser, getSecurityQuestion, registerUser, resetPassword } from "./authStore";
+import { authenticateUser, getSecurityQuestion, registerUser, resetPassword, SECURITY_QUESTIONS } from "./authStore";
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -14,7 +14,7 @@ class MemoryStorage implements Storage {
 const registration = {
   name: "Ada Lovelace",
   username: "ada.research",
-  securityQuestion: "What was my first research topic?",
+  securityQuestion: SECURITY_QUESTIONS[2],
   securityAnswer: "Analytical Engines",
   password: "evidence-first",
 };
@@ -37,5 +37,14 @@ describe("local authentication store", () => {
     await resetPassword(registration.username, "  analytical   engines ", "new-password", storage);
     await expect(authenticateUser(registration.username, registration.password, storage)).rejects.toThrow("incorrect");
     await expect(authenticateUser(registration.username, "new-password", storage)).resolves.toMatchObject({ username: registration.username });
+  });
+
+  it("accepts only a security question from the registration list", async () => {
+    const storage = new MemoryStorage();
+    await expect(registerUser({
+      ...registration,
+      securityQuestion: "What is a question I invented?",
+    }, storage)).rejects.toThrow("Choose a security question from the list.");
+    expect(storage.length).toBe(0);
   });
 });

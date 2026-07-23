@@ -68,14 +68,17 @@ main { min-height: 70vh; }
 .auth-form > div:first-child > p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .auth-form label { display: flex; flex-direction: column; gap: 7px; color: #463b2f; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
 .auth-form label > small { color: var(--muted); font-size: 9px; font-weight: 500; text-transform: none; letter-spacing: 0; }
-.auth-form input { width: 100%; min-height: 46px; padding: 10px 12px; color: var(--ink); border: 1px solid #cfbea0; border-radius: 2px; outline: none; background: #fff; font-size: 14px; text-transform: none; letter-spacing: 0; }
-.auth-form input:focus { border-color: #a77922; box-shadow: 0 0 0 3px rgba(183,137,48,.12); }
+.auth-form input, .auth-form select { width: 100%; min-height: 46px; padding: 10px 12px; color: var(--ink); border: 1px solid #cfbea0; border-radius: 2px; outline: none; background: #fff; font-family: inherit; font-size: 14px; text-transform: none; letter-spacing: 0; }
+.auth-form select { cursor: pointer; }
+.auth-form input:focus, .auth-form select:focus { border-color: #a77922; box-shadow: 0 0 0 3px rgba(183,137,48,.12); }
 .auth-form .button { width: 100%; margin-top: 4px; }
 .auth-form button:disabled { cursor: wait; opacity: .65; }
 .forgot-link { align-self: center; padding: 2px; color: #77591e; border: 0; background: none; cursor: pointer; font-size: 11px; font-weight: 700; }
 .auth-message { padding: 11px 13px; border-left: 3px solid; font-size: 11px; line-height: 1.5; }
 .auth-message.error { color: #7b3030; border-color: #a54b4b; background: #f7e9e5; }
 .auth-message.success { color: #275b45; border-color: #3f7b5f; background: #e6f1e9; }
+.auth-message.success a { color: #174d38; font-weight: 750; text-decoration: underline; text-underline-offset: 2px; }
+.registration-success { min-height: 350px; justify-content: center; }
 .auth-inline { display: grid; grid-template-columns: 1fr auto; }
 .auth-inline button { padding: 0 13px; color: #614818; border: 1px solid #cfbea0; border-left: 0; background: #eee4cf; cursor: pointer; font-size: 10px; font-weight: 700; }
 .security-question { padding: 14px 15px; border-left: 3px solid #b98b34; background: #f0e7d6; display: flex; flex-direction: column; gap: 5px; }
