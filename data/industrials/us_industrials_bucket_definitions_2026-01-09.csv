@@ -1,0 +1,13 @@
+Industry Bucket,Mapped Sector,Unlevered Beta,Cash-Adjusted Beta,Beta Source Date,Beta Method
+Industrials : Aerospace & Defense,Aerospace/Defense,0.85,0.87,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+"Industrials : Electrical, Automation & Grid Equipment",Electrical Equipment (US),1.15,1.19,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+Industrials : Industrial Machinery & Components,Machinery + Metal Fabricating,0.84,0.86,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+"Industrials : Construction, Engineering & Building Systems",Engineering/Construction + Construction Supplies,1.06,1.1,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+Industrials : Heavy Equipment & Industrial Rentals,Machinery,0.87,0.89,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+"Industrials : Freight, Logistics & Rail",Transportation + Trucking + Railroads,0.77,0.8,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+Industrials : Aviation & Airport Services,Air Transport,0.7,0.76,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+Industrials : Marine Transportation,Shipbuilding & Marine,0.64,0.66,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+Industrials : Environmental & Waste Services,Environmental & Waste Services,0.81,0.82,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+"Industrials : Professional, Security & Workforce Services",Business & Consumer Services,0.77,0.81,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+Industrials : Industrial Distribution & Business Equipment,Retail (Distributors) + Office Equipment & Services,0.82,0.84,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
+Industrials : Diversified Industrials & Infrastructure,Diversified + Infrastructure Operations,0.82,0.87,2026-01-09,Damodaran US industry beta; constituent-count weighted when consolidated; rounded to 2 decimals
