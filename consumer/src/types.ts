@@ -149,6 +149,7 @@ export interface CompanyDeltaPoint {
   revenueChangePercent: number | null;
   grossProfit: number | null;
   grossProfitChangePercent: number | null;
+  grossOperatingLeverage: number | null;
   operatingIncome: number | null;
   operatingIncomeChangePercent: number | null;
 }
@@ -168,6 +169,7 @@ export interface RawIncomePoint {
   revenueChangePercent: number | null;
   grossProfit: number | null;
   grossProfitChangePercent: number | null;
+  grossOperatingLeverage: number | null;
   operatingIncome: number | null;
   operatingIncomeChangePercent: number | null;
 }
@@ -192,6 +194,7 @@ export interface ResearchShelfAnalysis {
   growthComparisons: {
     revenue: GrowthComparison;
     grossProfit: GrowthComparison;
+    grossOperatingLeverage: GrowthComparison;
     operatingIncome: GrowthComparison;
   };
   companyDeltas: CompanyDeltaPoint[];

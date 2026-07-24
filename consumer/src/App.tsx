@@ -851,7 +851,7 @@ function metricSpreadTakeaway(data: InsightMetricData): string {
     : `The company’s spread was ${Math.abs(difference).toFixed(1)} pts wider, so its annual results were less steady than the bucket.`;
 }
 
-function MetricInsightCard({ label, data, aboveMeaning, belowMeaning }: { label: string; data: InsightMetricData; aboveMeaning?: string; belowMeaning?: string }) {
+function MetricInsightCard({ label, data, aboveMeaning, belowMeaning, methodology }: { label: string; data: InsightMetricData; aboveMeaning?: string; belowMeaning?: string; methodology?: { formula: string; meaning: string } }) {
   const [excludeExtremeOutliers, setExcludeExtremeOutliers] = useState(false);
   const distributionFingerprint = data.bucketDistribution.map((observation) => `${observation.label}:${observation.value}`).join("|");
   useEffect(() => setExcludeExtremeOutliers(false), [distributionFingerprint]);
@@ -871,6 +871,7 @@ function MetricInsightCard({ label, data, aboveMeaning, belowMeaning }: { label:
         : { label: medianDifference > 0 ? "Above bucket" : "Below bucket", tone: "comparison" };
   return <article className="metric-insight-card">
     <header><h6>{label}</h6><span className={`metric-summary-badge ${badge.tone}`}>{badge.label}</span></header>
+    {methodology && <aside className="metric-methodology"><strong>How the application derives it</strong><code>{methodology.formula}</code><p>{methodology.meaning}</p></aside>}
     <p className="metric-primary-takeaway">{metricComparisonTakeaway(label, data, aboveMeaning, belowMeaning)}</p>
     <MetricComparisonBars label="Typical result (median)" companyValue={data.companyMedian} bucketValue={data.bucketMedian} />
     <section className="metric-spread-section">
@@ -1009,15 +1010,25 @@ function formatLevelPoints(value: number | null): string {
 }
 
 function GrowthComparisonTable({ shelf }: { shelf: ResearchShelfAnalysis["growthComparisons"] }) {
-  const rows: Array<{ label: string; comparison: GrowthComparison }> = [
+  const rows: Array<{ label: string; comparison: GrowthComparison; aboveMeaning?: string; belowMeaning?: string; methodology?: { formula: string; meaning: string } }> = [
     { label: "Revenue growth", comparison: shelf.revenue },
     { label: "Gross profit growth", comparison: shelf.grossProfit },
+    {
+      label: "Gross Operating Leverage",
+      comparison: shelf.grossOperatingLeverage,
+      aboveMeaning: "When revenue expanded, more of each additional revenue unit reached gross profit; review declining-revenue periods separately.",
+      belowMeaning: "When revenue expanded, less of each additional revenue unit reached gross profit; a negative result means revenue and gross profit moved in opposite directions.",
+      methodology: {
+        formula: "((Current gross profit − Prior gross profit) ÷ (Current revenue − Prior revenue)) × 100",
+        meaning: "This estimates how much gross profit changed for every 100 units of revenue change. It is an incremental conversion ratio, not a growth rate or a standalone quality score. Read it together with the direction of revenue: when revenue declines, the same sign can describe a contraction rather than expansion. The result is unavailable when revenue did not change.",
+      },
+    },
     { label: "Operating income growth", comparison: shelf.operatingIncome },
   ];
   return (
     <section className="statistics-summary growth-statistics-summary">
       <StatisticalReadingGuide />
-      <div className="metric-insight-grid growth-insight-grid">{rows.map(({ label, comparison }) => <MetricInsightCard key={label} label={label} data={{
+      <div className="metric-insight-grid growth-insight-grid">{rows.map(({ label, comparison, aboveMeaning, belowMeaning, methodology }) => <MetricInsightCard key={label} label={label} data={{
         companyMedian: comparison.company.median,
         companySpread: comparison.company.standardDeviation,
         companyObservations: comparison.company.observations,
@@ -1026,7 +1037,7 @@ function GrowthComparisonTable({ shelf }: { shelf: ResearchShelfAnalysis["growth
         bucketSpread: comparison.industryBucket.standardDeviation,
         bucketObservations: comparison.industryBucket.observations,
         bucketDistribution: comparison.industryBucket.distribution,
-      }} />)}</div>
+      }} aboveMeaning={aboveMeaning} belowMeaning={belowMeaning} methodology={methodology} />)}</div>
     </section>
   );
 }
@@ -1104,8 +1115,13 @@ function ClusteredColumnChart({ title, subtitle, absoluteUnit, data, series }: {
   );
 }
 
+function GrossOperatingLeverageCell({ value }: { value: number | null }) {
+  const tone = value === null || !Number.isFinite(value) ? "unavailable" : value < 0 ? "negative" : "positive";
+  return <td className={`gross-operating-leverage-cell ${tone}`} title="Change in gross profit divided by change in revenue. Interpret this ratio together with the direction of revenue."><span>{formatLevelPercent(value)}</span></td>;
+}
+
 function RawIncomeTable({ company, rows }: { company: Company; rows: RawIncomePoint[] }) {
-  return <section className="raw-income-section"><div className="shelf-chart-heading"><div><h5>Company reported figures and YoY movement</h5><p>Raw annual values for the selected range</p></div><span>{company.currency.startsWith("US$") ? "USD millions" : "INR crores"}</span></div><div className="growth-band-key"><span className="negative">Negative &lt; 0%</span><span className="moderate">Moderate 0–15%</span><span className="good">Good 15–32%</span><span className="excellent">Excellent &gt; 32%</span></div><div className="raw-income-table-wrap" data-horizontal-scroll><table className="raw-income-table"><thead><tr><th>Fiscal year</th><th>Revenue</th><th>YoY revenue change</th><th>Gross profit</th><th>YoY gross profit change</th><th>Operating income</th><th>YoY operating income change</th></tr></thead><tbody>{rows.map((row) => <tr key={row.year}><th>FY {row.year}</th><td>{formatNullableAmount(company, row.revenue)}</td><GrowthBandCell value={row.revenueChangePercent} /><td>{formatNullableAmount(company, row.grossProfit)}</td><GrowthBandCell value={row.grossProfitChangePercent} /><td>{formatNullableAmount(company, row.operatingIncome)}</td><GrowthBandCell value={row.operatingIncomeChangePercent} /></tr>)}</tbody></table></div></section>;
+  return <section className="raw-income-section"><div className="shelf-chart-heading"><div><h5>Company reported figures and YoY movement</h5><p>Raw annual values for the selected range</p></div><span>{company.currency.startsWith("US$") ? "USD millions" : "INR crores"}</span></div><div className="growth-band-key"><span className="negative">Negative &lt; 0%</span><span className="moderate">Moderate 0–15%</span><span className="good">Good 15–32%</span><span className="excellent">Excellent &gt; 32%</span></div><div className="raw-income-table-wrap" data-horizontal-scroll><table className="raw-income-table"><thead><tr><th>Fiscal year</th><th>Revenue</th><th>YoY revenue change</th><th>Gross profit</th><th>YoY gross profit change</th><th>Gross Operating Leverage</th><th>Operating income</th><th>YoY operating income change</th></tr></thead><tbody>{rows.map((row) => <tr key={row.year}><th>FY {row.year}</th><td>{formatNullableAmount(company, row.revenue)}</td><GrowthBandCell value={row.revenueChangePercent} /><td>{formatNullableAmount(company, row.grossProfit)}</td><GrowthBandCell value={row.grossProfitChangePercent} /><GrossOperatingLeverageCell value={row.grossOperatingLeverage} /><td>{formatNullableAmount(company, row.operatingIncome)}</td><GrowthBandCell value={row.operatingIncomeChangePercent} /></tr>)}</tbody></table></div></section>;
 }
 
 function IndustryConstituentManager({ constituents, customized, country, busy, message, onChange }: {

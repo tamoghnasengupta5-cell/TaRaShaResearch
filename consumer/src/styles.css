@@ -242,6 +242,10 @@ h1, h2 { font-family: "Source Serif 4", Georgia, serif; letter-spacing: -.025em;
 .metric-insight-card { min-width: 0; padding: 17px; border: 1px solid #d3dee6; border-top: 3px solid #5f87a5; background: #fff; box-shadow: 0 8px 22px rgba(50,78,98,.06); }
 .metric-insight-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .metric-insight-card h6 { margin: 0; color: #2e3e49; font: 600 19px/1.08 "Source Serif 4", serif; }
+.metric-methodology { display: grid; gap: 7px; margin: 13px 0 4px; padding: 12px 13px; border-left: 3px solid #4f7fa6; background: #edf4f8; }
+.metric-methodology strong { color: #315f86; font-size: 8px; text-transform: uppercase; letter-spacing: .07em; }
+.metric-methodology code { overflow-wrap: anywhere; color: #29495f; font: 700 9px/1.5 "IBM Plex Mono", monospace; }
+.metric-methodology p { margin: 0; color: #5f7180; font-size: 8.5px; line-height: 1.55; }
 .metric-summary-badge { flex: 0 0 auto; padding: 5px 7px; color: #315d7c; border: 1px solid #bad0df; border-radius: 999px; background: #e9f1f6; font-size: 7px; font-weight: 800; text-transform: uppercase; letter-spacing: .05em; }
 .metric-summary-badge.negative { color: #843841; border-color: #dfb1b5; background: #f8e4e5; }
 .metric-summary-badge.neutral { color: #626d74; border-color: #d1d8dc; background: #f1f3f4; }
@@ -399,6 +403,10 @@ h1, h2 { font-family: "Source Serif 4", Georgia, serif; letter-spacing: -.025em;
 .raw-income-section { margin-top: 28px; }
 .raw-income-table tbody th { color: #6d501c; }
 .raw-income-table td { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.gross-operating-leverage-cell span { display: inline-block; min-width: 82px; padding: 6px 9px; border-radius: 999px; font-weight: 800; text-align: center; }
+.gross-operating-leverage-cell.positive span { color: #315d7c; background: #cfe0eb; }
+.gross-operating-leverage-cell.negative span { color: #842e31; background: #f5ceca; }
+.gross-operating-leverage-cell.unavailable span { color: #7d7468; background: #e7e1d7; }
 .growth-band-key { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
 .growth-band-key span, .growth-band span { display: inline-block; border-radius: 999px; font-weight: 800; }
 .growth-band-key span { padding: 5px 9px; font-size: 8px; }

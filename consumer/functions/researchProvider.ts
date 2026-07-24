@@ -205,6 +205,16 @@ function sampleStandardDeviation(values: number[]): number | null {
   return Math.sqrt(values.reduce((total, value) => total + ((value - average) ** 2), 0) / (values.length - 1));
 }
 
+export function calculateGrossOperatingLeverage(
+  currentGrossProfit: number,
+  priorGrossProfit: number,
+  currentRevenue: number,
+  priorRevenue: number,
+): number | null {
+  const revenueChange = currentRevenue - priorRevenue;
+  return revenueChange === 0 ? null : ((currentGrossProfit - priorGrossProfit) / revenueChange) * 100;
+}
+
 export function growthStatistics(series: YearValue[]): GrowthStatistics {
   const sorted = [...series].sort((left, right) => left.year - right.year);
   const growthRates = growthRateObservations(sorted);
@@ -226,6 +236,28 @@ function growthRateObservations(series: YearValue[], owner = "Company"): Distrib
     }
   }
   return growthRates;
+}
+
+function grossOperatingLeverageObservations(
+  revenue: YearValue[],
+  grossProfit: YearValue[],
+  owner = "Company",
+): DistributionObservation[] {
+  const revenueByYear = new Map(revenue.map((item) => [item.year, item.value]));
+  const grossProfitByYear = new Map(grossProfit.map((item) => [item.year, item.value]));
+  return [...revenueByYear.keys()].sort((left, right) => left - right).flatMap((year) => {
+    const currentRevenue = revenueByYear.get(year);
+    const priorRevenue = revenueByYear.get(year - 1);
+    const currentGrossProfit = grossProfitByYear.get(year);
+    const priorGrossProfit = grossProfitByYear.get(year - 1);
+    if (currentRevenue === undefined || priorRevenue === undefined || currentGrossProfit === undefined || priorGrossProfit === undefined) return [];
+    const value = calculateGrossOperatingLeverage(currentGrossProfit, priorGrossProfit, currentRevenue, priorRevenue);
+    if (value === null) return [];
+    return [{
+      label: `${owner} · FY ${year - 1}–${year}`,
+      value,
+    }];
+  });
 }
 
 function growthRatesForSeries(series: YearValue[]): number[] {
@@ -250,6 +282,24 @@ function growthStatisticsForRates(distribution: DistributionObservation[], first
 function pooledIndustryGrowthStatistics(seriesByCompany: Map<number, YearValue[]>, companyLabels: Map<number, string>): GrowthStatistics {
   const growthRates = [...seriesByCompany.entries()].flatMap(([companyId, series]) => growthRateObservations(series, companyLabels.get(companyId) ?? `Bucket company ${companyId}`));
   return growthStatisticsForRates(growthRates);
+}
+
+function grossOperatingLeverageStatistics(revenue: YearValue[], grossProfit: YearValue[], owner = "Company"): GrowthStatistics {
+  return growthStatisticsForRates(grossOperatingLeverageObservations(revenue, grossProfit, owner));
+}
+
+function pooledIndustryGrossOperatingLeverageStatistics(
+  revenueByCompany: Map<number, YearValue[]>,
+  grossProfitByCompany: Map<number, YearValue[]>,
+  companyLabels: Map<number, string>,
+): GrowthStatistics {
+  const distribution = [...revenueByCompany.entries()].flatMap(([companyId, revenue]) => {
+    const grossProfit = grossProfitByCompany.get(companyId);
+    return grossProfit
+      ? grossOperatingLeverageObservations(revenue, grossProfit, companyLabels.get(companyId) ?? `Bucket company ${companyId}`)
+      : [];
+  });
+  return growthStatisticsForRates(distribution);
 }
 
 function derivedSeries(left: YearValue[], right: YearValue[], operation: (a: number, b: number) => number): YearValue[] {
@@ -301,13 +351,18 @@ function companyDeltaPoints(
   const operatingIncomeChanges = percentChangeSeries(operatingIncome);
   return Array.from({ length: Math.max(0, toYear - fromYear) }, (_, index) => {
     const year = fromYear + index + 1;
+    const revenueDelta = nullableValueByYear(revenueDeltas, year);
+    const grossProfitDelta = nullableValueByYear(grossProfitDeltas, year);
     return {
       fromYear: year - 1,
       toYear: year,
-      revenue: nullableValueByYear(revenueDeltas, year),
+      revenue: revenueDelta,
       revenueChangePercent: nullableValueByYear(revenueChanges, year),
-      grossProfit: nullableValueByYear(grossProfitDeltas, year),
+      grossProfit: grossProfitDelta,
       grossProfitChangePercent: nullableValueByYear(grossProfitChanges, year),
+      grossOperatingLeverage: revenueDelta === null || revenueDelta === 0 || grossProfitDelta === null
+        ? null
+        : (grossProfitDelta / revenueDelta) * 100,
       operatingIncome: nullableValueByYear(operatingIncomeDeltas, year),
       operatingIncomeChangePercent: nullableValueByYear(operatingIncomeChanges, year),
     };
@@ -360,6 +415,14 @@ function rawIncomePoints(
       ? null
       : ((current - previous) / Math.abs(previous)) * 100;
   };
+  const grossOperatingLeverage = (year: number): number | null => {
+    const currentRevenue = revenueByYear.get(year);
+    const priorRevenue = revenueByYear.get(year - 1);
+    const currentGrossProfit = grossProfitByYear.get(year);
+    const priorGrossProfit = grossProfitByYear.get(year - 1);
+    if (currentRevenue === undefined || priorRevenue === undefined || currentGrossProfit === undefined || priorGrossProfit === undefined) return null;
+    return calculateGrossOperatingLeverage(currentGrossProfit, priorGrossProfit, currentRevenue, priorRevenue);
+  };
   return Array.from({ length: toYear - fromYear + 1 }, (_, index) => {
     const year = fromYear + index;
     return {
@@ -368,6 +431,7 @@ function rawIncomePoints(
       revenueChangePercent: growth(revenueByYear, year),
       grossProfit: grossProfitByYear.get(year) ?? null,
       grossProfitChangePercent: growth(grossProfitByYear, year),
+      grossOperatingLeverage: grossOperatingLeverage(year),
       operatingIncome: operatingIncomeByYear.get(year) ?? null,
       operatingIncomeChangePercent: growth(operatingIncomeByYear, year),
     };
@@ -1090,6 +1154,10 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
         grossProfit: {
           company: growthStatistics(grossProfit),
           industryBucket: pooledIndustryGrowthStatistics(industryGrossProfit, industryCompanyLabels),
+        },
+        grossOperatingLeverage: {
+          company: grossOperatingLeverageStatistics(revenue, grossProfit),
+          industryBucket: pooledIndustryGrossOperatingLeverageStatistics(industryRevenue, industryGrossProfit, industryCompanyLabels),
         },
         operatingIncome: {
           company: growthStatistics(operatingIncome),

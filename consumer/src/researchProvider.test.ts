@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { growthStatistics, pullResearchCompany, searchResearchCompanies } from "../functions/researchProvider";
+import { calculateGrossOperatingLeverage, growthStatistics, pullResearchCompany, searchResearchCompanies } from "../functions/researchProvider";
 
 const env = { SHARED_RESEARCH_URL: "https://research.example", SHARED_RESEARCH_SERVICE_KEY: "server-secret" };
 
@@ -128,6 +128,11 @@ describe("shared Research provider", () => {
       { label: "Peer India (PEER) · FY 2024–2025", value: 10 },
     ]));
     expect(company?.researchShelf?.growthComparisons.grossProfit.company.median).toBeCloseTo(100 / 3);
+    expect(company?.researchShelf?.growthComparisons.grossOperatingLeverage.company.median).toBe(50);
+    expect(company?.researchShelf?.growthComparisons.grossOperatingLeverage.industryBucket.median).toBeCloseTo(325 / 6);
+    expect(company?.researchShelf?.growthComparisons.grossOperatingLeverage.industryBucket.distribution).toEqual(expect.arrayContaining([
+      { label: "Peer India (PEER) · FY 2024–2025", value: expect.closeTo(175 / 3) },
+    ]));
     expect(company?.researchShelf?.growthComparisons.operatingIncome.industryBucket.median).toBeCloseTo(115 / 3);
     expect(company?.researchShelf?.companyDeltas[0]).toMatchObject({
       fromYear: 2024,
@@ -135,6 +140,7 @@ describe("shared Research provider", () => {
       revenue: 200,
       revenueChangePercent: 25,
       grossProfit: 100,
+      grossOperatingLeverage: 50,
       operatingIncome: 80,
     });
     expect(company?.researchShelf?.companyDeltas[0].grossProfitChangePercent).toBeCloseTo(100 / 3);
@@ -143,7 +149,7 @@ describe("shared Research provider", () => {
     expect(company?.researchShelf?.industryDeltas.revenue[0].industryMedianChangePercent).toBe(17.5);
     expect(company?.researchShelf?.industryDeltas.grossProfit[0].industryMedian).toBe(85);
     expect(company?.researchShelf?.industryDeltas.operatingIncome[0].industryMedian).toBe(49);
-    expect(company?.researchShelf?.rawIncome[1]).toMatchObject({ year: 2025, revenue: 1000, revenueChangePercent: 25, grossProfit: 400, operatingIncome: 200 });
+    expect(company?.researchShelf?.rawIncome[1]).toMatchObject({ year: 2025, revenue: 1000, revenueChangePercent: 25, grossProfit: 400, grossOperatingLeverage: 50, operatingIncome: 200 });
     expect(company?.researchShelf?.profitability.yearly[0]).toMatchObject({ year: 2024, grossMargin: 37.5, grossProfit: 300, operatingMargin: 15, operatingIncome: 120, cogsRatio: 62.5, cogs: 500, sgaRatio: 12.5, sga: 100, daRatio: 5, da: 40, rdRatio: 2.5, rd: 20 });
     expect(company?.researchShelf?.profitability.statistics.grossMargin.median).toBeCloseTo(38.75);
     expect(company?.researchShelf?.profitability.statistics.operatingMargin.standardDeviation).toBeCloseTo(Math.sqrt(12.5));
@@ -189,6 +195,12 @@ describe("shared Research provider", () => {
     expect(stats.totalChange).toBeCloseTo(32);
   });
 
+  it("calculates gross operating leverage from paired period changes", () => {
+    expect(calculateGrossOperatingLeverage(130, 100, 250, 200)).toBe(60);
+    expect(calculateGrossOperatingLeverage(80, 100, 160, 200)).toBe(50);
+    expect(calculateGrossOperatingLeverage(120, 100, 200, 200)).toBeNull();
+  });
+
   it("recalculates every industry benchmark from a custom constituent basket", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 44, name: "Example India", ticker: "EXAMPLE", country: "India", industry_bucket: "Industrial Products" }]), { status: 200 }))
@@ -218,6 +230,7 @@ describe("shared Research provider", () => {
     expect(company?.researchShelf?.industryConstituentsCustomized).toBe(true);
     expect(company?.researchShelf?.industryConstituents.map((item) => item.id)).toEqual(["research-45"]);
     expect(company?.researchShelf?.growthComparisons.revenue.industryBucket.median).toBeCloseTo(10);
+    expect(company?.researchShelf?.growthComparisons.grossOperatingLeverage.industryBucket.median).toBeCloseTo(175 / 3);
     expect(company?.researchShelf?.industryDeltas.revenue[0]).toMatchObject({ industryMedian: 120, industryMedianChangePercent: 10 });
     expect(decodeURIComponent(String(fetchMock.mock.calls[3][0]))).toContain("company_id=in.(45)");
     expect(decodeURIComponent(String(fetchMock.mock.calls[3][0]))).not.toContain("bucket_id=in.");
