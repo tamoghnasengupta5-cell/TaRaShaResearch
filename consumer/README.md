@@ -31,7 +31,9 @@ npm install
 npm run dev
 ```
 
-Open the local URL shown by Vite. No account, API key or external service is required in review mode. Search for an illustrative company, pull it, and confirm that cards appear only on the session research shelf.
+Open the local URL shown by Vite. On the owner's Mac, `npm run dev` reads the shared Research service-role key from macOS Keychain and serves the updated Research provider through Vite's server-only development middleware. The key is never sent to browser code. This full local path is required when testing a new API response field, such as peer-level Gross Operating Leverage observations.
+
+On another development machine, provide `SHARED_RESEARCH_SERVICE_KEY` only in the launching shell. Never put the service-role key in a `VITE_*` variable or a checked-in file.
 
 To use the already-provisioned live US catalogue from localhost, create `.env.local` with:
 
@@ -41,7 +43,7 @@ VITE_API_BASE_URL=
 DEV_API_TARGET=https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
 ```
 
-`npm run dev` will then proxy same-origin `/api` requests from port 5173 to the Cloudflare preview. `.env.local` is git-ignored. Restart Vite after changing it because these values are loaded when the development server starts.
+When no service-role key is available, `npm run dev` uses this optional fallback configuration and proxies same-origin `/api` requests from port 5173 to the Cloudflare preview. `.env.local` is git-ignored. Restart Vite after changing it because these values are loaded when the development server starts.
 
 ## Validate
 

@@ -142,7 +142,7 @@ async function researchFetch<T>(env: ResearchProviderEnv, path: string): Promise
     headers: { apikey: key, Authorization: `Bearer ${key}`, Accept: "application/json" },
   });
   if (!response.ok) throw new Error(`Shared Research database returned ${response.status}.`);
-  return response.json<T>();
+  return await response.json() as T;
 }
 
 async function researchFetchAll<T>(env: ResearchProviderEnv, path: string, pageSize = 1000): Promise<T[]> {

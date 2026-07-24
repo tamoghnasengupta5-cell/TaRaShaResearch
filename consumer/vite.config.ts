@@ -1,13 +1,15 @@
 import { defineConfig } from "vitest/config";
 import { loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
+import { localResearchApiPlugin } from "./localResearchDev";
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, ".", "");
-  const devApiTarget = env.DEV_API_TARGET?.replace(/\/$/, "");
+  const localResearchApi = command === "serve" ? localResearchApiPlugin() : null;
+  const devApiTarget = localResearchApi ? "" : env.DEV_API_TARGET?.replace(/\/$/, "");
 
   return {
-    plugins: [react()],
+    plugins: [react(), ...(localResearchApi ? [localResearchApi] : [])],
     base: "./",
     server: devApiTarget
       ? {
