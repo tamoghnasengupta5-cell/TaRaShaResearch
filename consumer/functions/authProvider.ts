@@ -82,7 +82,10 @@ create index if not exists consumer_auth_limits_window on consumer_auth_limits(w
 `;
 
 const encoder = new TextEncoder();
-const DEFAULT_PBKDF2_ITERATIONS = 600_000;
+// Cloudflare Workers Web Crypto currently rejects PBKDF2 requests above
+// 100,000 iterations. Credentials also receive a server-secret HMAC pepper
+// before this per-record salted derivation.
+const DEFAULT_PBKDF2_ITERATIONS = 100_000;
 const RATE_LIMIT_WINDOW_SECONDS = 15 * 60;
 const RATE_LIMIT_ATTEMPTS = 10;
 const derivedKeyCache = new Map<string, Promise<CryptoKey>>();

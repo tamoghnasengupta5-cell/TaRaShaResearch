@@ -206,6 +206,7 @@ async function registerUser(request: Request, env: Env): Promise<Response> {
       confirmPassword: String(body.confirmPassword ?? ""),
     }), 201);
   } catch (cause) {
+    if (!(cause instanceof AuthError)) console.error("Account registration failed", cause);
     return cause instanceof AuthError ? error(cause.message, cause.status) : error("Account registration is temporarily unavailable.", 503);
   }
 }
@@ -215,6 +216,7 @@ async function loginUser(request: Request, env: Env): Promise<Response> {
   try {
     return json(await authenticateAccount(env.DB, env.CONSUMER_AUTH_SECRET, String(body.username ?? ""), String(body.password ?? "")));
   } catch (cause) {
+    if (!(cause instanceof AuthError)) console.error("Account login failed", cause);
     return cause instanceof AuthError ? error(cause.message, cause.status) : error("Account login is temporarily unavailable.", 503);
   }
 }
@@ -224,6 +226,7 @@ async function userSecurityQuestion(request: Request, env: Env): Promise<Respons
   try {
     return json({ question: await securityQuestionFor(env.DB, env.CONSUMER_AUTH_SECRET, String(body.username ?? "")) });
   } catch (cause) {
+    if (!(cause instanceof AuthError)) console.error("Account recovery lookup failed", cause);
     return cause instanceof AuthError ? error(cause.message, cause.status) : error("Account recovery is temporarily unavailable.", 503);
   }
 }
@@ -241,6 +244,7 @@ async function resetUserPassword(request: Request, env: Env): Promise<Response> 
     );
     return json({ reset: true });
   } catch (cause) {
+    if (!(cause instanceof AuthError)) console.error("Account password reset failed", cause);
     return cause instanceof AuthError ? error(cause.message, cause.status) : error("Account recovery is temporarily unavailable.", 503);
   }
 }
