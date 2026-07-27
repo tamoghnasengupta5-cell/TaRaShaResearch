@@ -9,5 +9,6 @@
     "noEmit": true,
     "skipLibCheck": true
   },
-  "include": ["functions/**/*.ts"]
+  "include": ["functions/**/*.ts"],
+  "exclude": ["functions/**/*.test.ts"]
 }

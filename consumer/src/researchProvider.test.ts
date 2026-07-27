@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { growthStatistics, pullResearchCompany, searchResearchCompanies } from "../functions/researchProvider";
+import { buildCashFlowAnalysis, calculateGrossOperatingLeverage, growthStatistics, pullResearchCompany, searchResearchCompanies } from "../functions/researchProvider";
 
 const env = { SHARED_RESEARCH_URL: "https://research.example", SHARED_RESEARCH_SERVICE_KEY: "server-secret" };
 
@@ -128,6 +128,11 @@ describe("shared Research provider", () => {
       { label: "Peer India (PEER) · FY 2024–2025", value: 10 },
     ]));
     expect(company?.researchShelf?.growthComparisons.grossProfit.company.median).toBeCloseTo(100 / 3);
+    expect(company?.researchShelf?.growthComparisons.grossOperatingLeverage.company.median).toBe(50);
+    expect(company?.researchShelf?.growthComparisons.grossOperatingLeverage.industryBucket.median).toBeCloseTo(325 / 6);
+    expect(company?.researchShelf?.growthComparisons.grossOperatingLeverage.industryBucket.distribution).toEqual(expect.arrayContaining([
+      { label: "Peer India (PEER) · FY 2024–2025", value: expect.closeTo(175 / 3) },
+    ]));
     expect(company?.researchShelf?.growthComparisons.operatingIncome.industryBucket.median).toBeCloseTo(115 / 3);
     expect(company?.researchShelf?.companyDeltas[0]).toMatchObject({
       fromYear: 2024,
@@ -135,6 +140,7 @@ describe("shared Research provider", () => {
       revenue: 200,
       revenueChangePercent: 25,
       grossProfit: 100,
+      grossOperatingLeverage: 50,
       operatingIncome: 80,
     });
     expect(company?.researchShelf?.companyDeltas[0].grossProfitChangePercent).toBeCloseTo(100 / 3);
@@ -143,7 +149,7 @@ describe("shared Research provider", () => {
     expect(company?.researchShelf?.industryDeltas.revenue[0].industryMedianChangePercent).toBe(17.5);
     expect(company?.researchShelf?.industryDeltas.grossProfit[0].industryMedian).toBe(85);
     expect(company?.researchShelf?.industryDeltas.operatingIncome[0].industryMedian).toBe(49);
-    expect(company?.researchShelf?.rawIncome[1]).toMatchObject({ year: 2025, revenue: 1000, revenueChangePercent: 25, grossProfit: 400, operatingIncome: 200 });
+    expect(company?.researchShelf?.rawIncome[1]).toMatchObject({ year: 2025, revenue: 1000, revenueChangePercent: 25, grossProfit: 400, grossOperatingLeverage: 50, operatingIncome: 200 });
     expect(company?.researchShelf?.profitability.yearly[0]).toMatchObject({ year: 2024, grossMargin: 37.5, grossProfit: 300, operatingMargin: 15, operatingIncome: 120, cogsRatio: 62.5, cogs: 500, sgaRatio: 12.5, sga: 100, daRatio: 5, da: 40, rdRatio: 2.5, rd: 20 });
     expect(company?.researchShelf?.profitability.statistics.grossMargin.median).toBeCloseTo(38.75);
     expect(company?.researchShelf?.profitability.statistics.operatingMargin.standardDeviation).toBeCloseTo(Math.sqrt(12.5));
@@ -189,6 +195,107 @@ describe("shared Research provider", () => {
     expect(stats.totalChange).toBeCloseTo(32);
   });
 
+  it("builds annual FCFF and FCFE bridges independently from raw Research inputs", () => {
+    const companySeries = {
+      revenue: [{ year: 2024, value: 1000 }, { year: 2025, value: 1200 }],
+      ebit: [{ year: 2024, value: 200 }, { year: 2025, value: 240 }],
+      effectiveTaxRate: [{ year: 2024, value: 25 }, { year: 2025, value: 25 }],
+      depreciationAndAmortization: [{ year: 2024, value: 30 }, { year: 2025, value: 36 }],
+      capitalExpenditure: [{ year: 2024, value: -50 }, { year: 2025, value: -60 }],
+      nonCashWorkingCapital: [{ year: 2024, value: 100 }, { year: 2025, value: 85 }],
+      netIncomeToCommon: [{ year: 2024, value: 130 }, { year: 2025, value: 160 }],
+      shareBasedCompensation: [{ year: 2024, value: 10 }, { year: 2025, value: 12 }],
+      otherAdjustments: [{ year: 2024, value: 5 }, { year: 2025, value: -4 }],
+      netBorrowing: [{ year: 2024, value: -2 }, { year: 2025, value: 20 }],
+      currentAssets: [{ year: 2024, value: 500 }, { year: 2025, value: 520 }],
+      cashAndCashEquivalents: [{ year: 2024, value: 100 }, { year: 2025, value: 100 }],
+      currentLiabilities: [{ year: 2024, value: 350 }, { year: 2025, value: 385 }],
+      currentDebt: [{ year: 2024, value: 50 }, { year: 2025, value: 50 }],
+      shortTermBorrowings: [{ year: 2024, value: 20 }, { year: 2025, value: 22 }],
+      currentPortionLongTermDebt: [{ year: 2024, value: 20 }, { year: 2025, value: 18 }],
+    };
+    const peerSeries = new Map([[2, {
+      revenue: [{ year: 2024, value: 1000 }, { year: 2025, value: 1100 }],
+      ebit: [{ year: 2024, value: 100 }, { year: 2025, value: 110 }],
+      effectiveTaxRate: [{ year: 2024, value: 0.2 }, { year: 2025, value: 0.2 }],
+      depreciationAndAmortization: [{ year: 2024, value: 20 }, { year: 2025, value: 22 }],
+      capitalExpenditure: [{ year: 2024, value: 30 }, { year: 2025, value: 33 }],
+      nonCashWorkingCapital: [{ year: 2024, value: 50 }, { year: 2025, value: 60 }],
+      netIncomeToCommon: [{ year: 2024, value: 70 }, { year: 2025, value: 80 }],
+      shareBasedCompensation: [{ year: 2024, value: 7 }, { year: 2025, value: 8 }],
+      otherAdjustments: [{ year: 2024, value: 1 }, { year: 2025, value: 2 }],
+      netBorrowing: [],
+    }]]);
+
+    const analysis = buildCashFlowAnalysis(companySeries, peerSeries, 2024, 2025);
+    const firstYear = analysis.yearly[0];
+    const current = analysis.yearly[1];
+
+    expect(firstYear.fcff.fcff.companyValue).toBeNull();
+    expect(firstYear.fcfe.fcfe.companyValue).toBeNull();
+    expect(current.effectiveTaxRatePercent).toBe(25);
+    expect(current.fcff.nopat.companyValue).toBe(180);
+    expect(current.fcff.workingCapitalImpact.companyValue).toBe(15);
+    expect(current.fcff.fcff.companyValue).toBe(171);
+    expect(current.fcff.ebit.companyPercent).toBe(20);
+    expect(current.fcff.depreciationAndAmortization.companyPercent).toBe(15);
+    expect(current.fcff.workingCapitalImpact.companyPercent).toBeCloseTo((15 / 171) * 100);
+    expect(current.fcff.fcff.industryMedian).toBe(67);
+    expect(current.fcfe.otherAdjustments.companyValue).toBe(-4);
+    expect(current.fcfe.otherAdjustments.companyPercent).toBe(-2.5);
+    expect(current.fcfe.fcfe.companyValue).toBe(179);
+    expect(current.fcfe.fcfe.industryMedian).toBe(69);
+    expect(current.workingCapital.previousYear).toMatchObject({
+      year: 2024,
+      netCurrentAssets: 400,
+      otherInterestBearingCurrentDebt: 10,
+      netCurrentLiabilities: 300,
+      netOperatingWorkingCapital: 100,
+      debtBreakdownStatus: "reported-components",
+    });
+    expect(current.workingCapital.currentYear).toMatchObject({
+      year: 2025,
+      netCurrentAssets: 420,
+      otherInterestBearingCurrentDebt: 10,
+      netCurrentLiabilities: 335,
+      netOperatingWorkingCapital: 85,
+    });
+    expect(current.workingCapital.netChangeInWorkingCapital).toBe(-15);
+    expect(current.workingCapital.cashImpact).toBe(15);
+    expect(current.workingCapital.cashEffect).toBe("inflow");
+  });
+
+  it("keeps aggregate current debt visible when source components are not separately reported", () => {
+    const emptySeries = {
+      revenue: [], ebit: [], effectiveTaxRate: [], depreciationAndAmortization: [], capitalExpenditure: [],
+      nonCashWorkingCapital: [{ year: 2024, value: 40 }, { year: 2025, value: 55 }],
+      netIncomeToCommon: [], shareBasedCompensation: [], otherAdjustments: [], netBorrowing: [],
+      currentAssets: [{ year: 2024, value: 200 }, { year: 2025, value: 230 }],
+      cashAndCashEquivalents: [{ year: 2024, value: 20 }, { year: 2025, value: 25 }],
+      currentLiabilities: [{ year: 2024, value: 160 }, { year: 2025, value: 180 }],
+      currentDebt: [{ year: 2024, value: 20 }, { year: 2025, value: 30 }],
+    };
+
+    const point = buildCashFlowAnalysis(emptySeries, new Map(), 2025, 2025).yearly[0];
+
+    expect(point.workingCapital.currentYear).toMatchObject({
+      shortTermBorrowings: null,
+      currentPortionLongTermDebt: null,
+      otherInterestBearingCurrentDebt: 30,
+      debtBreakdownStatus: "aggregate-only",
+      netOperatingWorkingCapital: 55,
+    });
+    expect(point.workingCapital.netChangeInWorkingCapital).toBe(15);
+    expect(point.workingCapital.cashImpact).toBe(-15);
+    expect(point.workingCapital.cashEffect).toBe("outflow");
+  });
+
+  it("calculates gross operating leverage from paired period changes", () => {
+    expect(calculateGrossOperatingLeverage(130, 100, 250, 200)).toBe(60);
+    expect(calculateGrossOperatingLeverage(80, 100, 160, 200)).toBe(50);
+    expect(calculateGrossOperatingLeverage(120, 100, 200, 200)).toBeNull();
+  });
+
   it("recalculates every industry benchmark from a custom constituent basket", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 44, name: "Example India", ticker: "EXAMPLE", country: "India", industry_bucket: "Industrial Products" }]), { status: 200 }))
@@ -218,6 +325,7 @@ describe("shared Research provider", () => {
     expect(company?.researchShelf?.industryConstituentsCustomized).toBe(true);
     expect(company?.researchShelf?.industryConstituents.map((item) => item.id)).toEqual(["research-45"]);
     expect(company?.researchShelf?.growthComparisons.revenue.industryBucket.median).toBeCloseTo(10);
+    expect(company?.researchShelf?.growthComparisons.grossOperatingLeverage.industryBucket.median).toBeCloseTo(175 / 3);
     expect(company?.researchShelf?.industryDeltas.revenue[0]).toMatchObject({ industryMedian: 120, industryMedianChangePercent: 10 });
     expect(decodeURIComponent(String(fetchMock.mock.calls[3][0]))).toContain("company_id=in.(45)");
     expect(decodeURIComponent(String(fetchMock.mock.calls[3][0]))).not.toContain("bucket_id=in.");

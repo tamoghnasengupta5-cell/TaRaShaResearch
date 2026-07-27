@@ -55,6 +55,12 @@ describe("Research API compatibility", () => {
       { label: "Company · FY 2024–2025", value: 10 },
     ]);
     expect(shelf.growthComparisons.revenue.industryBucket.distribution).toEqual([]);
+    expect(shelf.companyDeltas[0].grossOperatingLeverage).toBe(60);
+    expect(shelf.growthComparisons.grossOperatingLeverage.company.median).toBe(60);
+    expect(shelf.growthComparisons.grossOperatingLeverage.company.distribution).toEqual([
+      { label: "Company · FY 2024–2025", value: 60 },
+    ]);
+    expect(shelf.growthComparisons.grossOperatingLeverage.industryBucket.distribution).toEqual([]);
     expect(shelf.profitability.statistics.grossMargin.distribution).toEqual([
       { label: "Company · FY 2025", value: 42 },
     ]);

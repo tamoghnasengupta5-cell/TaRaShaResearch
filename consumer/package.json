@@ -11,16 +11,19 @@
     "test": "vitest run",
     "check": "npm run test && npm run typecheck:worker && npm run build",
     "typecheck:worker": "tsc -p tsconfig.worker.json",
-    "sync:us-catalog": "node scripts/sync-sec-catalog.mjs"
+    "sync:us-catalog": "node scripts/sync-sec-catalog.mjs",
+    "users:summary:local": "node scripts/local-user-summary.mjs",
+    "users:summary": "node scripts/user-summary.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "6.0.3",
-    "vite": "8.1.4",
     "react": "19.2.7",
-    "react-dom": "19.2.7"
+    "react-dom": "19.2.7",
+    "vite": "8.1.4"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20260711.1",
+    "@types/node": "22.20.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "typescript": "6.0.3",

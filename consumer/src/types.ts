@@ -142,6 +142,75 @@ export interface EarningsAndValuationAnalysis {
   };
 }
 
+export type FcffBridgeMetricKey =
+  | "ebit"
+  | "nopat"
+  | "depreciationAndAmortization"
+  | "capitalExpenditure"
+  | "workingCapitalImpact"
+  | "fcff";
+
+export type FcfeBridgeMetricKey =
+  | "netIncomeToCommon"
+  | "depreciationAndAmortization"
+  | "shareBasedCompensation"
+  | "otherAdjustments"
+  | "capitalExpenditure"
+  | "workingCapitalImpact"
+  | "netBorrowing"
+  | "fcfe";
+
+export interface CashFlowBridgeMetricValue {
+  companyValue: number | null;
+  industryMedian: number | null;
+  industryObservations: number;
+  companyPercent: number | null;
+  industryMedianPercent: number | null;
+}
+
+export type WorkingCapitalDebtBreakdownStatus =
+  | "reported-components"
+  | "partially-reported"
+  | "aggregate-only"
+  | "components-only"
+  | "unavailable";
+
+export interface WorkingCapitalPeriodBreakdown {
+  year: number;
+  currentAssets: number | null;
+  cashAndCashEquivalents: number | null;
+  netCurrentAssets: number | null;
+  currentLiabilities: number | null;
+  shortTermBorrowings: number | null;
+  currentPortionLongTermDebt: number | null;
+  otherInterestBearingCurrentDebt: number | null;
+  totalInterestBearingCurrentDebt: number | null;
+  netCurrentLiabilities: number | null;
+  netOperatingWorkingCapital: number | null;
+  debtBreakdownStatus: WorkingCapitalDebtBreakdownStatus;
+}
+
+export interface WorkingCapitalMovement {
+  previousYear: WorkingCapitalPeriodBreakdown;
+  currentYear: WorkingCapitalPeriodBreakdown;
+  netChangeInWorkingCapital: number | null;
+  cashImpact: number | null;
+  cashEffect: "inflow" | "outflow" | "neutral" | "unavailable";
+}
+
+export interface CashFlowYear {
+  year: number;
+  effectiveTaxRatePercent: number | null;
+  industryMedianEffectiveTaxRatePercent: number | null;
+  workingCapital: WorkingCapitalMovement;
+  fcff: Record<FcffBridgeMetricKey, CashFlowBridgeMetricValue>;
+  fcfe: Record<FcfeBridgeMetricKey, CashFlowBridgeMetricValue>;
+}
+
+export interface CashFlowAnalysis {
+  yearly: CashFlowYear[];
+}
+
 export interface CompanyDeltaPoint {
   fromYear: number;
   toYear: number;
@@ -149,6 +218,7 @@ export interface CompanyDeltaPoint {
   revenueChangePercent: number | null;
   grossProfit: number | null;
   grossProfitChangePercent: number | null;
+  grossOperatingLeverage: number | null;
   operatingIncome: number | null;
   operatingIncomeChangePercent: number | null;
 }
@@ -168,6 +238,7 @@ export interface RawIncomePoint {
   revenueChangePercent: number | null;
   grossProfit: number | null;
   grossProfitChangePercent: number | null;
+  grossOperatingLeverage: number | null;
   operatingIncome: number | null;
   operatingIncomeChangePercent: number | null;
 }
@@ -192,6 +263,7 @@ export interface ResearchShelfAnalysis {
   growthComparisons: {
     revenue: GrowthComparison;
     grossProfit: GrowthComparison;
+    grossOperatingLeverage: GrowthComparison;
     operatingIncome: GrowthComparison;
   };
   companyDeltas: CompanyDeltaPoint[];
@@ -203,6 +275,7 @@ export interface ResearchShelfAnalysis {
   rawIncome: RawIncomePoint[];
   profitability: ProfitabilityAnalysis;
   earningsAndValuation: EarningsAndValuationAnalysis;
+  cashFlow: CashFlowAnalysis;
 }
 
 export interface Company {

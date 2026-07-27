@@ -1,6 +1,6 @@
 import { companies as demoCompanies } from "./data/demo";
 import { normalizeSecResearch, type SecCompanyFacts, type SecSubmissions } from "./sec";
-import type { CatalogCompany, Company, DistributionObservation, ProfitabilityMetricKey, ResearchShelfAnalysis } from "./types";
+import type { CatalogCompany, Company, DistributionObservation, GrowthStatistics, ProfitabilityMetricKey, ResearchShelfAnalysis } from "./types";
 
 export const MAX_SESSION_COMPANIES = 50;
 export const MAX_YEAR_RANGE = 7;
@@ -33,6 +33,9 @@ const requiredEarningsFlowMetrics = [
   "eps",
 ] as const;
 
+const requiredFcffBridgeMetrics = ["ebit", "nopat", "depreciationAndAmortization", "capitalExpenditure", "workingCapitalImpact", "fcff"] as const;
+const requiredFcfeBridgeMetrics = ["netIncomeToCommon", "depreciationAndAmortization", "shareBasedCompensation", "otherAdjustments", "capitalExpenditure", "workingCapitalImpact", "netBorrowing", "fcfe"] as const;
+
 const demoCatalog: CatalogCompany[] = demoCompanies.map((company) => ({
   id: company.id,
   cik: null,
@@ -52,12 +55,68 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function backfillResearchDistributions(shelf: ResearchShelfAnalysis): ResearchShelfAnalysis {
+  for (const point of shelf.companyDeltas ?? []) {
+    if (typeof point.grossOperatingLeverage !== "number") {
+      point.grossOperatingLeverage = point.revenue === null || point.revenue === 0 || point.grossProfit === null
+        ? null
+        : (point.grossProfit / point.revenue) * 100;
+    }
+  }
+  if (Array.isArray(shelf.rawIncome)) {
+    const rows = [...shelf.rawIncome].sort((left, right) => left.year - right.year);
+    for (let index = 0; index < rows.length; index += 1) {
+      const current = rows[index];
+      const prior = rows[index - 1];
+      if (typeof current.grossOperatingLeverage === "number" || current.grossOperatingLeverage === null) continue;
+      const revenueChange = prior && current.revenue !== null && prior.revenue !== null ? current.revenue - prior.revenue : null;
+      const grossProfitChange = prior && current.grossProfit !== null && prior.grossProfit !== null ? current.grossProfit - prior.grossProfit : null;
+      current.grossOperatingLeverage = revenueChange === null || revenueChange === 0 || grossProfitChange === null
+        ? null
+        : (grossProfitChange / revenueChange) * 100;
+    }
+  }
+  if (!shelf.growthComparisons.grossOperatingLeverage) {
+    const distribution = (shelf.companyDeltas ?? [])
+      .filter((point) => point.grossOperatingLeverage !== null && Number.isFinite(point.grossOperatingLeverage))
+      .map((point) => ({ label: `Company · FY ${point.fromYear}–${point.toYear}`, value: point.grossOperatingLeverage! }));
+    const values = distribution.map((observation) => observation.value).sort((left, right) => left - right);
+    const middle = Math.floor(values.length / 2);
+    const median = values.length ? (values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2) : null;
+    const average = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+    const standardDeviation = values.length <= 1
+      ? (values.length ? 0 : null)
+      : Math.sqrt(values.reduce((total, value) => total + ((value - average!) ** 2), 0) / (values.length - 1));
+    const company: GrowthStatistics = {
+      median,
+      standardDeviation,
+      observations: values.length,
+      distribution,
+      startYear: null,
+      endYear: null,
+      startValue: null,
+      endValue: null,
+      totalChange: null,
+    };
+    const industryBucket: GrowthStatistics = {
+      median: null,
+      standardDeviation: null,
+      observations: 0,
+      distribution: [],
+      startYear: null,
+      endYear: null,
+      startValue: null,
+      endValue: null,
+      totalChange: null,
+    };
+    shelf.growthComparisons.grossOperatingLeverage = { company, industryBucket };
+  }
   const growthMetrics: Array<{
     comparison: keyof ResearchShelfAnalysis["growthComparisons"];
-    delta: "revenueChangePercent" | "grossProfitChangePercent" | "operatingIncomeChangePercent";
+    delta: "revenueChangePercent" | "grossProfitChangePercent" | "grossOperatingLeverage" | "operatingIncomeChangePercent";
   }> = [
     { comparison: "revenue", delta: "revenueChangePercent" },
     { comparison: "grossProfit", delta: "grossProfitChangePercent" },
+    { comparison: "grossOperatingLeverage", delta: "grossOperatingLeverage" },
     { comparison: "operatingIncome", delta: "operatingIncomeChangePercent" },
   ];
   for (const metric of growthMetrics) {
@@ -98,6 +157,43 @@ function normalizeResearchShelfContract(company: Company): Company {
           && "industryMedianMarginPercent" in metric;
       });
     });
+  const cashFlowIsCurrent = Array.isArray(shelf?.cashFlow?.yearly)
+    && shelf.cashFlow.yearly.every((point) => {
+      const workingCapital = point?.workingCapital as unknown as Record<string, unknown> | undefined;
+      const workingCapitalPeriods = workingCapital
+        ? [workingCapital.previousYear, workingCapital.currentYear] as Array<Record<string, unknown> | undefined>
+        : [];
+      const groups = [
+        [point?.fcff as Record<string, unknown> | undefined, requiredFcffBridgeMetrics],
+        [point?.fcfe as Record<string, unknown> | undefined, requiredFcfeBridgeMetrics],
+      ] as const;
+      return "effectiveTaxRatePercent" in point
+        && "industryMedianEffectiveTaxRatePercent" in point
+        && workingCapital
+        && "netChangeInWorkingCapital" in workingCapital
+        && "cashImpact" in workingCapital
+        && "cashEffect" in workingCapital
+        && workingCapitalPeriods.length === 2
+        && workingCapitalPeriods.every((period) => period
+          && "currentAssets" in period
+          && "cashAndCashEquivalents" in period
+          && "netCurrentAssets" in period
+          && "currentLiabilities" in period
+          && "shortTermBorrowings" in period
+          && "currentPortionLongTermDebt" in period
+          && "otherInterestBearingCurrentDebt" in period
+          && "netCurrentLiabilities" in period
+          && "netOperatingWorkingCapital" in period)
+        && groups.every(([metrics, required]) => metrics && required.every((key) => {
+          const metric = metrics[key] as Record<string, unknown> | undefined;
+          return metric
+            && "companyValue" in metric
+            && "industryMedian" in metric
+            && "industryObservations" in metric
+            && "companyPercent" in metric
+            && "industryMedianPercent" in metric;
+        }));
+    });
   if (
     !shelf
     || !shelf.growthComparisons
@@ -121,6 +217,7 @@ function normalizeResearchShelfContract(company: Company): Company {
     || !earningsFlowIsCurrent
     || !shelf.earningsAndValuation.valuation
     || !shelf.earningsAndValuation.valuation.comparisons
+    || !cashFlowIsCurrent
   ) {
     throw new Error("TaRaShaConsumer received an older Research API response. Refresh the page after the Consumer deployment finishes, then pull the company again.");
   }
