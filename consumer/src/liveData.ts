@@ -33,6 +33,9 @@ const requiredEarningsFlowMetrics = [
   "eps",
 ] as const;
 
+const requiredFcffBridgeMetrics = ["ebit", "nopat", "depreciationAndAmortization", "capitalExpenditure", "workingCapitalImpact", "fcff"] as const;
+const requiredFcfeBridgeMetrics = ["netIncomeToCommon", "depreciationAndAmortization", "shareBasedCompensation", "otherAdjustments", "capitalExpenditure", "workingCapitalImpact", "netBorrowing", "fcfe"] as const;
+
 const demoCatalog: CatalogCompany[] = demoCompanies.map((company) => ({
   id: company.id,
   cik: null,
@@ -154,6 +157,43 @@ function normalizeResearchShelfContract(company: Company): Company {
           && "industryMedianMarginPercent" in metric;
       });
     });
+  const cashFlowIsCurrent = Array.isArray(shelf?.cashFlow?.yearly)
+    && shelf.cashFlow.yearly.every((point) => {
+      const workingCapital = point?.workingCapital as unknown as Record<string, unknown> | undefined;
+      const workingCapitalPeriods = workingCapital
+        ? [workingCapital.previousYear, workingCapital.currentYear] as Array<Record<string, unknown> | undefined>
+        : [];
+      const groups = [
+        [point?.fcff as Record<string, unknown> | undefined, requiredFcffBridgeMetrics],
+        [point?.fcfe as Record<string, unknown> | undefined, requiredFcfeBridgeMetrics],
+      ] as const;
+      return "effectiveTaxRatePercent" in point
+        && "industryMedianEffectiveTaxRatePercent" in point
+        && workingCapital
+        && "netChangeInWorkingCapital" in workingCapital
+        && "cashImpact" in workingCapital
+        && "cashEffect" in workingCapital
+        && workingCapitalPeriods.length === 2
+        && workingCapitalPeriods.every((period) => period
+          && "currentAssets" in period
+          && "cashAndCashEquivalents" in period
+          && "netCurrentAssets" in period
+          && "currentLiabilities" in period
+          && "shortTermBorrowings" in period
+          && "currentPortionLongTermDebt" in period
+          && "otherInterestBearingCurrentDebt" in period
+          && "netCurrentLiabilities" in period
+          && "netOperatingWorkingCapital" in period)
+        && groups.every(([metrics, required]) => metrics && required.every((key) => {
+          const metric = metrics[key] as Record<string, unknown> | undefined;
+          return metric
+            && "companyValue" in metric
+            && "industryMedian" in metric
+            && "industryObservations" in metric
+            && "companyPercent" in metric
+            && "industryMedianPercent" in metric;
+        }));
+    });
   if (
     !shelf
     || !shelf.growthComparisons
@@ -177,6 +217,7 @@ function normalizeResearchShelfContract(company: Company): Company {
     || !earningsFlowIsCurrent
     || !shelf.earningsAndValuation.valuation
     || !shelf.earningsAndValuation.valuation.comparisons
+    || !cashFlowIsCurrent
   ) {
     throw new Error("TaRaShaConsumer received an older Research API response. Refresh the page after the Consumer deployment finishes, then pull the company again.");
   }

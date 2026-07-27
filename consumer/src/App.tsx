@@ -5,7 +5,7 @@ import type { AuthenticatedUser } from "./authStore";
 import { formatMetric, latest, percentChange } from "./domain";
 import { liveDataEnabled, MAX_SESSION_COMPANIES, MAX_YEAR_RANGE, pullCompanyResearch, recalculateIndustryConstituents, searchCompanyCatalog } from "./liveData";
 import { arithmeticMean, extremeOutlierBounds, isExtremeOutlier, sampleStandardDeviation } from "./statistics";
-import type { CatalogCompany, Company, DistributionObservation, EarningsFlowMetricKey, EarningsFlowYear, GrowthComparison, IndustryConstituent, IndustryDeltaPoint, IndustryLevelPoint, MetricKey, Page, PerformanceThresholds, ProfitabilityMetricBands, ProfitabilityMetricKey, ProfitabilityYearPoint, RawIncomePoint, ResearchShelfAnalysis, StatementFact, StatementGroup, ValuationMetricKey, YearValue } from "./types";
+import type { CashFlowBridgeMetricValue, CashFlowYear, CatalogCompany, Company, DistributionObservation, EarningsFlowMetricKey, EarningsFlowYear, FcffBridgeMetricKey, FcfeBridgeMetricKey, GrowthComparison, IndustryConstituent, IndustryDeltaPoint, IndustryLevelPoint, MetricKey, Page, PerformanceThresholds, ProfitabilityMetricBands, ProfitabilityMetricKey, ProfitabilityYearPoint, RawIncomePoint, ResearchShelfAnalysis, StatementFact, StatementGroup, ValuationMetricKey, WorkingCapitalPeriodBreakdown, YearValue } from "./types";
 import researchJourneyHero from "./assets/research-journey-hero-v2.jpg";
 import tarashaLogo from "./assets/tarasha-logo.png";
 
@@ -215,6 +215,42 @@ function LoginPage({ onAuthenticated, navigate }: { onAuthenticated: (user: Auth
   </section>;
 }
 
+function PasswordInput({
+  value,
+  onChange,
+  autoComplete,
+  minLength,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  autoComplete: "current-password" | "new-password";
+  minLength?: number;
+}) {
+  const [visible, setVisible] = useState(false);
+  return <div className="password-input">
+    <input
+      type={visible ? "text" : "password"}
+      autoComplete={autoComplete}
+      minLength={minLength}
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      required
+    />
+    <button
+      type="button"
+      className="password-visibility"
+      aria-label={visible ? "Hide password" : "Show password"}
+      aria-pressed={visible}
+      title={visible ? "Hide password" : "Show password"}
+      onClick={() => setVisible((current) => !current)}
+    >
+      {visible
+        ? <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18M10.6 10.7a2 2 0 002.7 2.7M9.9 4.2A10.8 10.8 0 0112 4c5.4 0 9 4.7 9 4.7a15.6 15.6 0 01-2.6 2.8M6.2 6.2A15.8 15.8 0 003 8.7s3.6 4.7 9 4.7c1 0 2-.2 2.9-.5" /></svg>
+        : <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12s3.6-5 9-5 9 5 9 5-3.6 5-9 5-9-5-9-5z" /><circle cx="12" cy="12" r="2.5" /></svg>}
+    </button>
+  </div>;
+}
+
 function LoginForm({ onAuthenticated, showForgot, initialUsername = "" }: { onAuthenticated: (user: AuthenticatedUser) => void; showForgot: () => void; initialUsername?: string }) {
   const [username, setUsername] = useState(initialUsername);
   const [password, setPassword] = useState("");
@@ -229,7 +265,7 @@ function LoginForm({ onAuthenticated, showForgot, initialUsername = "" }: { onAu
   return <form className="auth-form" onSubmit={submit}>
     <div><small>Account access</small><h2>Log in</h2><p>Use your TaRaSha username and password.</p></div>
     <label>Username<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
-    <label>Password<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+    <label>Password<PasswordInput autoComplete="current-password" value={password} onChange={setPassword} /></label>
     {message && <div className="auth-message error" role="alert">{message}</div>}
     <button className="button primary" disabled={busy}>{busy ? "Logging in…" : "Log in"}</button>
     <button className="forgot-link" type="button" onClick={showForgot}>Forgot password?</button>
@@ -237,13 +273,18 @@ function LoginForm({ onAuthenticated, showForgot, initialUsername = "" }: { onAu
 }
 
 function RegistrationForm({ onRegistered, showLogin }: { onRegistered: (username: string) => void; showLogin: (username: string) => void }) {
-  const [fields, setFields] = useState({ name: "", securityQuestion: "", securityAnswer: "", username: "", password: "" });
+  const [fields, setFields] = useState({ name: "", securityQuestion: "", securityAnswer: "", username: "", password: "", confirmPassword: "" });
   const [message, setMessage] = useState<string | null>(null);
   const [createdUsername, setCreatedUsername] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const update = (key: keyof typeof fields, value: string) => setFields((current) => ({ ...current, [key]: value }));
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault(); setBusy(true); setMessage(null);
+    event.preventDefault(); setMessage(null);
+    if (fields.password !== fields.confirmPassword) {
+      setMessage("Password and confirm password must match.");
+      return;
+    }
+    setBusy(true);
     try {
       const user = await registerUser(fields);
       setCreatedUsername(user.username);
@@ -257,12 +298,13 @@ function RegistrationForm({ onRegistered, showLogin }: { onRegistered: (username
     <div className="auth-message success" role="status"><strong>{createdUsername}</strong> is created successfully, login <a href="#/login" onClick={(event) => { event.preventDefault(); showLogin(createdUsername); }}>here</a>.</div>
   </div>;
   return <form className="auth-form registration-form" onSubmit={submit}>
-    <div><small>Create your workspace</small><h2>Register</h2><p>Your recovery answer is checked only when you reset your password.</p></div>
+    <div><small>Create your workspace</small><h2>Register</h2><p>Your name and username are encrypted in the account database. Your password and recovery answer are stored only as one-way security hashes.</p></div>
     <label>Name<input autoComplete="name" value={fields.name} onChange={(event) => update("name", event.target.value)} required /></label>
     <label>Security question<select value={fields.securityQuestion} onChange={(event) => update("securityQuestion", event.target.value)} required><option value="" disabled>Select a security question</option>{SECURITY_QUESTIONS.map((question) => <option key={question} value={question}>{question}</option>)}</select></label>
     <label>Answer<input type="password" autoComplete="off" value={fields.securityAnswer} onChange={(event) => update("securityAnswer", event.target.value)} required /></label>
     <label>Username<input autoComplete="username" value={fields.username} onChange={(event) => update("username", event.target.value)} required /></label>
-    <label>Password<input type="password" autoComplete="new-password" minLength={8} value={fields.password} onChange={(event) => update("password", event.target.value)} required /><small>At least 8 characters</small></label>
+    <label>Password<PasswordInput autoComplete="new-password" minLength={8} value={fields.password} onChange={(value) => update("password", value)} /><small>At least 8 characters</small></label>
+    <label>Confirm password<input type="password" autoComplete="new-password" minLength={8} value={fields.confirmPassword} onChange={(event) => update("confirmPassword", event.target.value)} required /></label>
     {message && <div className="auth-message error" role="alert">{message}</div>}
     <button className="button primary" disabled={busy}>{busy ? "Creating account…" : "Create account"}</button>
   </form>;
@@ -275,10 +317,11 @@ function ForgotPasswordForm({ returnToLogin }: { returnToLogin: () => void }) {
   const [newPassword, setNewPassword] = useState("");
   const [message, setMessage] = useState<{ tone: "error" | "success"; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
-  const findQuestion = () => {
-    setMessage(null);
-    try { setQuestion(getSecurityQuestion(username)); }
+  const findQuestion = async () => {
+    setMessage(null); setBusy(true);
+    try { setQuestion(await getSecurityQuestion(username)); }
     catch (error) { setQuestion(null); setMessage({ tone: "error", text: error instanceof Error ? error.message : "Account lookup failed." }); }
+    finally { setBusy(false); }
   };
   const submit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); setBusy(true); setMessage(null);
@@ -291,10 +334,10 @@ function ForgotPasswordForm({ returnToLogin }: { returnToLogin: () => void }) {
   };
   return <form className="auth-form" onSubmit={submit}>
     <div><small>Account recovery</small><h2>Reset password</h2><p>Find your security question, then provide the answer you registered.</p></div>
-    <label>Username<div className="auth-inline"><input autoComplete="username" value={username} onChange={(event) => { setUsername(event.target.value); setQuestion(null); }} required /><button type="button" onClick={findQuestion}>Find question</button></div></label>
+    <label>Username<div className="auth-inline"><input autoComplete="username" value={username} onChange={(event) => { setUsername(event.target.value); setQuestion(null); }} required /><button type="button" onClick={findQuestion} disabled={busy}>{busy ? "Checking…" : "Find question"}</button></div></label>
     {question && <><div className="security-question"><small>Your security question</small><strong>{question}</strong></div>
       <label>Answer<input type="password" autoComplete="off" value={answer} onChange={(event) => setAnswer(event.target.value)} required /></label>
-      <label>New password<input type="password" autoComplete="new-password" minLength={8} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /><small>At least 8 characters</small></label>
+      <label>New password<PasswordInput autoComplete="new-password" minLength={8} value={newPassword} onChange={setNewPassword} /><small>At least 8 characters</small></label>
       <button className="button primary" disabled={busy}>{busy ? "Resetting…" : "Reset password"}</button></>}
     {message && <div className={`auth-message ${message.tone}`} role={message.tone === "error" ? "alert" : "status"}>{message.text}</div>}
     <button className="forgot-link" type="button" onClick={returnToLogin}>← Back to login</button>
@@ -370,7 +413,7 @@ function CompanyCard({ company, openCompany, watched, toggleWatch, onRemove, onC
   );
 }
 
-const researchCardLabels = ["Growth quality", "Margins & costs", "Profit flow & valuation", "Balance sheet", "Capital allocation"] as const;
+const researchCardLabels = ["Growth quality", "Margins & costs", "Profit flow & valuation", "Cash flow", "Working Capital"] as const;
 
 const researchChartPalette = [
   { color: "#4f7fa6", negativeColor: "#b45a63" },
@@ -433,7 +476,7 @@ function ResearchStoryCard({ company, shelf, openCompany, watched, toggleWatch, 
 
       <nav className="research-card-nav" aria-label={`${company.name} research cards`}>
         <button className="card-cursor" onClick={() => moveCard(-1)} disabled={activeCard === 0} aria-label="Show previous research card">←</button>
-        <div className="research-card-tabs" role="tablist">{researchCardLabels.map((label, index) => <button key={label} role="tab" aria-selected={activeCard === index} className={activeCard === index ? "active" : ""} onClick={() => setActiveCard(index)}>{label}{index > 2 && <small>Coming soon</small>}</button>)}</div>
+        <div className="research-card-tabs" role="tablist">{researchCardLabels.map((label, index) => <button key={label} role="tab" aria-selected={activeCard === index} className={activeCard === index ? "active" : ""} onClick={() => setActiveCard(index)}>{label}</button>)}</div>
         <button className="card-cursor" onClick={() => moveCard(1)} disabled={activeCard === researchCardLabels.length - 1} aria-label="Show next research card">→</button>
       </nav>
 
@@ -469,7 +512,7 @@ function ResearchStoryCard({ company, shelf, openCompany, watched, toggleWatch, 
             message={constituentMessage}
             onChange={onCompanyUpdated ? updateConstituents : undefined}
           />
-        </div> : activeCard === 1 ? <MarginsAndCostStructureCard company={company} shelf={shelf} /> : activeCard === 2 ? <ProfitFlowAndValuationCard company={company} shelf={shelf} /> : <ResearchCardPlaceholder label={researchCardLabels[activeCard]} position={activeCard + 1} />}
+        </div> : activeCard === 1 ? <MarginsAndCostStructureCard company={company} shelf={shelf} /> : activeCard === 2 ? <ProfitFlowAndValuationCard company={company} shelf={shelf} /> : activeCard === 3 ? <CashFlowCard company={company} shelf={shelf} /> : <WorkingCapitalCard company={company} shelf={shelf} />}
       </section>
 
       <div className="card-footer story-footer"><span>Session data · {company.currency}</span><button className="text-button" onClick={() => openCompany(company.id)}>Open full research dossier →</button></div>
@@ -477,8 +520,243 @@ function ResearchStoryCard({ company, shelf, openCompany, watched, toggleWatch, 
   );
 }
 
-function ResearchCardPlaceholder({ label, position }: { label: string; position: number }) {
-  return <div className={`research-note placeholder-note note-${position}`}><small>Research card {String(position).padStart(2, "0")}</small><h4>{label}</h4><p>This analytical card is in the research roadmap and will appear here when its lens is ready.</p><span className="placeholder-stamp">In development</span></div>;
+type CashFlowMode = "fcff" | "fcfe";
+type CashFlowStepDefinition = {
+  key: FcffBridgeMetricKey | FcfeBridgeMetricKey;
+  label: string;
+  shortLabel: string;
+  operator: "" | "+" | "−" | "±" | "=" | "tax";
+  explanation: string;
+  percentLabel?: string;
+  signedValue?: boolean;
+};
+
+const fcffBridgeSteps: CashFlowStepDefinition[] = [
+  { key: "ebit", label: "EBIT", shortLabel: "EBIT", operator: "", explanation: "Operating profit before financing and tax.", percentLabel: "EBIT margin" },
+  { key: "nopat", label: "NOPAT", shortLabel: "NOPAT", operator: "tax", explanation: "EBIT after applying the reported effective tax rate." },
+  { key: "depreciationAndAmortization", label: "Depreciation & amortization", shortLabel: "D&A", operator: "+", explanation: "Non-cash expense added back.", percentLabel: "D&A / EBIT" },
+  { key: "capitalExpenditure", label: "Capital expenditure", shortLabel: "CapEx", operator: "−", explanation: "Investment in property, plant and equipment.", percentLabel: "CapEx / EBIT" },
+  { key: "workingCapitalImpact", label: "Net change in working capital", shortLabel: "Working capital", operator: "±", explanation: "The cash impact is prior-year NCWC less current-year NCWC.", percentLabel: "Impact / FCFF", signedValue: true },
+  { key: "fcff", label: "Free Cash Flow to the Firm", shortLabel: "FCFF", operator: "=", explanation: "Cash flow available to debt and equity capital providers." },
+];
+
+const fcfeBridgeSteps: CashFlowStepDefinition[] = [
+  { key: "netIncomeToCommon", label: "Net income to common", shortLabel: "Net income", operator: "", explanation: "Reported earnings attributable to common shareholders." },
+  { key: "depreciationAndAmortization", label: "Depreciation & amortization", shortLabel: "D&A", operator: "+", explanation: "Non-cash expense added back.", percentLabel: "D&A / net income" },
+  { key: "shareBasedCompensation", label: "Share-based compensation", shortLabel: "SBC", operator: "+", explanation: "Reported non-cash employee compensation added back.", percentLabel: "SBC / net income" },
+  { key: "otherAdjustments", label: "Other adjustments", shortLabel: "Other", operator: "±", explanation: "Retains the positive or negative sign supplied by Research.", percentLabel: "Other / net income", signedValue: true },
+  { key: "capitalExpenditure", label: "Capital expenditure", shortLabel: "CapEx", operator: "−", explanation: "Investment in property, plant and equipment.", percentLabel: "CapEx / net income" },
+  { key: "workingCapitalImpact", label: "Net change in working capital", shortLabel: "Working capital", operator: "±", explanation: "The cash impact is prior-year NCWC less current-year NCWC.", percentLabel: "Impact / FCFE", signedValue: true },
+  { key: "netBorrowing", label: "Net borrowing", shortLabel: "Net borrowing", operator: "±", explanation: "Debt issued less debt repaid; missing Research rows are treated as zero.", percentLabel: "Borrowing / net income", signedValue: true },
+  { key: "fcfe", label: "Free Cash Flow to Equity", shortLabel: "FCFE", operator: "=", explanation: "Cash flow available to common equity holders." },
+];
+
+function cashFlowStageTone(step: CashFlowStepDefinition, metric: CashFlowBridgeMetricValue): string {
+  if (step.key === "fcff" || step.key === "fcfe") return "total";
+  if (step.key === "workingCapitalImpact") return metric.companyValue === null ? "neutral" : metric.companyValue >= 0 ? "inflow" : "outflow";
+  if (step.key === "capitalExpenditure") return "deduction";
+  if ((step.key === "otherAdjustments" || step.key === "netBorrowing") && metric.companyValue !== null) return metric.companyValue >= 0 ? "addback" : "deduction";
+  if (step.operator === "+") return "addback";
+  if (step.operator === "tax") return "tax";
+  return "source";
+}
+
+function CashFlowPercentageComparison({ label, metric, tone }: { label: string; metric: CashFlowBridgeMetricValue; tone?: string }) {
+  return <div className={`cash-flow-comparison ${tone ?? ""}`}>
+    <span><small>Company</small><strong>{formatLevelPercent(metric.companyPercent)}</strong></span>
+    <span><small>Industry median</small><strong>{formatLevelPercent(metric.industryMedianPercent)}</strong></span>
+    <em>{label} · {metric.industryObservations ? `${metric.industryObservations} peers` : "no peer observations"}</em>
+  </div>;
+}
+
+function workingCapitalDebtNote(status: WorkingCapitalPeriodBreakdown["debtBreakdownStatus"]): string {
+  if (status === "reported-components") return "Borrowing components are separately reported; other current debt is the reconciliation residual.";
+  if (status === "partially-reported") return "One borrowing component is separately reported; the balance is shown as other / unclassified current debt.";
+  if (status === "aggregate-only") return "The source reports current debt only in aggregate. It is shown under other / unclassified current debt so the calculation remains complete.";
+  if (status === "components-only") return "Current debt is reconstructed from the separately reported borrowing components.";
+  return "No current-debt classification is available for this period.";
+}
+
+function WorkingCapitalEquationRow({ company, label, value, operator, total = false, unavailableLabel }: { company: Company; label: string; value: number | null; operator: "" | "−" | "="; total?: boolean; unavailableLabel?: string }) {
+  return <div className={`working-capital-equation-row ${total ? "total" : ""}`}>
+    <span className="working-capital-row-operator" aria-hidden="true">{operator}</span>
+    <span className="working-capital-row-label">{label}</span>
+    <strong>{value === null ? unavailableLabel ?? "Not available" : formatFlowAmount(company, value, false)}</strong>
+  </div>;
+}
+
+function WorkingCapitalPeriodCard({ company, period, periodLabel }: { company: Company; period: WorkingCapitalPeriodBreakdown; periodLabel: string }) {
+  return <article className="working-capital-period-card">
+    <header><small>{periodLabel}</small><strong>FY {period.year}</strong></header>
+    <section>
+      <hgroup><small>Asset flow</small><h6>Net current assets</h6></hgroup>
+      <WorkingCapitalEquationRow company={company} label="Current assets" value={period.currentAssets} operator="" />
+      <WorkingCapitalEquationRow company={company} label="Cash and cash equivalents" value={period.cashAndCashEquivalents} operator="−" />
+      <WorkingCapitalEquationRow company={company} label="Net current assets" value={period.netCurrentAssets} operator="=" total />
+    </section>
+    <section>
+      <hgroup><small>Liability flow</small><h6>Net current liabilities</h6></hgroup>
+      <WorkingCapitalEquationRow company={company} label="Current liabilities" value={period.currentLiabilities} operator="" />
+      <WorkingCapitalEquationRow company={company} label="Short-term borrowings" value={period.shortTermBorrowings} operator="−" unavailableLabel="Not separately reported" />
+      <WorkingCapitalEquationRow company={company} label="Current portion of long-term debt" value={period.currentPortionLongTermDebt} operator="−" unavailableLabel="Not separately reported" />
+      <WorkingCapitalEquationRow company={company} label="Other interest-bearing current debt" value={period.otherInterestBearingCurrentDebt} operator="−" />
+      <WorkingCapitalEquationRow company={company} label="Net current liabilities" value={period.netCurrentLiabilities} operator="=" total />
+      <p className="working-capital-debt-note">{workingCapitalDebtNote(period.debtBreakdownStatus)}</p>
+    </section>
+    <footer>
+      <span>=</span>
+      <div><small>{periodLabel === "Previous year" ? "Previous-year net operating working capital" : "Current-year net working capital"}</small><strong>{formatFlowAmount(company, period.netOperatingWorkingCapital, false)}</strong></div>
+      <p>Net current assets − net current liabilities</p>
+    </footer>
+  </article>;
+}
+
+function WorkingCapitalYearHierarchy({ company, point }: { company: Company; point: CashFlowYear }) {
+  const movement = point.workingCapital;
+  const assetChange = movement.currentYear.netCurrentAssets !== null && movement.previousYear.netCurrentAssets !== null
+    ? movement.currentYear.netCurrentAssets - movement.previousYear.netCurrentAssets
+    : null;
+  const liabilityChange = movement.currentYear.netCurrentLiabilities !== null && movement.previousYear.netCurrentLiabilities !== null
+    ? movement.currentYear.netCurrentLiabilities - movement.previousYear.netCurrentLiabilities
+    : null;
+  const assetTone = assetChange === null || assetChange === 0 ? "neutral" : assetChange > 0 ? "outflow" : "inflow";
+  const liabilityTone = liabilityChange === null || liabilityChange === 0 ? "neutral" : liabilityChange > 0 ? "inflow" : "outflow";
+  const assetEffect = assetChange === null ? "Effect unavailable" : assetChange > 0 ? "More cash tied up" : assetChange < 0 ? "Cash released" : "No cash effect";
+  const liabilityEffect = liabilityChange === null ? "Effect unavailable" : liabilityChange > 0 ? "More cash retained" : liabilityChange < 0 ? "Cash used to reduce liabilities" : "No cash effect";
+  const tone = movement.cashEffect;
+  const outcome = tone === "inflow" ? "Cash inflow" : tone === "outflow" ? "Cash outflow" : tone === "neutral" ? "No cash movement" : "Cash effect unavailable";
+  const explanation = tone === "inflow"
+    ? "Working capital decreased, releasing cash back into the business."
+    : tone === "outflow"
+      ? "Working capital increased, tying up more cash in operations."
+      : tone === "neutral"
+        ? "Working capital was unchanged, so there was no cash inflow or outflow."
+        : "Both periods are required before the cash effect can be determined.";
+  return <div className="working-capital-hierarchy" data-horizontal-scroll aria-label={`FY ${point.year} working-capital reconciliation`}>
+    <div className="working-capital-period-grid">
+      <WorkingCapitalPeriodCard company={company} period={movement.previousYear} periodLabel="Previous year" />
+      <WorkingCapitalPeriodCard company={company} period={movement.currentYear} periodLabel="Current year" />
+    </div>
+    <div className="working-capital-driver-grid" aria-label="Working-capital movement drivers">
+      <div className={assetTone}><small>Net current assets moved</small><strong>{formatFlowAmount(company, assetChange, true)}</strong><span>{assetEffect} · {assetTone === "outflow" ? "cash outflow" : assetTone === "inflow" ? "cash inflow" : "neutral"}</span></div>
+      <div className={liabilityTone}><small>Net current liabilities moved</small><strong>{formatFlowAmount(company, liabilityChange, true)}</strong><span>{liabilityEffect} · {liabilityTone === "outflow" ? "cash outflow" : liabilityTone === "inflow" ? "cash inflow" : "neutral"}</span></div>
+    </div>
+    <div className={`working-capital-leaf ${tone}`}>
+      <span className="working-capital-leaf-branch" aria-hidden="true" />
+      <div className="working-capital-leaf-formula">
+        <small>Net change in working capital</small>
+        <strong>{formatFlowAmount(company, movement.netChangeInWorkingCapital, true)}</strong>
+        <span>Current-year working capital − previous-year working capital</span>
+      </div>
+      <div className="working-capital-leaf-outcome">
+        <small>Cash consequence</small>
+        <strong>{outcome}</strong>
+        <span>{formatFlowAmount(company, movement.cashImpact, true)} in the {point.year} cash-flow bridge</span>
+      </div>
+      <p>{explanation}</p>
+    </div>
+  </div>;
+}
+
+function CashFlowStage({ company, point, mode, step, index }: { company: Company; point: CashFlowYear; mode: CashFlowMode; step: CashFlowStepDefinition; index: number }) {
+  const metric = mode === "fcff"
+    ? point.fcff[step.key as FcffBridgeMetricKey]
+    : point.fcfe[step.key as FcfeBridgeMetricKey];
+  const tone = cashFlowStageTone(step, metric);
+  const isTaxStep = step.key === "nopat";
+  const isTotal = step.key === "fcff" || step.key === "fcfe";
+  const workingCapitalTone = step.key === "workingCapitalImpact" ? tone : undefined;
+  return <div className="cash-flow-stage-wrap" role="listitem" style={{ "--cash-step": index } as React.CSSProperties}>
+    {index > 0 && <div className={`cash-flow-connector ${tone}`} aria-hidden="true"><span>{step.operator === "tax" ? "− tax" : step.operator}</span><i /></div>}
+    <article className={`cash-flow-stage ${tone}`}>
+      <header><span>{String(index + 1).padStart(2, "0")}</span><small>{step.shortLabel}</small></header>
+      <h6>{step.label}</h6>
+      <strong className="cash-flow-stage-value">{formatFlowAmount(company, metric.companyValue, step.signedValue === true)}</strong>
+      <p>{step.explanation}</p>
+      {isTaxStep ? <div className="cash-flow-comparison tax">
+        <span><small>Company tax rate</small><strong>{formatLevelPercent(point.effectiveTaxRatePercent)}</strong></span>
+        <span><small>Industry median</small><strong>{formatLevelPercent(point.industryMedianEffectiveTaxRatePercent)}</strong></span>
+        <em>Effective tax rate</em>
+      </div> : step.percentLabel && !isTotal ? <CashFlowPercentageComparison label={step.percentLabel} metric={metric} tone={workingCapitalTone} /> : null}
+    </article>
+  </div>;
+}
+
+function CashFlowYearBridge({ company, point, mode }: { company: Company; point: CashFlowYear; mode: CashFlowMode }) {
+  const steps = mode === "fcff" ? fcffBridgeSteps : fcfeBridgeSteps;
+  const finalValue = mode === "fcff" ? point.fcff.fcff.companyValue : point.fcfe.fcfe.companyValue;
+  return <article className="cash-flow-year-panel">
+    <header><div><small>Fiscal year</small><h6>FY {point.year}</h6></div><div><small>{mode.toUpperCase()}</small><strong>{formatFlowAmount(company, finalValue, false)}</strong></div></header>
+    <div className={`cash-flow-staircase ${mode}`} data-horizontal-scroll role="list" aria-label={`FY ${point.year} ${mode.toUpperCase()} bridge`}>
+      {steps.map((step, index) => <CashFlowStage key={step.key} company={company} point={point} mode={mode} step={step} index={index} />)}
+    </div>
+  </article>;
+}
+
+function CashFlowCard({ company, shelf }: { company: Company; shelf: ResearchShelfAnalysis }) {
+  const [mode, setMode] = useState<CashFlowMode>("fcff");
+  const years = [...shelf.cashFlow.yearly].sort((left, right) => right.year - left.year);
+  const unit = company.currency.startsWith("US$") ? "USD millions" : "INR crores";
+  return <div className="research-note cash-flow-note">
+    <div className="growth-quality-heading cash-flow-heading">
+      <div><small>Cash generation and reinvestment lens</small><h4>Cash Flow</h4></div>
+      <span>{shelf.industryCompanyCount} bucket companies · {unit}</span>
+    </div>
+    <div className="cash-flow-mode-row">
+      <p>Trace each annual result from operating or common-shareholder earnings to cash available to capital providers.</p>
+      <div className="cash-flow-toggle" role="group" aria-label="Choose cash flow view">
+        <button type="button" aria-pressed={mode === "fcff"} className={mode === "fcff" ? "active" : ""} onClick={() => setMode("fcff")}><strong>FCFF</strong><small>Free Cash Flow to the Firm</small></button>
+        <button type="button" aria-pressed={mode === "fcfe"} className={mode === "fcfe" ? "active" : ""} onClick={() => setMode("fcfe")}><strong>FCFE</strong><small>Free Cash Flow to Equity</small></button>
+      </div>
+    </div>
+    <section className="cash-flow-section">
+      <div className="earnings-section-heading"><div><small>Section 1</small><h5>{mode === "fcff" ? "From EBIT to Free Cash Flow to the Firm" : "From Net Income to Common to Free Cash Flow to Equity"}</h5><p>Horizontal annual bridge · scroll each year to follow every step</p></div><div className="cash-flow-legend" aria-label="Cash flow color guide"><span><i className="inflow" />Working-capital inflow</span><span><i className="outflow" />Working-capital outflow</span></div></div>
+      <div className="cash-flow-formula">{mode === "fcff"
+        ? "FCFF = EBIT × (1 − effective tax rate) + D&A − CapEx − ΔNCWC"
+        : "FCFE = Net income to common + D&A + SBC + Other adjustments − CapEx − ΔNCWC + Net borrowing"}</div>
+      {years.length ? <div className="cash-flow-year-stack">{years.map((point) => <CashFlowYearBridge key={point.year} company={company} point={point} mode={mode} />)}</div> : <div className="flow-availability-note">No annual cash-flow bridge inputs are available for the selected range.</div>}
+      <div className="flow-coverage-note"><strong>Working-capital convention</strong><p>Cash impact equals prior-year non-cash working capital less current-year non-cash working capital. A positive impact is an inflow shown in blue; a negative impact is an outflow shown in red. The percentage compares that signed impact with the absolute final FCFF or FCFE for the same year.</p></div>
+    </section>
+  </div>;
+}
+
+function WorkingCapitalYearPanel({ company, point }: { company: Company; point: CashFlowYear }) {
+  const movement = point.workingCapital;
+  const outcome = movement.cashEffect === "inflow"
+    ? "Cash inflow"
+    : movement.cashEffect === "outflow"
+      ? "Cash outflow"
+      : movement.cashEffect === "neutral"
+        ? "No cash movement"
+        : "Cash effect unavailable";
+  return <article className="working-capital-year-panel">
+    <header>
+      <div><small>Fiscal year</small><h6>FY {point.year}</h6></div>
+      <div className={movement.cashEffect}><small>Net change in working capital</small><strong>{formatFlowAmount(company, movement.netChangeInWorkingCapital, true)}</strong><span>{outcome}</span></div>
+    </header>
+    <WorkingCapitalYearHierarchy company={company} point={point} />
+  </article>;
+}
+
+function WorkingCapitalCard({ company, shelf }: { company: Company; shelf: ResearchShelfAnalysis }) {
+  const years = [...shelf.cashFlow.yearly].sort((left, right) => right.year - left.year);
+  const unit = company.currency.startsWith("US$") ? "USD millions" : "INR crores";
+  return <div className="research-note working-capital-note">
+    <div className="growth-quality-heading working-capital-heading">
+      <div><small>Operating liquidity and cash-conversion lens</small><h4>Working Capital</h4></div>
+      <span>FY {shelf.fromYear}–{shelf.toYear} · {unit}</span>
+    </div>
+    <p className="working-capital-intro">Review how operating current assets and liabilities produced each year’s change in working capital and its cash-flow effect.</p>
+    <section className="working-capital-section">
+      <div className="earnings-section-heading">
+        <div><small>Annual hierarchy</small><h5>Working capital change by year</h5><p>Each section compares the selected fiscal year with its immediately preceding year.</p></div>
+        <div className="cash-flow-legend" aria-label="Working capital cash-effect color guide"><span><i className="inflow" />Cash inflow</span><span><i className="outflow" />Cash outflow</span></div>
+      </div>
+      <div className="cash-flow-formula">ΔNWC = Current-year net working capital − Previous-year net operating working capital</div>
+      {years.length ? <div className="working-capital-year-stack">{years.map((point) => <WorkingCapitalYearPanel key={point.year} company={company} point={point} />)}</div> : <div className="flow-availability-note">No annual working-capital inputs are available for the selected range.</div>}
+      <div className="flow-coverage-note"><strong>Cash-flow convention</strong><p>An increase in net working capital ties up cash and is shown as a cash outflow. A decrease releases cash and is shown as a cash inflow. Labels accompany the colors throughout the hierarchy.</p></div>
+    </section>
+  </div>;
 }
 
 const profitabilityMetrics: Array<{

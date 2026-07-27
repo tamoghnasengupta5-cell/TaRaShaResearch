@@ -11,7 +11,9 @@
     "test": "vitest run",
     "check": "npm run test && npm run typecheck:worker && npm run build",
     "typecheck:worker": "tsc -p tsconfig.worker.json",
-    "sync:us-catalog": "node scripts/sync-sec-catalog.mjs"
+    "sync:us-catalog": "node scripts/sync-sec-catalog.mjs",
+    "users:summary:local": "node scripts/local-user-summary.mjs",
+    "users:summary": "node scripts/user-summary.mjs"
   },
   "dependencies": {
     "@vitejs/plugin-react": "6.0.3",

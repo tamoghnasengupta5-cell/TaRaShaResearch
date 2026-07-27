@@ -1,15 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { authenticateUser, getSecurityQuestion, registerUser, resetPassword, SECURITY_QUESTIONS } from "./authStore";
-
-class MemoryStorage implements Storage {
-  private values = new Map<string, string>();
-  get length() { return this.values.size; }
-  clear() { this.values.clear(); }
-  getItem(key: string) { return this.values.get(key) ?? null; }
-  key(index: number) { return [...this.values.keys()][index] ?? null; }
-  removeItem(key: string) { this.values.delete(key); }
-  setItem(key: string, value: string) { this.values.set(key, value); }
-}
 
 const registration = {
   name: "Ada Lovelace",
@@ -17,34 +7,44 @@ const registration = {
   securityQuestion: SECURITY_QUESTIONS[2],
   securityAnswer: "Analytical Engines",
   password: "evidence-first",
+  confirmPassword: "evidence-first",
 };
 
-describe("local authentication store", () => {
-  it("registers and authenticates a user without persisting plaintext secrets", async () => {
-    const storage = new MemoryStorage();
-    await registerUser(registration, storage);
-    await expect(authenticateUser("ADA.RESEARCH", registration.password, storage)).resolves.toEqual({ name: registration.name, username: registration.username });
-    const persisted = storage.getItem("tarasha-local-users-v1") ?? "";
-    expect(persisted).not.toContain(registration.password);
-    expect(persisted).not.toContain(registration.securityAnswer);
+describe("account API client", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("registers through the server account endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ name: registration.name, username: registration.username }), { status: 201 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(registerUser(registration)).resolves.toEqual({ name: registration.name, username: registration.username });
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/register", expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify(registration),
+    }));
   });
 
-  it("resets a password only when the security answer matches", async () => {
-    const storage = new MemoryStorage();
-    await registerUser(registration, storage);
-    expect(getSecurityQuestion(registration.username, storage)).toBe(registration.securityQuestion);
-    await expect(resetPassword(registration.username, "wrong", "new-password", storage)).rejects.toThrow("incorrect");
-    await resetPassword(registration.username, "  analytical   engines ", "new-password", storage);
-    await expect(authenticateUser(registration.username, registration.password, storage)).rejects.toThrow("incorrect");
-    await expect(authenticateUser(registration.username, "new-password", storage)).resolves.toMatchObject({ username: registration.username });
+  it("authenticates without creating a browser-local credential store", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ name: registration.name, username: registration.username }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(authenticateUser(registration.username, registration.password)).resolves.toMatchObject({ username: registration.username });
+    expect(fetchMock).toHaveBeenCalledWith("/api/auth/login", expect.objectContaining({ method: "POST" }));
   });
 
-  it("accepts only a security question from the registration list", async () => {
-    const storage = new MemoryStorage();
-    await expect(registerUser({
-      ...registration,
-      securityQuestion: "What is a question I invented?",
-    }, storage)).rejects.toThrow("Choose a security question from the list.");
-    expect(storage.length).toBe(0);
+  it("retrieves the recovery question and submits a password reset", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ question: registration.securityQuestion }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ reset: true }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getSecurityQuestion(registration.username)).resolves.toBe(registration.securityQuestion);
+    await expect(resetPassword(registration.username, registration.securityAnswer, "new-password")).resolves.toBeUndefined();
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/auth/reset-password", expect.objectContaining({ method: "POST" }));
+  });
+
+  it("surfaces the server error message", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: "Username or password is incorrect." }), { status: 401 })));
+    await expect(authenticateUser("missing", "wrong-password")).rejects.toThrow("incorrect");
   });
 });

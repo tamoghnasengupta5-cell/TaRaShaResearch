@@ -19,6 +19,8 @@ The zero-cost Cloudflare live preview has now been provisioned and its US SEC ca
 - Data-source/freshness treatment
 - Explicit founding-user, data-source and persistence labelling
 - Cloudflare Pages Function provider boundary; shared-database credentials remain server-only
+- Database-backed Consumer accounts with encrypted identifiers and one-way credential hashes
+- Admin-only aggregate signup count without exposing individual account records
 - Supabase free-tier schema with invite, profile, watchlist, consent and row-level security foundations
 
 ## Run locally
@@ -34,6 +36,12 @@ npm run dev
 Open the local URL shown by Vite. On the owner's Mac, `npm run dev` reads the shared Research service-role key from macOS Keychain and serves the updated Research provider through Vite's server-only development middleware. The key is never sent to browser code. This full local path is required when testing a new API response field, such as peer-level Gross Operating Leverage observations.
 
 On another development machine, provide `SHARED_RESEARCH_SERVICE_KEY` only in the launching shell. Never put the service-role key in a `VITE_*` variable or a checked-in file.
+
+Local registrations are stored in `.local-data/tarasha-consumer-auth.db`. The field-encryption secret is read from macOS Keychain and is created there automatically the first time the local server starts. On a non-macOS machine, set a secret of at least 32 characters in the launching shell as `CONSUMER_AUTH_SECRET`; the local fallback secret file is git-ignored. To see the aggregate local signup count without displaying account details, run:
+
+```bash
+npm run users:summary:local
+```
 
 To use the already-provisioned live US catalogue from localhost, create `.env.local` with:
 
@@ -58,10 +66,11 @@ npm run check
 3. Use `npm run build` as the build command.
 4. Use `dist` as the output directory.
 5. Keep this consumer branch as a **preview deployment**, then enable the project's preview access policy in **Settings → General**. Allow only the founding subscribers' email addresses. Do not expose the production `*.pages.dev` deployment with live data: Cloudflare's one-click Pages Access switch protects previews, not that production hostname.
-6. Create a D1 database from the Cloudflare dashboard and run `migrations/0001_catalog_and_session_claims.sql` in its console.
+6. Create a D1 database from the Cloudflare dashboard and run `migrations/0001_catalog_and_session_claims.sql`, followed by `migrations/0002_consumer_users.sql`, in its console.
 7. Bind that database to the Pages project's **preview environment** using the exact variable name `DB`.
 8. Add encrypted preview Function secrets:
-   - `ADMIN_SYNC_KEY`: a long random value used only for catalogue refreshes
+   - `ADMIN_SYNC_KEY`: a long random value used only for protected administrative endpoints
+   - `CONSUMER_AUTH_SECRET`: a separate random value of at least 32 characters, used for account field encryption and credential peppering; losing it makes encrypted account identifiers unrecoverable
    - `SEC_USER_AGENT`: `TaRaSha Company Lens your-admin-email@example.com`
    - `SHARED_RESEARCH_SERVICE_KEY`: the server-only Supabase service-role key
 9. Add preview Function variables:
@@ -88,15 +97,34 @@ npm run sync:us-catalog
 
 The Cloudflare Access values are required when the preview is protected; keep them in your shell or password manager, never in a browser environment file. The script downloads the SEC's ticker/exchange association file and sends it to D1 in batches of 100. The SEC expressly says this directory is periodically updated but does not guarantee accuracy or scope, so the UI calls it the SEC catalogue rather than claiming perfect coverage.
 
-## Optional future in-app identity preparation
+### Admin signup count
 
-The existing Consumer-auth schema is optional and separate from the shared Research tables. It is only a foundation for invite-only accounts and watchlists:
+After deployment, retrieve only the aggregate account totals and signup timestamps with:
+
+```bash
+cd consumer
+API_BASE_URL="https://your-project.pages.dev" \
+ADMIN_SYNC_KEY="the-same-encrypted-admin-secret" \
+CF_ACCESS_CLIENT_ID="your-service-token-id" \
+CF_ACCESS_CLIENT_SECRET="your-service-token-secret" \
+npm run users:summary
+```
+
+The account database stores an encrypted name and username, a keyed lookup value for uniqueness checks, the selected security-question code, one-way password and recovery-answer hashes, account status, and account timestamps. It does not collect email addresses, telephone numbers, IP addresses, device fingerprints, or financial-research activity. The admin summary deliberately returns no individual account fields.
+
+Existing browser-local accounts cannot be safely migrated because their original password and recovery answer are not recoverable. Those users must register again once after this change. The obsolete browser account record is removed after the first successful database registration or login.
+
+Encryption and pseudonymisation are security controls, not a declaration that the records cease to be personal data. Before a public production launch, define a retention/deletion policy, update the privacy notice and terms, restrict administrator access, arrange encrypted-secret backup/rotation, and obtain jurisdiction-specific legal review.
+
+## Legacy optional Supabase identity preparation
+
+The repository still contains an earlier optional Supabase identity foundation for invite-only accounts and watchlists. It is not used by the current D1-backed username/password flow:
 
 1. Create a new Supabase project dedicated to Company Lens.
 2. Run `supabase/001_initial_schema.sql` in its SQL editor.
 3. Insert up to ten lowercase email addresses into `beta_invites` from the protected SQL editor.
 4. Add the public project URL and anonymous key to `.env.local` using `.env.example`.
-5. Add the authentication screens before moving away from the Access-protected preview; the schema already rejects uninvited users and an eleventh profile.
+5. Rework the authentication screens and migration path before switching providers; the legacy schema rejects uninvited users and an eleventh profile.
 
 Never expose the shared Research service-role key in the browser. Only the Pages Function may use it, and it may query only the restricted `consumer_*` views defined by the shared Research migrations.
 

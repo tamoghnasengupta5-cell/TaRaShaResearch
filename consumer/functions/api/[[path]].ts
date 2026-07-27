@@ -1,11 +1,20 @@
 /// <reference types="@cloudflare/workers-types" />
 
 import { pullResearchCompany, researchProviderEnabled, searchResearchCompanies, type ResearchProviderEnv } from "../researchProvider";
+import {
+  accountSummary,
+  authenticateAccount,
+  AuthError,
+  registerAccount,
+  resetAccountPassword,
+  securityQuestionFor,
+} from "../authProvider";
 
 interface Env extends ResearchProviderEnv {
   DB: D1Database;
   ADMIN_SYNC_KEY: string;
   SEC_USER_AGENT: string;
+  CONSUMER_AUTH_SECRET: string;
   DATA_PROVIDER?: string;
 }
 
@@ -171,6 +180,80 @@ async function adminCatalogBatch(request: Request, env: Env): Promise<Response> 
   return json({ accepted: statements.length });
 }
 
+async function registerUser(request: Request, env: Env): Promise<Response> {
+  const body: {
+    name?: string;
+    username?: string;
+    securityQuestion?: string;
+    securityAnswer?: string;
+    password?: string;
+    confirmPassword?: string;
+  } = await request.json<{
+    name?: string;
+    username?: string;
+    securityQuestion?: string;
+    securityAnswer?: string;
+    password?: string;
+    confirmPassword?: string;
+  }>().catch(() => ({}));
+  try {
+    return json(await registerAccount(env.DB, env.CONSUMER_AUTH_SECRET, {
+      name: String(body.name ?? ""),
+      username: String(body.username ?? ""),
+      securityQuestion: String(body.securityQuestion ?? ""),
+      securityAnswer: String(body.securityAnswer ?? ""),
+      password: String(body.password ?? ""),
+      confirmPassword: String(body.confirmPassword ?? ""),
+    }), 201);
+  } catch (cause) {
+    return cause instanceof AuthError ? error(cause.message, cause.status) : error("Account registration is temporarily unavailable.", 503);
+  }
+}
+
+async function loginUser(request: Request, env: Env): Promise<Response> {
+  const body = await request.json<{ username?: string; password?: string }>().catch(() => ({} as { username?: string; password?: string }));
+  try {
+    return json(await authenticateAccount(env.DB, env.CONSUMER_AUTH_SECRET, String(body.username ?? ""), String(body.password ?? "")));
+  } catch (cause) {
+    return cause instanceof AuthError ? error(cause.message, cause.status) : error("Account login is temporarily unavailable.", 503);
+  }
+}
+
+async function userSecurityQuestion(request: Request, env: Env): Promise<Response> {
+  const body = await request.json<{ username?: string }>().catch(() => ({} as { username?: string }));
+  try {
+    return json({ question: await securityQuestionFor(env.DB, env.CONSUMER_AUTH_SECRET, String(body.username ?? "")) });
+  } catch (cause) {
+    return cause instanceof AuthError ? error(cause.message, cause.status) : error("Account recovery is temporarily unavailable.", 503);
+  }
+}
+
+async function resetUserPassword(request: Request, env: Env): Promise<Response> {
+  const body = await request.json<{ username?: string; answer?: string; newPassword?: string }>()
+    .catch(() => ({} as { username?: string; answer?: string; newPassword?: string }));
+  try {
+    await resetAccountPassword(
+      env.DB,
+      env.CONSUMER_AUTH_SECRET,
+      String(body.username ?? ""),
+      String(body.answer ?? ""),
+      String(body.newPassword ?? ""),
+    );
+    return json({ reset: true });
+  } catch (cause) {
+    return cause instanceof AuthError ? error(cause.message, cause.status) : error("Account recovery is temporarily unavailable.", 503);
+  }
+}
+
+async function adminUserSummary(request: Request, env: Env): Promise<Response> {
+  if (!env.ADMIN_SYNC_KEY || request.headers.get("x-admin-key") !== env.ADMIN_SYNC_KEY) return error("Admin authorization failed.", 401);
+  try {
+    return json(await accountSummary(env.DB));
+  } catch {
+    return error("User summary is temporarily unavailable.", 503);
+  }
+}
+
 async function claimCompany(request: Request, env: Env): Promise<Response> {
   const body: { companyId?: string; sessionId?: string; fromYear?: number; toYear?: number } = await request
     .json<{ companyId?: string; sessionId?: string; fromYear?: number; toYear?: number }>()
@@ -240,9 +323,14 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   const [first, second, third] = pathParts(request);
   if (request.method === "GET" && first === "health") return json({ ok: true, provider: researchProviderEnabled(env) ? "research-db" : "sec", financialStorage: "browser-session-only" });
   if (request.method === "GET" && first === "companies") return searchCompanies(request, env);
+  if (request.method === "POST" && first === "auth" && second === "register") return registerUser(request, env);
+  if (request.method === "POST" && first === "auth" && second === "login") return loginUser(request, env);
+  if (request.method === "POST" && first === "auth" && second === "security-question") return userSecurityQuestion(request, env);
+  if (request.method === "POST" && first === "auth" && second === "reset-password") return resetUserPassword(request, env);
   if (request.method === "GET" && first === "research" && second === "company") return researchCompany(request, env);
   if (request.method === "POST" && first === "research" && second === "company") return recalculateResearchCompany(request, env);
   if (request.method === "POST" && first === "admin" && second === "catalog" && third === "batch") return adminCatalogBatch(request, env);
+  if (request.method === "GET" && first === "admin" && second === "users" && third === "summary") return adminUserSummary(request, env);
   if (request.method === "POST" && first === "session" && second === "claim") return claimCompany(request, env);
   if (request.method === "GET" && first === "sec" && second === "companyfacts") return secProxy(request, env, "companyfacts");
   if (request.method === "GET" && first === "sec" && second === "submissions") return secProxy(request, env, "submissions");

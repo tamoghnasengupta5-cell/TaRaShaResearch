@@ -16,7 +16,7 @@ interface ResearchFactRow {
   statement_key: "income" | "balance" | "cash" | "shares";
   fact_key: string;
   label: string;
-  unit_kind: "amount" | "shares";
+  unit_kind: "amount" | "shares" | "ratio";
   fiscal_year: number;
   value: number;
 }
@@ -47,7 +47,13 @@ interface ResearchIndustryFactRow {
     | "minorityInterestInEarnings"
     | "earningsFromDiscontinuedOperations"
     | "commonDividendsPaid"
-    | "netIncomeToCommon";
+    | "netIncomeToCommon"
+    | "effectiveTaxRate"
+    | "nonCashWorkingCapital"
+    | "shareBasedCompensation"
+    | "otherAdjustments"
+    | "capex"
+    | "netDebtIssuedPaid";
   fiscal_year: number;
   value: number;
 }
@@ -100,6 +106,10 @@ const factDescriptions: Record<string, string> = {
   earningsFromDiscontinuedOperations: "Reported gain or loss from discontinued operations.",
   commonDividendsPaid: "Cash dividends paid to common shareholders.",
   netIncomeToCommon: "Reported net income attributable to common shareholders.",
+  effectiveTaxRate: "Reported effective tax rate used to derive NOPAT.",
+  nonCashWorkingCapital: "Current operating assets less current operating liabilities, excluding cash and current debt.",
+  shareBasedCompensation: "Reported non-cash share-based compensation expense.",
+  otherAdjustments: "Other reported cash-flow adjustments, retaining their source sign.",
   cash: "Cash and cash-equivalent balance.",
   shortTermInvestments: "Reported short-term investments.",
   accountsReceivable: "Amounts due from customers and other debtors.",
@@ -108,6 +118,8 @@ const factDescriptions: Record<string, string> = {
   assets: "Total reported assets.",
   accountsPayable: "Amounts owed to suppliers and other creditors.",
   currentDebt: "Borrowings classified as current.",
+  shortTermBorrowings: "Short-term borrowings reported separately from the current portion of long-term debt.",
+  currentPortionLongTermDebt: "Long-term borrowings due within the current period.",
   currentLiabilities: "Obligations classified as current.",
   longTermLiabilities: "Reported longer-term obligations.",
   totalDebt: "Total reported borrowings.",
@@ -926,6 +938,215 @@ function valuationAnalysis(
   };
 }
 
+export interface CashFlowSeriesInput {
+  revenue: YearValue[];
+  ebit: YearValue[];
+  effectiveTaxRate: YearValue[];
+  depreciationAndAmortization: YearValue[];
+  capitalExpenditure: YearValue[];
+  nonCashWorkingCapital: YearValue[];
+  netIncomeToCommon: YearValue[];
+  shareBasedCompensation: YearValue[];
+  otherAdjustments: YearValue[];
+  netBorrowing: YearValue[];
+  currentAssets?: YearValue[];
+  cashAndCashEquivalents?: YearValue[];
+  currentLiabilities?: YearValue[];
+  currentDebt?: YearValue[];
+  shortTermBorrowings?: YearValue[];
+  currentPortionLongTermDebt?: YearValue[];
+}
+
+type FcffBridgeMetricKey = "ebit" | "nopat" | "depreciationAndAmortization" | "capitalExpenditure" | "workingCapitalImpact" | "fcff";
+type FcfeBridgeMetricKey = "netIncomeToCommon" | "depreciationAndAmortization" | "shareBasedCompensation" | "otherAdjustments" | "capitalExpenditure" | "workingCapitalImpact" | "netBorrowing" | "fcfe";
+type CashFlowMetricSnapshot = { value: number | null; percent: number | null };
+type WorkingCapitalPeriodSnapshot = {
+  year: number;
+  currentAssets: number | null;
+  cashAndCashEquivalents: number | null;
+  netCurrentAssets: number | null;
+  currentLiabilities: number | null;
+  shortTermBorrowings: number | null;
+  currentPortionLongTermDebt: number | null;
+  otherInterestBearingCurrentDebt: number | null;
+  totalInterestBearingCurrentDebt: number | null;
+  netCurrentLiabilities: number | null;
+  netOperatingWorkingCapital: number | null;
+  debtBreakdownStatus: "reported-components" | "partially-reported" | "aggregate-only" | "components-only" | "unavailable";
+};
+type CashFlowYearSnapshot = {
+  effectiveTaxRatePercent: number | null;
+  workingCapital: {
+    previousYear: WorkingCapitalPeriodSnapshot;
+    currentYear: WorkingCapitalPeriodSnapshot;
+    netChangeInWorkingCapital: number | null;
+    cashImpact: number | null;
+    cashEffect: "inflow" | "outflow" | "neutral" | "unavailable";
+  };
+  fcff: Record<FcffBridgeMetricKey, CashFlowMetricSnapshot>;
+  fcfe: Record<FcfeBridgeMetricKey, CashFlowMetricSnapshot>;
+};
+
+function normalizedTaxRate(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.abs(value) > 1 ? value / 100 : value;
+}
+
+function percentageOf(value: number | null, denominator: number | null): number | null {
+  return value !== null && denominator !== null && denominator !== 0 && Number.isFinite(value) && Number.isFinite(denominator)
+    ? (value / Math.abs(denominator)) * 100
+    : null;
+}
+
+function workingCapitalPeriodSnapshot(series: CashFlowSeriesInput, year: number): WorkingCapitalPeriodSnapshot {
+  const currentAssets = finiteValueForYear(series.currentAssets ?? [], year);
+  const cashAndCashEquivalents = finiteValueForYear(series.cashAndCashEquivalents ?? [], year);
+  const currentLiabilities = finiteValueForYear(series.currentLiabilities ?? [], year);
+  const aggregateCurrentDebt = finiteValueForYear(series.currentDebt ?? [], year);
+  const shortTermBorrowings = finiteValueForYear(series.shortTermBorrowings ?? [], year);
+  const currentPortionLongTermDebt = finiteValueForYear(series.currentPortionLongTermDebt ?? [], year);
+  const reportedComponents = [shortTermBorrowings, currentPortionLongTermDebt].filter((value) => value !== null).length;
+  const componentTotal = (shortTermBorrowings ?? 0) + (currentPortionLongTermDebt ?? 0);
+  const totalInterestBearingCurrentDebt = aggregateCurrentDebt ?? (reportedComponents ? componentTotal : null);
+  const otherInterestBearingCurrentDebt = aggregateCurrentDebt !== null
+    ? aggregateCurrentDebt - componentTotal
+    : reportedComponents === 2
+      ? 0
+      : null;
+  const debtBreakdownStatus: WorkingCapitalPeriodSnapshot["debtBreakdownStatus"] = aggregateCurrentDebt !== null
+    ? reportedComponents === 2
+      ? "reported-components"
+      : reportedComponents === 1
+        ? "partially-reported"
+        : "aggregate-only"
+    : reportedComponents
+      ? "components-only"
+      : "unavailable";
+  const netCurrentAssets = currentAssets !== null && cashAndCashEquivalents !== null
+    ? currentAssets - cashAndCashEquivalents
+    : null;
+  const netCurrentLiabilities = currentLiabilities !== null && totalInterestBearingCurrentDebt !== null
+    ? currentLiabilities - totalInterestBearingCurrentDebt
+    : null;
+  const calculatedWorkingCapital = netCurrentAssets !== null && netCurrentLiabilities !== null
+    ? netCurrentAssets - netCurrentLiabilities
+    : null;
+  const storedWorkingCapital = finiteValueForYear(series.nonCashWorkingCapital, year);
+
+  return {
+    year,
+    currentAssets,
+    cashAndCashEquivalents,
+    netCurrentAssets,
+    currentLiabilities,
+    shortTermBorrowings,
+    currentPortionLongTermDebt,
+    otherInterestBearingCurrentDebt,
+    totalInterestBearingCurrentDebt,
+    netCurrentLiabilities,
+    netOperatingWorkingCapital: calculatedWorkingCapital ?? storedWorkingCapital,
+    debtBreakdownStatus,
+  };
+}
+
+function cashFlowSnapshot(series: CashFlowSeriesInput, year: number): CashFlowYearSnapshot {
+  const revenue = finiteValueForYear(series.revenue, year);
+  const ebit = finiteValueForYear(series.ebit, year);
+  const effectiveTaxRate = normalizedTaxRate(finiteValueForYear(series.effectiveTaxRate, year));
+  const da = finiteValueForYear(series.depreciationAndAmortization, year);
+  const rawCapex = finiteValueForYear(series.capitalExpenditure, year);
+  const capex = rawCapex === null ? null : Math.abs(rawCapex);
+  const currentNcwc = finiteValueForYear(series.nonCashWorkingCapital, year);
+  const priorNcwc = finiteValueForYear(series.nonCashWorkingCapital, year - 1);
+  const workingCapitalImpact = currentNcwc !== null && priorNcwc !== null ? priorNcwc - currentNcwc : null;
+  const netChangeInWorkingCapital = workingCapitalImpact === null ? null : -workingCapitalImpact;
+  const previousWorkingCapital = workingCapitalPeriodSnapshot(series, year - 1);
+  const currentWorkingCapital = workingCapitalPeriodSnapshot(series, year);
+  const nopat = ebit !== null && effectiveTaxRate !== null ? ebit * (1 - effectiveTaxRate) : null;
+  const fcff = nopat !== null && da !== null && capex !== null && workingCapitalImpact !== null
+    ? nopat + da - capex + workingCapitalImpact
+    : null;
+
+  const netIncomeToCommon = finiteValueForYear(series.netIncomeToCommon, year);
+  const shareBasedCompensation = finiteValueForYear(series.shareBasedCompensation, year);
+  const otherAdjustments = finiteValueForYear(series.otherAdjustments, year);
+  // Research's FCFE contract treats a missing net borrowing row as zero.
+  const netBorrowing = finiteValueForYear(series.netBorrowing, year) ?? 0;
+  const fcfe = netIncomeToCommon !== null && da !== null && shareBasedCompensation !== null && otherAdjustments !== null && capex !== null && workingCapitalImpact !== null
+    ? netIncomeToCommon + da + shareBasedCompensation + otherAdjustments - capex + workingCapitalImpact + netBorrowing
+    : null;
+
+  return {
+    effectiveTaxRatePercent: effectiveTaxRate === null ? null : effectiveTaxRate * 100,
+    workingCapital: {
+      previousYear: previousWorkingCapital,
+      currentYear: currentWorkingCapital,
+      netChangeInWorkingCapital,
+      cashImpact: workingCapitalImpact,
+      cashEffect: workingCapitalImpact === null ? "unavailable" : workingCapitalImpact > 0 ? "inflow" : workingCapitalImpact < 0 ? "outflow" : "neutral",
+    },
+    fcff: {
+      ebit: { value: ebit, percent: percentageOf(ebit, revenue) },
+      nopat: { value: nopat, percent: null },
+      depreciationAndAmortization: { value: da, percent: percentageOf(da, ebit) },
+      capitalExpenditure: { value: capex, percent: percentageOf(capex, ebit) },
+      workingCapitalImpact: { value: workingCapitalImpact, percent: percentageOf(workingCapitalImpact, fcff) },
+      fcff: { value: fcff, percent: null },
+    },
+    fcfe: {
+      netIncomeToCommon: { value: netIncomeToCommon, percent: null },
+      depreciationAndAmortization: { value: da, percent: percentageOf(da, netIncomeToCommon) },
+      shareBasedCompensation: { value: shareBasedCompensation, percent: percentageOf(shareBasedCompensation, netIncomeToCommon) },
+      otherAdjustments: { value: otherAdjustments, percent: percentageOf(otherAdjustments, netIncomeToCommon) },
+      capitalExpenditure: { value: capex, percent: percentageOf(capex, netIncomeToCommon) },
+      workingCapitalImpact: { value: workingCapitalImpact, percent: percentageOf(workingCapitalImpact, fcfe) },
+      netBorrowing: { value: netBorrowing, percent: percentageOf(netBorrowing, netIncomeToCommon) },
+      fcfe: { value: fcfe, percent: null },
+    },
+  };
+}
+
+function cashFlowMetric(
+  company: CashFlowMetricSnapshot,
+  peers: CashFlowMetricSnapshot[],
+) {
+  const peerValues = peers.map((item) => item.value).filter((value): value is number => value !== null && Number.isFinite(value));
+  const peerPercentages = peers.map((item) => item.percent).filter((value): value is number => value !== null && Number.isFinite(value));
+  return {
+    companyValue: company.value,
+    industryMedian: median(peerValues),
+    industryObservations: peerValues.length,
+    companyPercent: company.percent,
+    industryMedianPercent: median(peerPercentages),
+  };
+}
+
+export function buildCashFlowAnalysis(
+  companySeries: CashFlowSeriesInput,
+  peerSeries: Map<number, CashFlowSeriesInput>,
+  fromYear: number,
+  toYear: number,
+) {
+  const fcffKeys: FcffBridgeMetricKey[] = ["ebit", "nopat", "depreciationAndAmortization", "capitalExpenditure", "workingCapitalImpact", "fcff"];
+  const fcfeKeys: FcfeBridgeMetricKey[] = ["netIncomeToCommon", "depreciationAndAmortization", "shareBasedCompensation", "otherAdjustments", "capitalExpenditure", "workingCapitalImpact", "netBorrowing", "fcfe"];
+  return {
+    yearly: Array.from({ length: toYear - fromYear + 1 }, (_, index) => {
+      const year = fromYear + index;
+      const company = cashFlowSnapshot(companySeries, year);
+      const peers = [...peerSeries.values()].map((series) => cashFlowSnapshot(series, year));
+      const peerTaxRates = peers.map((item) => item.effectiveTaxRatePercent).filter((value): value is number => value !== null && Number.isFinite(value));
+      return {
+        year,
+        effectiveTaxRatePercent: company.effectiveTaxRatePercent,
+        industryMedianEffectiveTaxRatePercent: median(peerTaxRates),
+        workingCapital: company.workingCapital,
+        fcff: Object.fromEntries(fcffKeys.map((key) => [key, cashFlowMetric(company.fcff[key], peers.map((item) => item.fcff[key]))])) as Record<FcffBridgeMetricKey, ReturnType<typeof cashFlowMetric>>,
+        fcfe: Object.fromEntries(fcfeKeys.map((key) => [key, cashFlowMetric(company.fcfe[key], peers.map((item) => item.fcfe[key]))])) as Record<FcfeBridgeMetricKey, ReturnType<typeof cashFlowMetric>>,
+      };
+    }),
+  };
+}
+
 function netDebtSeries(debt: YearValue[], cash: YearValue[], investments: YearValue[]): YearValue[] {
   const cashByYear = new Map(cash.map((item) => [item.year, item.value]));
   const investmentsByYear = new Map(investments.map((item) => [item.year, item.value]));
@@ -949,7 +1170,7 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
   const factParams = new URLSearchParams({
     select: "company_id,statement_key,fact_key,label,unit_kind,fiscal_year,value",
     company_id: `eq.${numericId}`,
-    fiscal_year: `gte.${fromYear}`,
+    fiscal_year: `gte.${fromYear - 1}`,
     and: `(fiscal_year.lte.${toYear})`,
     order: "statement_key.asc,fact_key.asc,fiscal_year.asc",
   });
@@ -968,8 +1189,8 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
     const industryParams = new URLSearchParams({
       select: "bucket_id,bucket_name,company_id,country,fact_key,fiscal_year,value",
       country: `eq.${company.country}`,
-      fact_key: "in.(revenue,costOfRevenue,sga,researchAndDevelopment,ebitda,depreciation,ebit,operatingIncome,interestExpense,pretaxIncome,netIncome,minorityInterestInEarnings,earningsFromDiscontinuedOperations,commonDividendsPaid,netIncomeToCommon)",
-      fiscal_year: `gte.${fromYear}`,
+      fact_key: "in.(revenue,costOfRevenue,sga,researchAndDevelopment,ebitda,depreciation,ebit,operatingIncome,interestExpense,pretaxIncome,netIncome,minorityInterestInEarnings,earningsFromDiscontinuedOperations,commonDividendsPaid,netIncomeToCommon,effectiveTaxRate,nonCashWorkingCapital,shareBasedCompensation,otherAdjustments,capex,netDebtIssuedPaid)",
+      fiscal_year: `gte.${fromYear - 1}`,
       and: `(fiscal_year.lte.${toYear})`,
       order: "company_id.asc,fact_key.asc,fiscal_year.asc",
     });
@@ -979,8 +1200,13 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
   }
   const amountScale = company.country === "India" ? 10 : 1;
   const amountUnit = company.country === "India" ? "₹ crore" : "US$ million";
-  const facts = rawFacts.map((fact) => ({ ...fact, value: fact.unit_kind === "amount" ? Number(fact.value) / amountScale : Number(fact.value) }));
-  const industryFacts = rawIndustryFacts.map((fact) => ({ ...fact, value: Number(fact.value) / amountScale }));
+  const analysisFacts = rawFacts.map((fact) => ({ ...fact, value: fact.unit_kind === "amount" ? Number(fact.value) / amountScale : Number(fact.value) }));
+  const facts = analysisFacts.filter((fact) => fact.fiscal_year >= fromYear);
+  const cashFlowIndustryFacts = rawIndustryFacts.map((fact) => ({
+    ...fact,
+    value: fact.fact_key === "effectiveTaxRate" ? Number(fact.value) : Number(fact.value) / amountScale,
+  }));
+  const industryFacts = cashFlowIndustryFacts.filter((fact) => fact.fiscal_year >= fromYear);
   const statements = (Object.keys(statementLabels) as Array<keyof typeof statementLabels>).map((statementKey) => {
     const statementFacts = facts.filter((fact) => fact.statement_key === statementKey);
     const grouped = new Map<string, ResearchFactRow[]>();
@@ -992,7 +1218,7 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
         key,
         label: values[0].label,
         description: factDescriptions[key] ?? "Imported historical financial fact.",
-        unit: values[0].unit_kind === "shares" ? "million shares" : amountUnit,
+        unit: values[0].unit_kind === "shares" ? "million shares" : values[0].unit_kind === "ratio" ? "%" : amountUnit,
         values: values.map((value) => ({ year: value.fiscal_year, value: value.value })),
       })),
     };
@@ -1012,6 +1238,17 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
   const earningsFromDiscontinuedOperations = seriesFor(facts, "earningsFromDiscontinuedOperations");
   const commonDividendsPaid = seriesFor(facts, "commonDividendsPaid");
   const netIncomeToCommon = seriesFor(facts, "netIncomeToCommon");
+  const effectiveTaxRate = seriesFor(facts, "effectiveTaxRate");
+  const cashFlowNonCashWorkingCapital = seriesFor(analysisFacts, "nonCashWorkingCapital");
+  const workingCapitalCurrentAssets = seriesFor(analysisFacts, "currentAssets");
+  const workingCapitalCash = seriesFor(analysisFacts, "cash");
+  const workingCapitalCurrentLiabilities = seriesFor(analysisFacts, "currentLiabilities");
+  const workingCapitalCurrentDebt = seriesFor(analysisFacts, "currentDebt");
+  const shortTermBorrowings = seriesFor(analysisFacts, "shortTermBorrowings");
+  const currentPortionLongTermDebt = seriesFor(analysisFacts, "currentPortionLongTermDebt");
+  const shareBasedCompensation = seriesFor(facts, "shareBasedCompensation");
+  const otherAdjustments = seriesFor(facts, "otherAdjustments");
+  const netBorrowing = seriesFor(facts, "netDebtIssuedPaid");
   const grossProfit = derivedSeries(revenue, operatingCost, (a, b) => a - b);
   const operatingCash = seriesFor(facts, "operatingCash");
   const capex = seriesFor(facts, "capex");
@@ -1044,6 +1281,12 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
   const industryEarningsFromDiscontinuedOperations = groupIndustrySeries(industryFacts, "earningsFromDiscontinuedOperations");
   const industryCommonDividendsPaid = groupIndustrySeries(industryFacts, "commonDividendsPaid");
   const industryNetIncomeToCommon = groupIndustrySeries(industryFacts, "netIncomeToCommon");
+  const industryEffectiveTaxRate = groupIndustrySeries(industryFacts, "effectiveTaxRate");
+  const industryNonCashWorkingCapital = groupIndustrySeries(cashFlowIndustryFacts, "nonCashWorkingCapital");
+  const industryShareBasedCompensation = groupIndustrySeries(industryFacts, "shareBasedCompensation");
+  const industryOtherAdjustments = groupIndustrySeries(industryFacts, "otherAdjustments");
+  const industryCapex = groupIndustrySeries(industryFacts, "capex");
+  const industryNetBorrowing = groupIndustrySeries(industryFacts, "netDebtIssuedPaid");
   const industryGrossProfit = derivedIndustrySeries(industryRevenue, industryOperatingCost, (a, b) => a - b);
   const industryProfitability = buildIndustryProfitabilitySeries(industryRevenue, industryOperatingCost, industryOperatingIncome, industrySga, industryDepreciation, industryResearchAndDevelopment);
   const industryProfitabilityAbsolute: IndustryProfitabilityAbsoluteSeries = {
@@ -1108,6 +1351,37 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
     commonDividendsPaid: industryCommonDividendsPaid,
     netIncomeToCommon: industryNetIncomeToCommon,
   });
+  const companyCashFlowSeries: CashFlowSeriesInput = {
+    revenue,
+    ebit,
+    effectiveTaxRate,
+    depreciationAndAmortization: depreciation,
+    capitalExpenditure: capex,
+    nonCashWorkingCapital: cashFlowNonCashWorkingCapital,
+    netIncomeToCommon,
+    shareBasedCompensation,
+    otherAdjustments,
+    netBorrowing,
+    currentAssets: workingCapitalCurrentAssets,
+    cashAndCashEquivalents: workingCapitalCash,
+    currentLiabilities: workingCapitalCurrentLiabilities,
+    currentDebt: workingCapitalCurrentDebt,
+    shortTermBorrowings,
+    currentPortionLongTermDebt,
+  };
+  const cashFlowPeerIds = [...new Set(industryFacts.map((fact) => fact.company_id))];
+  const peerCashFlowSeries = new Map<number, CashFlowSeriesInput>(cashFlowPeerIds.map((peerId) => [peerId, {
+    revenue: industryRevenue.get(peerId) ?? [],
+    ebit: industryEbit.get(peerId) ?? [],
+    effectiveTaxRate: industryEffectiveTaxRate.get(peerId) ?? [],
+    depreciationAndAmortization: industryDepreciation.get(peerId) ?? [],
+    capitalExpenditure: industryCapex.get(peerId) ?? [],
+    nonCashWorkingCapital: industryNonCashWorkingCapital.get(peerId) ?? [],
+    netIncomeToCommon: industryNetIncomeToCommon.get(peerId) ?? [],
+    shareBasedCompensation: industryShareBasedCompensation.get(peerId) ?? [],
+    otherAdjustments: industryOtherAdjustments.get(peerId) ?? [],
+    netBorrowing: industryNetBorrowing.get(peerId) ?? [],
+  }]));
   const marketMetricIds = [...new Set([numericId, ...constituentMetadataIds])];
   let rawMarketMetrics: ResearchMarketMetricRow[] = [];
   if (marketMetricIds.length) {
@@ -1176,6 +1450,7 @@ export async function pullResearchCompany(env: ResearchProviderEnv, companyId: s
         earningsFlow: earningsFlowAnalysis(companyEarningsSeries, peerEarningsSeries, fromYear, toYear),
         valuation: valuationAnalysis(companyEarningsSeries, peerEarningsSeries, marketByCompany, numericId, fromYear, toYear),
       },
+      cashFlow: buildCashFlowAnalysis(companyCashFlowSeries, peerCashFlowSeries, fromYear, toYear),
     },
     notes: {
       growth: "Review the imported multi-year revenue record and the underlying spreadsheet source before drawing conclusions.",
