@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { languageForIndustryBucket } from "./industryLanguage";
 
 describe("industry-aware Consumer language", () => {
-  it("uses platform language for Microsoft's TaRaShaResearch bucket", () => {
+  it("uses platform language for Microsoft's industry bucket", () => {
     const language = languageForIndustryBucket("AI Cloud, Data & AI Platform, Model Layer : Hyperscale Cloud & AI Platforms");
     expect(language.lens).toBe("Software and platform engine");
     expect(language.growthQuestion).toContain("platform usage");

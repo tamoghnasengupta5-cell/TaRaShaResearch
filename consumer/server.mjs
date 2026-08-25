@@ -5,10 +5,12 @@ import { extname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const port = Number.parseInt(process.env.PORT || "8080", 10);
-const apiOrigin = String(
-  process.env.CONSUMER_API_ORIGIN ||
-    "https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev",
-).replace(/\/$/, "");
+const apiOrigin = String(process.env.TARASHA_DISCOVER_API_ORIGIN || "").trim().replace(/\/$/, "");
+if (!apiOrigin) {
+  throw new Error(
+    "TARASHA_DISCOVER_API_ORIGIN must point to a deployed Discover API configured for TaRaShaData.ai.",
+  );
+}
 const distRoot = resolve(fileURLToPath(new URL("./dist/", import.meta.url)));
 
 const mimeTypes = new Map([
@@ -138,6 +140,19 @@ const server = createServer(async (request, response) => {
   }
 });
 
+async function assertTaRaShaDataOrigin() {
+  const response = await fetch(new URL("/api/health", apiOrigin), {
+    headers: { Accept: "application/json" },
+  });
+  const health = await response.json().catch(() => ({}));
+  if (!response.ok || health.provider !== "tarasha-data" || health.configured === false) {
+    throw new Error(
+      "TARASHA_DISCOVER_API_ORIGIN is not a configured TaRaShaData.ai-backed Discover API.",
+    );
+  }
+}
+
+await assertTaRaShaDataOrigin();
 server.listen(port, "0.0.0.0", () => {
   console.log(`TaRaSha Discover listening on port ${port}`);
 });

@@ -1,0 +1,29 @@
+name: TaRaShaDiscover verification
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: consumer
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: consumer/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Discover
+        run: npm run check

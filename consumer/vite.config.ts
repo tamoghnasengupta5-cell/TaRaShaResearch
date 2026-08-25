@@ -1,17 +1,20 @@
 import { defineConfig } from "vitest/config";
 import { loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
-import { localResearchApiPlugin } from "./localResearchDev";
+import { localDataApiPlugin } from "./localDataDev";
 import { localAuthApiPlugin } from "./localAuthDev";
 
 export default defineConfig(({ command, mode }) => {
   const env = loadEnv(mode, ".", "");
   const localAuthApi = command === "serve" ? localAuthApiPlugin() : null;
-  const localResearchApi = command === "serve" ? localResearchApiPlugin() : null;
-  const devApiTarget = localResearchApi ? "" : env.DEV_API_TARGET?.replace(/\/$/, "");
+  const configuredProxy = env.DEV_API_TARGET?.replace(/\/$/, "");
+  const localDataApi = command === "serve" && !configuredProxy
+    ? localDataApiPlugin(env.TARASHA_DATA_API_URL || "http://127.0.0.1:8000", env.TARASHA_DATA_API_KEY)
+    : null;
+  const devApiTarget = localDataApi ? "" : configuredProxy;
 
   return {
-    plugins: [react(), ...(localAuthApi ? [localAuthApi] : []), ...(localResearchApi ? [localResearchApi] : [])],
+    plugins: [react(), ...(localAuthApi ? [localAuthApi] : []), ...(localDataApi ? [localDataApi] : [])],
     base: "./",
     server: devApiTarget
       ? {
