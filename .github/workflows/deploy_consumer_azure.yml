@@ -16,7 +16,7 @@ permissions:
 env:
   AZURE_WEBAPP_NAME: tarasha-discover
   RESEARCH_WEBAPP_NAME: TaRaSha
-  CONSUMER_API_ORIGIN: https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
+  TARASHA_DISCOVER_API_ORIGIN: https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
 
 jobs:
   build-and-deploy:
@@ -87,7 +87,7 @@ jobs:
             --resource-group "$resource_group" \
             --name "$AZURE_WEBAPP_NAME" \
             --settings \
-              CONSUMER_API_ORIGIN="$CONSUMER_API_ORIGIN" \
+              TARASHA_DISCOVER_API_ORIGIN="$TARASHA_DISCOVER_API_ORIGIN" \
               SCM_DO_BUILD_DURING_DEPLOYMENT=false \
               WEBSITES_PORT=8080 \
             --output none

@@ -4,9 +4,9 @@
   "pages_build_output_dir": "./dist",
   "compatibility_date": "2026-07-11",
   "vars": {
-    "DATA_PROVIDER": "research-db",
-    "SHARED_RESEARCH_URL": "https://fgmijnuwplxasztyjfqr.supabase.co"
+    "TARASHA_DATA_API_URL": "https://tarasha-data.azurewebsites.net"
   },
+  // If the API is protected, store TARASHA_DATA_API_KEY as an encrypted secret.
   "d1_databases": [
     {
       "binding": "DB",

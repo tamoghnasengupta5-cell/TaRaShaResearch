@@ -1,35 +1,35 @@
-# TaRaSha on Azure App Service (Streamlit)
+# TaRaShaDiscover
 
-## What was fixed
-- Avoids SQLite "database is locked" by using a single shared SQLite connection per app process.
-- Uses Azure-persistent DB path (/home/app.db) when running on Azure App Service.
+TaRaShaDiscover is the consumer-facing company-discovery and financial-learning
+application in [`consumer/`](consumer/README.md).
 
-## Required Azure settings
-1) Startup Command:
-   python -m streamlit run app.py --server.address 0.0.0.0 --server.port 8000 --server.headless true
+## Data boundary
 
-2) App setting:
-   WEBSITES_PORT = 8000
+- TaRaShaData.ai is the only live company, filing, financial-statement, coverage,
+  industry, and peer-data provider.
+- Browser requests use same-origin `/api` routes implemented by the local Vite
+  middleware or Cloudflare Pages Functions.
+- Server-side adapters call only versioned TaRaShaData.ai `/v1` endpoints.
+- Financial responses remain in browser session memory; the Consumer account
+  database stores authentication data only.
+- Preview mode uses fictional bundled examples and makes no live data request.
 
-## GitHub Actions deployment
-This repo includes .github/workflows/main_tarasha.yml which deploys using a publish-profile secret.
+## Work locally
 
-Create a repo secret:
-- Name: TARASHA_AZURE_WEBAPP_PUBLISH_PROFILE
-- Value: paste the contents of your downloaded .PublishSettings file.
+```bash
+cd consumer
+cp .env.example .env.local
+# Set VITE_DATA_MODE=live and TARASHA_DATA_API_URL.
+npm install
+npm run dev
+```
 
-## Postgres + Alembic migration
-1) Configure the Postgres URL for Alembic:
-   - Windows (PowerShell):
-     $env:TARASHA_DB_URL="postgresql+psycopg://user:password@localhost:5432/tarasha"
+Run the complete verification suite with:
 
-2) Run migrations:
-   - alembic upgrade head
+```bash
+cd consumer
+npm run check
+```
 
-3) (Optional) Migrate existing SQLite data to Postgres:
-   - $env:POSTGRES_URL="postgresql+psycopg://user:password@localhost:5432/tarasha"
-   - python scripts/migrate_sqlite_to_postgres.py --sqlite-path app.db --truncate
-
-## Shared Research database
-
-The owner's local Research application now reads its shared PostgreSQL URL from macOS Keychain when `TARASHA_DB_URL` is not explicitly set. Bulk uploads made through that local application become available to the private Consumer preview through restricted read-only views. See `SHARED_DATABASE_RUNBOOK.md` for resource details, migration commands, Azure cutover cautions and the future licensed-provider boundary.
+Deployment and provider configuration are documented in
+[`consumer/CLOUDFLARE_DEPLOYMENT_RUNBOOK.md`](consumer/CLOUDFLARE_DEPLOYMENT_RUNBOOK.md).

@@ -9,9 +9,10 @@
     "start": "node server.mjs",
     "preview": "vite preview",
     "test": "vitest run",
-    "check": "npm run test && npm run typecheck:worker && npm run build",
+    "check": "npm run audit:data-source && npm run audit:market-data-cost && npm run test && npm run typecheck:worker && npm run build",
+    "audit:data-source": "node scripts/audit-data-source.mjs",
+    "audit:market-data-cost": "node scripts/audit-market-data-cost.mjs",
     "typecheck:worker": "tsc -p tsconfig.worker.json",
-    "sync:us-catalog": "node scripts/sync-sec-catalog.mjs",
     "users:summary:local": "node scripts/local-user-summary.mjs",
     "users:summary": "node scripts/user-summary.mjs"
   },
