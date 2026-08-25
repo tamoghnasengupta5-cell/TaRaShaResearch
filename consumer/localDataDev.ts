@@ -1,14 +1,14 @@
-import { spawnSync } from "node:child_process";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Plugin } from "vite";
 import {
-  pullResearchCompany,
-  searchResearchCompanies,
-  type ResearchProviderEnv,
-} from "./functions/researchProvider";
+  fetchDataCompanyLogo,
+  pullDataCompany,
+  searchDataCompanies,
+  type DataProviderEnv,
+} from "./functions/dataProvider";
+import { getMarketOverview } from "./functions/marketOverviewProvider";
 
 const MAX_YEAR_RANGE = 7;
-const SHARED_RESEARCH_URL = "https://fgmijnuwplxasztyjfqr.supabase.co";
 
 class RequestError extends Error {
   constructor(message: string, readonly status = 400) {
@@ -16,24 +16,17 @@ class RequestError extends Error {
   }
 }
 
-function readServiceRoleKey(): string {
-  const configured = String(process.env.SHARED_RESEARCH_SERVICE_KEY || "").trim();
-  if (configured) return configured;
-  if (process.platform !== "darwin") return "";
-  const keychain = spawnSync("security", [
-    "find-generic-password",
-    "-a", "fgmijnuwplxasztyjfqr",
-    "-s", "TaRaSha Shared Supabase Service Role",
-    "-w",
-  ], { encoding: "utf8", timeout: 3_000 });
-  return keychain.status === 0 ? keychain.stdout.trim() : "";
-}
-
 function sendJson(response: ServerResponse, status: number, data: unknown): void {
   response.statusCode = status;
   response.setHeader("content-type", "application/json; charset=utf-8");
   response.setHeader("cache-control", "no-store");
   response.end(JSON.stringify(data));
+}
+
+async function sendResponse(response: ServerResponse, upstream: Response): Promise<void> {
+  response.statusCode = upstream.status;
+  upstream.headers.forEach((value, key) => response.setHeader(key, value));
+  response.end(Buffer.from(await upstream.arrayBuffer()));
 }
 
 function validYearRange(fromYear: unknown, toYear: unknown): { fromYear: number; toYear: number } {
@@ -62,53 +55,60 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
   }
 }
 
-function constituentIds(value: unknown): number[] | undefined {
+function constituentIds(value: unknown): string[] | undefined {
   if (value === null || value === undefined) return undefined;
-  if (!Array.isArray(value) || !value.length || value.length > 100 || value.some((id) => !/^research-[1-9]\d*$/.test(String(id)))) {
-    throw new RequestError("Select between 1 and 100 valid industry constituents.");
+  if (!Array.isArray(value) || !value.length || value.length > 100 || value.some((id) => !/^data-[0-9]{10}$/.test(String(id)))) {
+    throw new RequestError("Select between 1 and 100 valid TaRaShaData.ai constituents.");
   }
-  return [...new Set(value.map((id) => Number(String(id).replace(/^research-/, ""))))];
+  return [...new Set(value.map(String))];
 }
 
-async function handleResearchRequest(request: IncomingMessage, response: ServerResponse, env: ResearchProviderEnv): Promise<void> {
+async function handleDataRequest(request: IncomingMessage, response: ServerResponse, env: DataProviderEnv): Promise<void> {
   const url = new URL(request.url || "/", "http://localhost");
   if (request.method === "GET" && url.pathname === "/api/health") {
-    sendJson(response, 200, { ok: true, provider: "research-db", financialStorage: "browser-session-only", localProvider: true });
+    sendJson(response, 200, { ok: true, provider: "tarasha-data", financialStorage: "browser-session-only", localProvider: true });
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/market-overview") {
+    sendJson(response, 200, await getMarketOverview());
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/companies") {
     const query = String(url.searchParams.get("query") || "");
     const country = url.searchParams.get("country") === "India" ? "India" : "USA";
-    sendJson(response, 200, { companies: await searchResearchCompanies(env, query, country) });
+    sendJson(response, 200, { companies: await searchDataCompanies(env, query, country) });
     return;
   }
-  if (request.method === "GET" && url.pathname === "/api/research/company") {
+  if (request.method === "GET" && url.pathname === "/api/data/company-logo") {
+    await sendResponse(
+      response,
+      await fetchDataCompanyLogo(env, String(url.searchParams.get("companyId") || "")),
+    );
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/api/data/company") {
     const years = validYearRange(url.searchParams.get("fromYear"), url.searchParams.get("toYear"));
-    const company = await pullResearchCompany(env, String(url.searchParams.get("companyId") || ""), years.fromYear, years.toYear);
-    if (!company) throw new RequestError("Company was not found in TaRaSha Research.", 404);
-    sendJson(response, 200, company);
+    sendJson(response, 200, await pullDataCompany(env, String(url.searchParams.get("companyId") || ""), years.fromYear, years.toYear));
     return;
   }
-  if (request.method === "POST" && url.pathname === "/api/research/company") {
+  if (request.method === "POST" && url.pathname === "/api/data/company") {
     const body = await readJsonBody(request);
     const years = validYearRange(body.fromYear, body.toYear);
-    const company = await pullResearchCompany(env, String(body.companyId || ""), years.fromYear, years.toYear, constituentIds(body.constituentIds));
-    if (!company) throw new RequestError("Company was not found in TaRaSha Research.", 404);
-    sendJson(response, 200, company);
+    sendJson(response, 200, await pullDataCompany(env, String(body.companyId || ""), years.fromYear, years.toYear, constituentIds(body.constituentIds)));
     return;
   }
-  throw new RequestError("Local Research API endpoint not found.", 404);
+  throw new RequestError("Local TaRaShaData.ai API endpoint not found.", 404);
 }
 
-export function localResearchApiPlugin(): Plugin | null {
-  const serviceRoleKey = readServiceRoleKey();
-  if (!serviceRoleKey) return null;
-  const env: ResearchProviderEnv = {
-    SHARED_RESEARCH_URL,
-    SHARED_RESEARCH_SERVICE_KEY: serviceRoleKey,
+export function localDataApiPlugin(apiUrl: string, apiKey = ""): Plugin | null {
+  const base = apiUrl.trim().replace(/\/$/, "");
+  if (!base) return null;
+  const env: DataProviderEnv = {
+    TARASHA_DATA_API_URL: base,
+    TARASHA_DATA_API_KEY: apiKey.trim(),
   };
   return {
-    name: "tarasha-local-research-api",
+    name: "tarasha-local-data-api",
     apply: "serve",
     configureServer(server) {
       server.middlewares.use(async (request, response, next) => {
@@ -117,10 +117,10 @@ export function localResearchApiPlugin(): Plugin | null {
           return;
         }
         try {
-          await handleResearchRequest(request, response, env);
+          await handleDataRequest(request, response, env);
         } catch (cause) {
           const status = cause instanceof RequestError ? cause.status : 502;
-          const message = cause instanceof Error ? cause.message : "Local Research API request failed.";
+          const message = cause instanceof Error ? cause.message : "Local TaRaShaData.ai API request failed.";
           sendJson(response, status, { error: message });
         }
       });

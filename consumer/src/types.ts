@@ -278,10 +278,152 @@ export interface ResearchShelfAnalysis {
   cashFlow: CashFlowAnalysis;
 }
 
+export interface BusinessSegmentRevenueHistory {
+  fiscalYear: number;
+  periodStart: string | null;
+  periodEnd: string;
+  revenue: number;
+  accession: string | null;
+  filedDate: string | null;
+  sourceUrl: string | null;
+}
+
+export interface BusinessSegmentRevenue {
+  member: string;
+  name: string;
+  latestRevenue: number;
+  percentageOfTotal: number | null;
+  yoyGrowthPercent: number | null;
+  threeYearCagrPercent: number | null;
+  history: BusinessSegmentRevenueHistory[];
+  accession: string | null;
+  filedDate: string | null;
+  sourceUrl: string | null;
+}
+
+export interface CompanyRevenueStory {
+  status: "available" | "unavailable";
+  reason: string | null;
+  latestFiscalYear: number | null;
+  latestPeriodEnd: string | null;
+  reportingCurrency: string;
+  displayUnit: string;
+  totalRevenue: number | null;
+  segments: BusinessSegmentRevenue[];
+  summary: string | null;
+  methodology: string;
+}
+
+export interface CompanyCostStructureHistory {
+  fiscalYear: number;
+  periodEnd: string | null;
+  valuePerHundred: number;
+}
+
+export interface CompanyCostStructureLine {
+  key: string;
+  label: string;
+  role: "revenue" | "expense" | "subtotal";
+  latestValuePerHundred: number | null;
+  history: CompanyCostStructureHistory[];
+  lineage: {
+    kind: string | null;
+    concept: string | null;
+    derivationMethod: string | null;
+    formula: string | null;
+    sourceUrl: string | null;
+  };
+}
+
+export interface CompanyCostStructureStory {
+  status: "available" | "unavailable";
+  reason: string | null;
+  latestFiscalYear: number | null;
+  latestPeriodEnd: string | null;
+  reportingCurrency: string;
+  years: number[];
+  lines: CompanyCostStructureLine[];
+  summary: string | null;
+  methodology: string;
+  sourceUrl: string | null;
+}
+
+export interface CompanyCashConversionLineage {
+  kind: string | null;
+  concept: string | null;
+  derivationMethod: string | null;
+  formula: string | null;
+  sourceUrl: string | null;
+}
+
+export interface CompanyCashConversionComponent {
+  key: string;
+  label: string;
+  value: number;
+  lineage: CompanyCashConversionLineage;
+}
+
+export interface CompanyCashConversionBridgeLine {
+  key: string;
+  label: string;
+  operation: "base" | "add" | "subtract" | "subtotal" | "total";
+  value: number;
+  formula: string | null;
+  lineage: CompanyCashConversionLineage;
+  components: CompanyCashConversionComponent[];
+}
+
+export interface CompanyCashConversionTrendPoint {
+  fiscalYear: number;
+  periodEnd: string;
+  ebit: number;
+  taxRatePercent: number;
+  taxesOnOperatingProfit: number;
+  nopat: number;
+  depreciationAndAmortization: number;
+  workingCapitalImpact: number;
+  workingCapitalComponents: CompanyCashConversionComponent[];
+  capitalExpenditure: number;
+  fcff: number;
+  conversionPercent: number | null;
+  revenue: number;
+  fcffRevenuePercent: number | null;
+}
+
+export interface CompanyCashConversionStory {
+  status: "available" | "unavailable";
+  reason: string | null;
+  latestFiscalYear: number | null;
+  latestPeriodEnd: string | null;
+  reportingCurrency: string;
+  displayUnit: string;
+  years: number[];
+  bridge: CompanyCashConversionBridgeLine[];
+  trend: CompanyCashConversionTrendPoint[];
+  metrics: {
+    fcff: number | null;
+    priorFiscalYear: number | null;
+    priorFcff: number | null;
+    conversionPercent: number | null;
+    priorConversionPercent: number | null;
+    growthPercent: number | null;
+    priorGrowthPercent: number | null;
+    revenuePercent: number | null;
+    priorRevenuePercent: number | null;
+    cagrPercent: number | null;
+  } | null;
+  summary: string | null;
+  takeaway: string | null;
+  methodology: string;
+  sourceUrl: string | null;
+}
+
 export interface Company {
   id: string;
+  logoUrl?: string;
   name: string;
   symbol: string;
+  exchange?: string;
   sector: string;
   description: string;
   founded?: number;
@@ -291,6 +433,11 @@ export interface Company {
   updatedAt: string;
   metrics: Record<MetricKey, YearValue[]>;
   researchShelf?: ResearchShelfAnalysis;
+  companyStory?: {
+    revenueSegments: CompanyRevenueStory;
+    costStructure: CompanyCostStructureStory;
+    cashConversion: CompanyCashConversionStory;
+  };
   notes: {
     growth: string;
     profitability: string;
@@ -300,7 +447,7 @@ export interface Company {
   statements?: StatementGroup[];
   filings?: FilingDocument[];
   limitations?: string[];
-  dataMode?: "illustrative" | "sec-live" | "research-db";
+  dataMode?: "illustrative" | "tarasha-data";
   source?: {
     dataset: string;
     upstream: string;
@@ -318,8 +465,10 @@ export interface CatalogCompany {
   country: "USA" | "India";
   provider: string;
   industryBucket?: string;
-  research_available: number;
-  data_access?: "sec" | "normalized";
+  data_available: number;
+  data_access?: "normalized";
+  firstFiscalYear?: number;
+  latestFiscalYear?: number;
 }
 
 export interface StatementFact {
@@ -338,7 +487,7 @@ export interface StatementGroup {
 
 export interface FilingDocument {
   accession: string;
-  form: "10-K" | "10-Q" | "8-K";
+  form: string;
   filed: string;
   period: string;
   title: string;

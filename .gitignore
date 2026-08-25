@@ -1,25 +1,17 @@
-# Python
-__pycache__/
-*.pyc
-.venv/
-venv/
-.env
-
-# Streamlit / local files
-.streamlit/secrets.toml
-
-# Database files
-app.db
-*.db
-*.db-wal
-*.db-shm
-
-# OS
 .DS_Store
-Thumbs.db
 
-# Local bulk upload workspace
-/Bulk_Upload_Financials/
+# Discover application
+consumer/node_modules/
+consumer/dist/
+consumer/.env
+consumer/.env.local
+consumer/.env.*.local
+consumer/.local-data/
+consumer/*.tsbuildinfo
+
+# Test and tool output
+consumer/coverage/
+consumer/.wrangler/
 
 # Supabase CLI machine-specific link state
-/supabase/.temp/
+consumer/supabase/.temp/

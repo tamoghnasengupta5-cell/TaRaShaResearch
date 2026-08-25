@@ -3,13 +3,18 @@ import { learningCards, metricMeta } from "./data/demo";
 import { authenticateUser, getSecurityQuestion, registerUser, resetPassword, SECURITY_QUESTIONS } from "./authStore";
 import type { AuthenticatedUser } from "./authStore";
 import { formatMetric, latest, percentChange } from "./domain";
+import { comparisonProfitabilityYears, comparisonYoYIntervals, MAX_COMPARISON_COMPANIES, researchShelfCompanies, toggleComparisonCompany } from "./comparison";
+import type { ComparisonYoYMetric } from "./comparison";
 import { liveDataEnabled, MAX_SESSION_COMPANIES, MAX_YEAR_RANGE, pullCompanyResearch, recalculateIndustryConstituents, searchCompanyCatalog } from "./liveData";
-import { arithmeticMean, extremeOutlierBounds, isExtremeOutlier, sampleStandardDeviation } from "./statistics";
+import { arithmeticMean, extremeOutlierBounds, isExtremeOutlier, percentile, sampleStandardDeviation } from "./statistics";
 import type { CashFlowBridgeMetricValue, CashFlowYear, CatalogCompany, Company, DistributionObservation, EarningsFlowMetricKey, EarningsFlowYear, FcffBridgeMetricKey, FcfeBridgeMetricKey, GrowthComparison, IndustryConstituent, IndustryDeltaPoint, IndustryLevelPoint, MetricKey, Page, PerformanceThresholds, ProfitabilityMetricBands, ProfitabilityMetricKey, ProfitabilityYearPoint, RawIncomePoint, ResearchShelfAnalysis, StatementFact, StatementGroup, ValuationMetricKey, WorkingCapitalPeriodBreakdown, YearValue } from "./types";
 import researchJourneyHero from "./assets/research-journey-hero-v2.jpg";
 import tarashaLogo from "./assets/tarasha-logo.png";
+import { CompanyStoryHome } from "./CompanyStoryHome";
+import { GlobalMarketOverview } from "./GlobalMarketOverview";
 
 const navItems: { page: Page; label: string; icon: string }[] = [
+  { page: "home", label: "Home", icon: "⌂" },
   { page: "discover", label: "Discover", icon: "⌕" },
   { page: "compare", label: "Compare", icon: "⇄" },
   { page: "watchlist", label: "Watchlist", icon: "♡" },
@@ -37,6 +42,7 @@ function App() {
   const [page, setPage] = useState<Page>(pageFromHash);
   const [authUser, setAuthUser] = useState<AuthenticatedUser | null>(sessionUser);
   const [activeCompanyId, setActiveCompanyId] = useState<string | null>(null);
+  const [companyStoryVersion, setCompanyStoryVersion] = useState(0);
   const [sessionCompanies, setSessionCompanies] = useState<Company[]>([]);
   const [watchlist, setWatchlist] = useState<string[]>(() => {
     try {
@@ -72,8 +78,9 @@ function App() {
   const completeAuthentication = (user: AuthenticatedUser) => {
     sessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(user));
     setAuthUser(user);
-    setPage("discover");
-    window.history.pushState(null, "", "#/discover");
+    setActiveCompanyId(null);
+    setPage("home");
+    window.history.pushState(null, "", "#/home");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -89,7 +96,10 @@ function App() {
 
   const openCompany = (id: string) => {
     setActiveCompanyId(id);
-    navigate("company");
+    setCompanyStoryVersion((current) => current + 1);
+    setPage("home");
+    if (window.location.hash !== "#/home") window.history.pushState(null, "", "#/home");
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   const toggleWatch = (id: string) => {
@@ -112,17 +122,41 @@ function App() {
   const activeCompany = sessionCompanies.find((item) => item.id === activeCompanyId);
   const visiblePage = !authUser && protectedPages.has(page) ? "login" : page;
 
+  const openCompanyFromSearch = async (catalog: CatalogCompany) => {
+    const existing = sessionCompanies.find((item) => item.id === catalog.id);
+    if (existing) {
+      openCompany(existing.id);
+      return;
+    }
+    if (sessionCompanies.length >= MAX_SESSION_COMPANIES) {
+      throw new Error(`This session already contains ${MAX_SESSION_COMPANIES} companies—the maximum allowed.`);
+    }
+    const currentYear = new Date().getFullYear();
+    const toYear = catalog.latestFiscalYear ?? currentYear;
+    const fromYear = Math.max(catalog.firstFiscalYear ?? toYear - (MAX_YEAR_RANGE - 1), toYear - (MAX_YEAR_RANGE - 1));
+    const company = await pullCompanyResearch(catalog, fromYear, toYear);
+    addSessionCompany(company);
+    openCompany(company.id);
+  };
+
+  const navigateFromHeader = (destination: Page) => {
+    if (destination === "home" && authUser) {
+      setActiveCompanyId(null);
+    }
+    navigate(destination);
+  };
+
   return (
     <div className="app-shell">
-      <BetaStrip />
-      <Header page={visiblePage} navigate={navigate} user={authUser} logout={logout} />
+      {!authUser && <BetaStrip />}
+      <Header page={visiblePage} navigate={navigateFromHeader} user={authUser} logout={logout} onSelectCompany={openCompanyFromSearch} />
       <main>
-        {visiblePage === "home" && <Home navigate={navigate} isAuthenticated={Boolean(authUser)} />}
+        {visiblePage === "home" && !authUser && <Home navigate={navigate} />}
+        {authUser && visiblePage === "home" && activeCompany && <CompanyDetail key={`${activeCompany.id}-${companyStoryVersion}`} company={activeCompany} watched={watchlist.includes(activeCompany.id)} toggleWatch={toggleWatch} navigate={navigate} />}
+        {authUser && visiblePage === "home" && !activeCompany && <GlobalMarketOverview />}
         {visiblePage === "login" && <LoginPage onAuthenticated={completeAuthentication} navigate={navigate} />}
         {authUser && visiblePage === "discover" && <Discover sessionCompanies={sessionCompanies} onResearchPulled={addSessionCompany} onCompanyUpdated={updateSessionCompany} onCompanyRemoved={removeSessionCompany} openCompany={openCompany} watchlist={watchlist} toggleWatch={toggleWatch} />}
-        {authUser && visiblePage === "company" && activeCompany && <CompanyDetail company={activeCompany} watched={watchlist.includes(activeCompany.id)} toggleWatch={toggleWatch} navigate={navigate} />}
-        {authUser && visiblePage === "company" && !activeCompany && <div className="page-wrap"><Empty title="No company research is active" text="Pull a company from Discover before opening its research dossier." /></div>}
-        {authUser && visiblePage === "compare" && <Compare companies={sessionCompanies} openCompany={openCompany} />}
+        {authUser && visiblePage === "compare" && <Compare companies={sessionCompanies} />}
         {authUser && visiblePage === "watchlist" && <Watchlist companies={sessionCompanies} ids={watchlist} openCompany={openCompany} toggleWatch={toggleWatch} navigate={navigate} />}
         {authUser && visiblePage === "learn" && <Learn />}
       </main>
@@ -145,13 +179,61 @@ function Brand() {
   );
 }
 
-function Header({ page, navigate, user, logout }: { page: Page; navigate: (page: Page) => void; user: AuthenticatedUser | null; logout: () => void }) {
+function HeaderSearch({ onSelectCompany }: { onSelectCompany: (company: CatalogCompany) => Promise<void> }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<CatalogCompany[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [opening, setOpening] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (query.trim().length < 2) { setResults([]); setMessage(null); return; }
+    const timer = window.setTimeout(async () => {
+      setSearching(true); setMessage(null);
+      try { setResults(await searchCompanyCatalog(query, "USA")); }
+      catch (error) { setResults([]); setMessage(error instanceof Error ? error.message : "Company search failed."); }
+      finally { setSearching(false); }
+    }, 220);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
+    const close = (event: PointerEvent) => {
+      if (!searchRef.current?.contains(event.target as Node)) setResults([]);
+    };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, []);
+
+  const open = async (company: CatalogCompany) => {
+    setOpening(true); setMessage(null);
+    try {
+      await onSelectCompany(company);
+      setQuery(""); setResults([]);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Company research could not be opened.");
+    } finally { setOpening(false); }
+  };
+
+  return <div className="header-company-search" ref={searchRef}>
+    <label><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg><input value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => query.trim().length >= 2 && searchCompanyCatalog(query, "USA").then(setResults).catch(() => undefined)} placeholder="Search company or ticker" aria-label="Search company or ticker" /><kbd>⌘ K</kbd></label>
+    {(results.length > 0 || searching || message) && <div className="header-search-results">
+      {searching && <p>Searching TaRaShaData…</p>}
+      {!searching && results.map((company) => <button key={company.id} disabled={opening} onClick={() => open(company)}><span>{company.name[0]}</span><div><strong>{company.name}</strong><small>{company.ticker} · {company.exchange || "Exchange not reported"}</small></div><b>{opening ? "Opening…" : "Open"}</b></button>)}
+      {message && <p className="error">{message}</p>}
+    </div>}
+  </div>;
+}
+
+function Header({ page, navigate, user, logout, onSelectCompany }: { page: Page; navigate: (page: Page) => void; user: AuthenticatedUser | null; logout: () => void; onSelectCompany: (company: CatalogCompany) => Promise<void> }) {
   return (
     <header className="site-header">
       <button className="brand-button" onClick={() => navigate("home")}><Brand /></button>
+      {user && <HeaderSearch onSelectCompany={onSelectCompany} />}
       {user && <nav className="desktop-nav" aria-label="Main navigation">
         {navItems.map((item) => (
-          <button key={item.page} className={page === item.page || (page === "company" && item.page === "discover") ? "active" : ""} onClick={() => navigate(item.page)}>{item.label}</button>
+          <button key={item.page} className={page === item.page || (page === "company" && item.page === "home") ? "active" : ""} onClick={() => navigate(item.page)}>{item.label}</button>
         ))}
       </nav>}
       {user && <div className="header-account"><span><small>Signed in as</small><strong>{user.username}</strong></span><button onClick={logout}>Log out</button></div>}
@@ -163,7 +245,7 @@ function MobileNav({ page, navigate }: { page: Page; navigate: (page: Page) => v
   return (
     <nav className="mobile-nav" aria-label="Mobile navigation">
       {navItems.map((item) => (
-        <button key={item.page} className={page === item.page || (page === "company" && item.page === "discover") ? "active" : ""} onClick={() => navigate(item.page)}>
+        <button key={item.page} className={page === item.page || (page === "company" && item.page === "home") ? "active" : ""} onClick={() => navigate(item.page)}>
           <span>{item.icon}</span>{item.label}
         </button>
       ))}
@@ -171,9 +253,8 @@ function MobileNav({ page, navigate }: { page: Page; navigate: (page: Page) => v
   );
 }
 
-function Home({ navigate, isAuthenticated }: {
+function Home({ navigate }: {
   navigate: (page: Page) => void;
-  isAuthenticated: boolean;
 }) {
   return (
     <section className="home-hero">
@@ -183,7 +264,7 @@ function Home({ navigate, isAuthenticated }: {
         <p className="eyebrow">Structured company intelligence</p>
         <h1>Company data, organized for understanding.</h1>
         <p>Explore the financial performance, operating trends, and fundamentals of publicly listed companies.</p>
-        <button className="button primary hero-login-button" onClick={() => navigate(isAuthenticated ? "discover" : "login")}>{isAuthenticated ? "Continue to Discover" : "Log in to Discover"}<span>→</span></button>
+        <button className="button primary hero-login-button" onClick={() => navigate("login")}>Log in to Discover<span>→</span></button>
       </div>
     </section>
   );
@@ -372,7 +453,7 @@ function Discover({ sessionCompanies, onResearchPulled, onCompanyUpdated, onComp
       setMessage(`This session already contains ${MAX_SESSION_COMPANIES} companies—the maximum allowed.`); return;
     }
     setPullingId(catalog.id); setMessage(null);
-    try { onResearchPulled(await pullCompanyResearch(catalog, fromYear, toYear)); setMessage(`${catalog.name} is now available in your session research shelf.`); }
+    try { const company = await pullCompanyResearch(catalog, fromYear, toYear); onResearchPulled(company); openCompany(company.id); }
     catch (error) { setMessage(error instanceof Error ? error.message : "Research pull failed."); }
     finally { setPullingId(null); }
   };
@@ -381,7 +462,7 @@ function Discover({ sessionCompanies, onResearchPulled, onCompanyUpdated, onComp
     <div className="page-wrap">
       <PageIntro eyebrow="Discover" title="Search the catalogue. Pull the research." text={`Choose up to ${MAX_YEAR_RANGE} years. The application retrieves approved financial history into browser memory and stores no separate Consumer copy.`} />
       <div className="session-limit-banner"><span>{sessionCompanies.length} / {MAX_SESSION_COMPANIES}</span><div><strong>Session research capacity</strong><small>Closing or refreshing this browser session clears the pulled financial data.</small></div></div>
-      <div className="market-notice"><strong>Private evaluation data source</strong><p>Companies with TaRaSha Research coverage use financial spreadsheets downloaded through StockAnalysis.com and bulk-uploaded into the private Research platform. This preview is non-commercial; source-provider permission is required before paid distribution.</p></div>
+      <div className="market-notice"><strong>TaRaShaData.ai source</strong><p>Live companies use source-linked, normalized financial facts from the TaRaShaData.ai API. The current coverage is derived from issuer filings and SEC XBRL, with browser-session-only persistence in Discover.</p></div>
       <div className="search-panel">
         <label className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search company or symbol" /></label>
         <select value={country} onChange={(event) => setCountry(event.target.value as "USA" | "India")} aria-label="Choose market"><option>USA</option><option>India</option></select>
@@ -841,7 +922,7 @@ const earningsFlowSteps: Array<{
   { key: "earningsFromDiscontinuedOperations", label: "Earnings from discontinued operations", explanation: "A reported profit adds to the bridge; a reported loss deducts from it.", operator: "±", tone: "expense", signedValue: true },
   { key: "other", label: "Other", explanation: "Calculated residual that reconciles net profit to reported net income to common.", operator: "±", tone: "expense", signedValue: true },
   { key: "netIncomeToCommon", label: "Net income to common", explanation: "Reported income attributable to common shareholders after the bridge items above.", operator: "=", tone: "subtotal" },
-  { key: "commonDividendsPaid", label: "Common dividends paid", explanation: "Deducted from net income to common using the positive dividend amount stored by Research.", operator: "−", tone: "expense" },
+  { key: "commonDividendsPaid", label: "Common dividends paid", explanation: "Deducted from net income to common using the positive dividend amount normalized by TaRaShaData.ai.", operator: "−", tone: "expense" },
   { key: "currentYearEarningsRetained", label: "Current year earnings retained", explanation: "Net income to common remaining after common dividends paid.", operator: "=", tone: "subtotal" },
 ];
 
@@ -920,10 +1001,10 @@ function ValuationComparisonSection({ company, shelf }: { company: Company; shel
       : valuation.enterpriseValueSource === "live_price_shares"
         ? "Live price × shares bridge"
         : valuation.enterpriseValueSource === "calculated"
-          ? "Stored Research fallback"
-          : "No saved EV snapshot";
+          ? "Stored market-data fallback"
+          : "Not published by TaRaShaData.ai";
   return <section className="valuation-comparison-section">
-    <div className="earnings-section-heading"><div><small>Section 2</small><h5>What the market pays for the result</h5><p>Latest saved market snapshot versus the industry bucket median</p></div><div className="valuation-snapshot"><span>{sourceLabel}</span><strong>{valuation.enterpriseValue === null ? "EV unavailable" : formatCompanyAmount(company, valuation.enterpriseValue)}</strong><small>{valuation.enterpriseValueAsOf ? `As of ${formatMarketAsOf(valuation.enterpriseValueAsOf)}` : "Refresh EV & P/E in TaRaSha Research"}</small></div></div>
+    <div className="earnings-section-heading"><div><small>Section 2</small><h5>What the market pays for the result</h5><p>Latest governed market snapshot versus the industry bucket median</p></div><div className="valuation-snapshot"><span>{sourceLabel}</span><strong>{valuation.enterpriseValue === null ? "EV unavailable" : formatCompanyAmount(company, valuation.enterpriseValue)}</strong><small>{valuation.enterpriseValueAsOf ? `As of ${formatMarketAsOf(valuation.enterpriseValueAsOf)}` : "Awaiting a TaRaShaData.ai company market-data API"}</small></div></div>
     <div className="valuation-plain-language"><strong>How to read a multiple</strong><p>A 5× EV/Revenue multiple means the market values the whole operating business at five times one year’s revenue. A lower multiple is not automatically better: growth, margins, risk and accounting comparability all matter.</p></div>
     <div className="valuation-comparison-list">{valuationMetrics.map((metric) => {
       const comparison = valuation.comparisons[metric.key];
@@ -937,7 +1018,7 @@ function ValuationComparisonSection({ company, shelf }: { company: Company; shel
         <span className="valuation-observations">{comparison.industryObservations ? `${comparison.industryObservations} comparable companies` : "No peer snapshot coverage"}</span>
       </article>;
     })}</div>
-    <details className="ev-method-note"><summary>How TaRaSha Research obtains Enterprise Value</summary><p>When the Research valuation dashboard is refreshed, the server calls yfinance for the company’s Yahoo symbol and first reads its reported <code>enterpriseValue</code>. Research converts that value to local-currency millions and stores the amount, source and timestamp. If the direct field is absent, Research can calculate EV from a yfinance market-cap input plus stored debt less stored cash, then fall back to live price × shares or stored market-cap data. Consumer reads only that saved snapshot; the browser does not call yfinance.</p><small>{valuation.enterpriseValueDetail}</small></details>
+    <details className="ev-method-note"><summary>Enterprise Value data boundary</summary><p>Discover displays Enterprise Value and related multiples only when TaRaShaData.ai publishes a governed company-level market-data snapshot. It does not call an alternate market-data provider or retain a legacy database fallback.</p><small>{valuation.enterpriseValueDetail}</small></details>
     <p className="valuation-period-note">EV-based multiples use the saved point-in-time Enterprise Value and FY {valuation.denominatorYear ?? "—"} annual denominators. P/E uses the saved trailing P/E. Mixed snapshot/reporting dates are shown for context and should not be treated as a fully synchronized market-data feed.</p>
   </section>;
 }
@@ -1159,7 +1240,7 @@ function MetricInsightCard({ label, data, aboveMeaning, belowMeaning, methodolog
       {bucketDistributionAvailable ? <>
         <StandardNormalDistributionCurve label={label} companyObservations={data.companyDistribution} bucketObservations={data.bucketDistribution} activeBucketObservations={activeBucketObservations} outliers={split.outliers} exclusionsActive={exclusionsActive} activeSpread={adjustedBucketSpread} />
         <ExtremeOutlierPanel split={split} totalObservations={data.bucketDistribution.length} exclusionsActive={exclusionsActive} onToggle={() => setExcludeExtremeOutliers((current) => !current)} />
-      </> : <aside className="distribution-unavailable"><strong>{data.bucketObservations ? "Detailed industry distribution temporarily unavailable" : "Industry distribution unavailable"}</strong><p>{data.bucketObservations ? "This Research API response includes the original bucket standard deviation but not its individual peer observations. The company remains available on the research shelf; distribution and outlier controls will appear automatically when the updated API response is available." : "There are no industry observations available for this metric."}</p></aside>}
+      </> : <aside className="distribution-unavailable"><strong>{data.bucketObservations ? "Detailed industry distribution temporarily unavailable" : "Industry distribution unavailable"}</strong><p>{data.bucketObservations ? "This TaRaShaData.ai response includes the bucket standard deviation but not its individual peer observations. The company remains available on the research shelf; distribution and outlier controls will appear automatically when the updated API response is available." : "There are no industry observations available for this metric."}</p></aside>}
     </section>
     <small className="metric-observation-count">Based on {data.companyObservations} company observations and {data.bucketObservations} bucket observations.{exclusionsActive ? ` The adjusted spread uses ${split.nonOutliers.length} bucket observations.` : ""}</small>
   </article>;
@@ -1198,15 +1279,17 @@ function ProfitabilityIndustryChart({ title, unit, data }: { title: string; unit
   />;
 }
 
-function PercentageLevelChart({ title, subtitle, absoluteUnit, data, series }: {
+function PercentageLevelChart({ title, subtitle, absoluteUnit, data, series, seriesUnits }: {
   title: string;
   subtitle: string;
   absoluteUnit: string;
   data: Array<{ label: string; values: Array<number | null>; absoluteValues: Array<number | null> }>;
   series: Array<{ label: string; color: string; negativeColor: string }>;
+  seriesUnits?: string[];
 }) {
   const available = data.flatMap((item) => item.values.filter((value): value is number => value !== null && Number.isFinite(value)));
-  if (!available.length) return <section className="shelf-chart"><div className="shelf-chart-heading"><div><h5>{title}</h5><p>{subtitle}</p></div><span>Bar: percentage · top label: {absoluteUnit}</span></div><div className="empty-chart">No complete annual observations are available.</div></section>;
+  const unitLabel = seriesUnits ? "native company units" : absoluteUnit;
+  if (!available.length) return <section className="shelf-chart"><div className="shelf-chart-heading"><div><h5>{title}</h5><p>{subtitle}</p></div><span>Bar: percentage · top label: {unitLabel}</span></div><div className="empty-chart">No complete annual observations are available.</div></section>;
   const left = 72;
   const right = 20;
   const width = Math.max(940, left + right + (data.length * (series.length > 2 ? 180 : 130)));
@@ -1230,7 +1313,7 @@ function PercentageLevelChart({ title, subtitle, absoluteUnit, data, series }: {
   const clusterWidth = series.length * barWidth + (series.length - 1) * barGap;
   const tickValues = Array.from({ length: 5 }, (_, index) => minValue + (spread * index) / 4);
   return <section className="shelf-chart profitability-chart">
-    <div className="shelf-chart-heading"><div><h5>{title}</h5><p>{subtitle}</p></div><span>Bar: percentage · top label: {absoluteUnit}</span></div>
+    <div className="shelf-chart-heading"><div><h5>{title}</h5><p>{subtitle}</p></div><span>Bar: percentage · top label: {unitLabel}</span></div>
     <div className="chart-legend">{series.map((item) => <span key={item.label}><i className="series-swatch" style={{ background: `linear-gradient(90deg, ${item.color} 0 50%, ${item.negativeColor} 50% 100%)` }} /><span>{item.label}<small>positive | negative</small></span></span>)}</div>
     <div className="clustered-chart-scroll" data-horizontal-scroll><svg viewBox={`0 0 ${width} ${height}`} style={{ minWidth: width }} role="img" aria-label={`${title}, annual percentage values`}>
       {tickValues.map((tick) => <g key={tick}><line x1={left} x2={width - right} y1={y(tick)} y2={y(tick)} stroke="#ded6c6" strokeDasharray="4 6" /><text x={left - 9} y={y(tick) + 4} textAnchor="end" className="chart-axis-text">{formatCompactPercent(tick)}</text></g>)}
@@ -1245,8 +1328,9 @@ function PercentageLevelChart({ title, subtitle, absoluteUnit, data, series }: {
           const rectY = Math.min(valueY, baseline);
           const rectHeight = Math.max(1, Math.abs(baseline - valueY));
           const absoluteValue = item.absoluteValues[seriesIndex];
+          const valueUnit = seriesUnits?.[seriesIndex] ?? absoluteUnit;
           const barColor = value < 0 ? definition.negativeColor : definition.color;
-          return <g key={definition.label}><rect x={x} y={rectY} width={barWidth} height={rectHeight} fill={barColor} rx="2"><title>{`${item.label} · ${definition.label}: ${formatLevelPercent(value)}; absolute value ${formatChartAbsolute(absoluteValue)} ${absoluteUnit}`}</title></rect><text x={x + barWidth / 2} y={Math.max(12, rectY - 7)} textAnchor="middle" className="bar-absolute-label" style={{ fill: barColor }}>{formatChartAbsolute(absoluteValue)}</text><text x={x + barWidth / 2} y={rectY + rectHeight / 2} textAnchor="middle" dominantBaseline="middle" className="bar-percent-in-bar">{formatCompactPercent(value)}</text></g>;
+          return <g key={definition.label}><rect x={x} y={rectY} width={barWidth} height={rectHeight} fill={barColor} rx="2"><title>{`${item.label} · ${definition.label}: ${formatLevelPercent(value)}; absolute value ${formatChartAbsolute(absoluteValue)} ${valueUnit}`}</title></rect><text x={x + barWidth / 2} y={Math.max(12, rectY - 7)} textAnchor="middle" className="bar-absolute-label" style={{ fill: barColor }}>{formatChartAbsolute(absoluteValue)}</text><text x={x + barWidth / 2} y={rectY + rectHeight / 2} textAnchor="middle" dominantBaseline="middle" className="bar-percent-in-bar">{formatCompactPercent(value)}</text></g>;
         })}<text x={center} y={height - 25} textAnchor="middle" className="chart-axis-text interval-label">{item.label}</text></g>;
       })}
     </svg></div>
@@ -1337,15 +1421,17 @@ function IndustryComparisonChart({ title, unit, data }: { title: string; unit: s
   />;
 }
 
-function ClusteredColumnChart({ title, subtitle, absoluteUnit, data, series }: {
+function ClusteredColumnChart({ title, subtitle, absoluteUnit, data, series, showAbsoluteValues = true }: {
   title: string;
   subtitle: string;
   absoluteUnit: string;
   data: Array<{ interval: string; percentValues: Array<number | null>; absoluteValues: Array<number | null> }>;
   series: Array<{ label: string; color: string; negativeColor: string }>;
+  showAbsoluteValues?: boolean;
 }) {
   const available = data.flatMap((item) => item.percentValues.filter((value): value is number => value !== null && Number.isFinite(value)));
-  if (!available.length) return <section className="shelf-chart"><div className="shelf-chart-heading"><div><h5>{title}</h5><p>{subtitle}</p></div><span>YoY change (%) · labels: {absoluteUnit}</span></div><div className="empty-chart">No complete year-over-year observations are available.</div></section>;
+  const chartUnitLabel = showAbsoluteValues ? `YoY change (%) · labels: ${absoluteUnit}` : "YoY change (%)";
+  if (!available.length) return <section className="shelf-chart"><div className="shelf-chart-heading"><div><h5>{title}</h5><p>{subtitle}</p></div><span>{chartUnitLabel}</span></div><div className="empty-chart">No complete year-over-year observations are available.</div></section>;
   const width = 940;
   const height = 330;
   const left = 78;
@@ -1366,9 +1452,9 @@ function ClusteredColumnChart({ title, subtitle, absoluteUnit, data, series }: {
   const tickValues = Array.from({ length: 5 }, (_, index) => minValue + (spread * index) / 4);
   return (
     <section className="shelf-chart">
-      <div className="shelf-chart-heading"><div><h5>{title}</h5><p>{subtitle}</p></div><span>YoY change (%) · labels: {absoluteUnit}</span></div>
+      <div className="shelf-chart-heading"><div><h5>{title}</h5><p>{subtitle}</p></div><span>{chartUnitLabel}</span></div>
       <div className="chart-legend">{series.map((item) => <span key={item.label}><i className="series-swatch" style={{ background: `linear-gradient(90deg, ${item.color} 0 50%, ${item.negativeColor} 50% 100%)` }} /><span>{item.label}<small>positive | negative</small></span></span>)}</div>
-      <div className="clustered-chart-scroll" data-horizontal-scroll><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${title}, percentage change with absolute labels in ${absoluteUnit}`}>
+      <div className="clustered-chart-scroll" data-horizontal-scroll><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={showAbsoluteValues ? `${title}, percentage change with absolute labels in ${absoluteUnit}` : `${title}, year-over-year percentage change`}>
         {tickValues.map((tick) => <g key={tick}><line x1={left} x2={width - right} y1={y(tick)} y2={y(tick)} stroke="#ded6c6" strokeDasharray="4 6" /><text x={left - 10} y={y(tick) + 4} textAnchor="end" className="chart-axis-text">{formatCompactPercent(tick)}</text></g>)}
         <line x1={left} x2={width - right} y1={baseline} y2={baseline} stroke="#746c60" strokeWidth="1.3" />
         {data.map((item, dataIndex) => {
@@ -1382,8 +1468,8 @@ function ClusteredColumnChart({ title, subtitle, absoluteUnit, data, series }: {
             const absoluteValue = item.absoluteValues[seriesIndex];
             const barColor = percentValue < 0 ? series[seriesIndex].negativeColor : series[seriesIndex].color;
             return <g key={series[seriesIndex].label}>
-              <rect x={x} y={rectY} width={barWidth} height={rectHeight} fill={barColor} rx="2"><title>{`${item.interval} · ${series[seriesIndex].label}: ${formatPercent(percentValue)}; absolute delta ${formatChartAbsolute(absoluteValue)} ${absoluteUnit}`}</title></rect>
-              <text x={x + barWidth / 2} y={Math.max(11, rectY - 6)} textAnchor="middle" className="bar-absolute-label" style={{ fill: barColor }}>{formatChartAbsolute(absoluteValue)}</text>
+              <rect x={x} y={rectY} width={barWidth} height={rectHeight} fill={barColor} rx="2"><title>{showAbsoluteValues ? `${item.interval} · ${series[seriesIndex].label}: ${formatPercent(percentValue)}; absolute delta ${formatChartAbsolute(absoluteValue)} ${absoluteUnit}` : `${item.interval} · ${series[seriesIndex].label}: ${formatPercent(percentValue)}`}</title></rect>
+              {showAbsoluteValues && <text x={x + barWidth / 2} y={Math.max(11, rectY - 6)} textAnchor="middle" className="bar-absolute-label" style={{ fill: barColor }}>{formatChartAbsolute(absoluteValue)}</text>}
               <text x={x + barWidth / 2} y={rectY + rectHeight / 2} textAnchor="middle" dominantBaseline="middle" className="bar-percent-in-bar">{formatCompactPercent(percentValue)}</text>
             </g>;
           })}<text x={center} y={height - 27} textAnchor="middle" className="chart-axis-text interval-label">{item.interval}</text></g>;
@@ -1515,44 +1601,7 @@ function compactNumber(value: number): string {
 }
 
 function CompanyDetail({ company, watched, toggleWatch, navigate }: { company: Company; watched: boolean; toggleWatch: (id: string) => void; navigate: (page: Page) => void }) {
-  const availableMetrics = (Object.keys(metricMeta) as MetricKey[]).filter((key) => company.metrics[key].length);
-  const [metric, setMetric] = useState<MetricKey>(availableMetrics[0] ?? "revenue");
-  useEffect(() => { if (!company.metrics[metric].length && availableMetrics[0]) setMetric(availableMetrics[0]); }, [company.id, metric]);
-  const series = company.metrics[metric];
-  const notes: Record<MetricKey, string> = { revenue: company.notes.growth, operatingMargin: company.notes.profitability, freeCashFlow: company.notes.cash, netDebt: company.notes.debt };
-  return (
-    <div className="page-wrap company-page">
-      <button className="back-button" onClick={() => navigate("discover")}>← Back to discover</button>
-      <section className="company-profile">
-        <div className="company-title"><span className="company-monogram large">{company.name[0]}</span><div><p>{company.symbol} · {company.dataMode === "research-db" ? "Private Research database session" : company.dataMode === "sec-live" ? "Live SEC session" : "Illustrative preview"}</p><h1>{company.name}</h1><span>{company.sector}</span></div></div>
-        <button className={`button ${watched ? "secondary" : "primary"}`} onClick={() => toggleWatch(company.id)}>{watched ? "♥ In your watchlist" : "♡ Add to watchlist"}</button>
-      </section>
-      <p className="company-description">{company.description}</p>
-      <div className="company-facts">{company.founded && <span>Founded <strong>{company.founded}</strong></span>}{company.employees && <span>Employees <strong>{company.employees}</strong></span>}<span>Latest period <strong>{company.reportingPeriod}</strong></span><span>Session pull <strong>{company.updatedAt}</strong></span><span>Persistence <strong>Browser memory only</strong></span></div>
-
-      <ResearchDepthMap />
-
-      <section className="metric-overview">
-        <p className="eyebrow">Financial history · Layer III</p><h2>Interrogate the reported record</h2>
-        {availableMetrics.length ? <><div className="metric-tabs" role="tablist">
-          {availableMetrics.map((key) => {
-            const itemSeries = company.metrics[key];
-            return <button role="tab" aria-selected={metric === key} className={metric === key ? "active" : ""} key={key} onClick={() => setMetric(key)}><small>{metricMeta[key].short}</small><strong>{formatCompanyMetric(company, key, latest(itemSeries).value)}</strong><span>{metricMeta[key].label}</span></button>;
-          })}
-        </div>
-        <div className="metric-detail">
-          <div className="chart-column">
-            <div className="chart-title"><div><span>{metricMeta[metric].label}</span><strong>{formatCompanyMetric(company, metric, latest(series).value)}</strong></div><small>{company.currency} · Annual</small></div>
-            <LineChart series={series} color={metric === "revenue" ? "#b58932" : metric === "operatingMargin" ? "#7d3f49" : metric === "freeCashFlow" ? "#5a6f78" : "#9b6741"} />
-          </div>
-          <aside className="plain-insight"><span>In plain language</span><h3>{notes[metric]}</h3><p>{metricMeta[metric].explanation}</p><details><summary>How this metric is calculated</summary><p>{company.dataMode === "research-db" ? "This series is calculated from approved fields retrieved from the shared TaRaSha Research database for the selected years." : company.dataMode === "sec-live" ? "This derived series uses the SEC XBRL tags described in the filing-facts section below. It appears only when the required tagged concepts are available." : "This preview uses a simplified illustrative series."}</p></details></aside>
-        </div>
-        </> : <Empty title="No standard derived series found" text="Open the filing facts below. The issuer may use non-standard XBRL tags for these concepts." />}
-      </section>
-      {company.statements && <StatementExplorer company={company} />}
-      <DataTrust company={company} />
-    </div>
-  );
+  return <CompanyStoryHome company={company} watched={watched} toggleWatch={toggleWatch} backToDiscover={() => navigate("discover")} />;
 }
 
 function formatCompanyMetric(company: Company, key: MetricKey, value: number): string {
@@ -1562,7 +1611,9 @@ function formatCompanyMetric(company: Company, key: MetricKey, value: number): s
 }
 
 function formatStatementValue(company: Company, fact: StatementFact, value: number): string {
-  if (fact.unit === "US$ per share") return `$${value.toFixed(2)}`;
+  if (fact.unit === "%") return `${(Math.abs(value) <= 1 ? value * 100 : value).toFixed(1)}%`;
+  if (fact.unit === "USD per share" || fact.unit === "US$ per share") return `$${value.toFixed(2)}`;
+  if (fact.unit.endsWith(" per share")) return `${value.toFixed(2)} ${fact.unit.replace(" per share", "")}`;
   if (fact.unit === "million shares") return `${value.toLocaleString("en-US", { maximumFractionDigits: 1 })}m`;
   if (fact.unit === "₹ crore") return `${value < 0 ? "−" : ""}₹${Math.abs(value).toLocaleString("en-IN", { maximumFractionDigits: 1 })} cr`;
   if (!company.currency.startsWith("US$")) return `${value.toLocaleString("en-IN", { maximumFractionDigits: 1 })}`;
@@ -1576,11 +1627,11 @@ function StatementExplorer({ company }: { company: Company }) {
   const years = [...new Set(active?.facts.flatMap((fact) => fact.values.map((value) => value.year)) ?? [])].sort((a, b) => a - b);
   return (
     <section className="statement-explorer">
-      <div className="statement-heading"><div><p className="eyebrow">{company.dataMode === "research-db" ? "Imported historical financial facts" : "Directly extracted filing facts"}</p><h2>Open the statements</h2></div><span>{company.dataMode === "research-db" ? "Transient · Shared Research DB" : "Transient · SEC EDGAR"}</span></div>
+      <div className="statement-heading"><div><p className="eyebrow">{company.dataMode === "tarasha-data" ? "Normalized, source-linked financial facts" : "Illustrative financial facts"}</p><h2>Open the statements</h2></div><span>{company.dataMode === "tarasha-data" ? "Transient · TaRaShaData.ai API" : "Local preview"}</span></div>
       <div className="statement-tabs">{groups.map((group) => <button className={group.key === active?.key ? "active" : ""} onClick={() => setActiveKey(group.key)} key={group.key}>{group.label}<small>{group.facts.length} facts</small></button>)}</div>
       {active && <div className="statement-table-wrap"><table><thead><tr><th>Reported fact</th>{years.map((year) => <th key={year}>FY {year}</th>)}</tr></thead><tbody>{active.facts.map((fact) => { const values = new Map(fact.values.map((value) => [value.year, value.value])); return <tr key={fact.key}><td><strong>{fact.label}</strong><small>{fact.description}<br />{fact.unit}</small></td>{years.map((year) => <td key={year}>{values.has(year) ? formatStatementValue(company, fact, values.get(year)!) : "—"}</td>)}</tr>; })}</tbody></table></div>}
       <div className="filing-and-limits">
-        <div><h3>{company.dataMode === "research-db" ? "Source provenance" : "Source filings"}</h3>{company.dataMode === "research-db" ? <p>Retrieved from the shared TaRaSha Research database. The underlying figures were bulk-uploaded from financial spreadsheets downloaded through <a href="https://stockanalysis.com/" target="_blank" rel="noreferrer">StockAnalysis.com</a>. No spreadsheet or financial payload is stored separately by TaRaSha Consumer.</p> : company.filings?.length ? <div className="filing-list">{company.filings.slice(0, 12).map((filing) => <a href={filing.url} target="_blank" rel="noreferrer" key={filing.accession}><span>{filing.form}</span><div><strong>{filing.title}</strong><small>Filed {filing.filed} · Period {filing.period || "not stated"}</small></div><b>↗</b></a>)}</div> : <p>No matching recent 10-K, 10-Q or earnings-related 8-K links were returned for this range.</p>}</div>
+        <div><h3>Source filings</h3>{company.filings?.length ? <div className="filing-list">{company.filings.slice(0, 12).map((filing) => <a href={filing.url} target="_blank" rel="noreferrer" key={filing.accession}><span>{filing.form}</span><div><strong>{filing.title}</strong><small>Filed {filing.filed} · Period {filing.period || "not stated"}</small></div><b>↗</b></a>)}</div> : <p>No matching financial filing links were returned by TaRaShaData.ai for this range.</p>}</div>
         <aside><h3>Read with these limits</h3><ul>{company.limitations?.map((item) => <li key={item}>{item}</li>)}</ul></aside>
       </div>
     </section>
@@ -1626,34 +1677,390 @@ function LineChart({ series, color, compact = false }: { series: YearValue[]; co
 function DataTrust({ company }: { company: Company }) {
   return (
     <section className="data-trust">
-      <div className="trust-icon">✓</div><div><p className="eyebrow">Know where the number came from</p><h2>Data you can trace</h2><p>{company.dataMode === "research-db" ? "Facts were retrieved from the shared TaRaSha Research database. They originate in financial spreadsheets downloaded through StockAnalysis.com and bulk-uploaded by the Research administrator. Consumer keeps them only in this browser session." : company.dataMode === "sec-live" ? "Facts were extracted from SEC EDGAR in this browser session. Filing links remain available for verification; the extracted numbers are not saved by TaRaSha." : "This review mode uses fictional companies and illustrative numbers."}</p></div>
-      <div className="source-card"><span>Dataset</span><strong>{company.source?.dataset ?? (company.dataMode === "sec-live" ? "SEC EDGAR XBRL" : "Illustrative preview")}</strong><span>Upstream</span><strong>{company.source?.upstream ?? (company.dataMode === "sec-live" ? "Issuer SEC filings" : "TaRaSha demo")}</strong><span>Persistence</span><strong>{company.source?.persistence ?? (company.dataMode === "sec-live" ? "Session memory only" : "Local demo module")}</strong><span>Use</span><strong>{company.source?.usage ?? "Educational research"}</strong><span>Session pull</span><strong>{company.updatedAt}</strong></div>
+      <div className="trust-icon">✓</div><div><p className="eyebrow">Know where the number came from</p><h2>Data you can trace</h2><p>{company.dataMode === "tarasha-data" ? "Facts were retrieved from TaRaShaData.ai’s normalized, source-linked financial APIs. Filing links remain available for verification, and Discover keeps the response only in this browser session." : "This review mode uses fictional companies and illustrative numbers."}</p></div>
+      <div className="source-card"><span>Dataset</span><strong>{company.source?.dataset ?? "Illustrative preview"}</strong><span>Upstream</span><strong>{company.source?.upstream ?? "TaRaSha demo"}</strong><span>Persistence</span><strong>{company.source?.persistence ?? "Local demo module"}</strong><span>Use</span><strong>{company.source?.usage ?? "Educational research"}</strong><span>Session pull</span><strong>{company.updatedAt}</strong></div>
     </section>
   );
 }
 
-function Compare({ companies, openCompany }: { companies: Company[]; openCompany: (id: string) => void }) {
-  const [selected, setSelected] = useState<string[]>([]);
-  const selectedCompanies = companies.filter((company) => selected.includes(company.id));
-  const toggle = (id: string) => setSelected((current) => current.includes(id) ? current.filter((item) => item !== id) : current.length < 3 ? [...current, id] : current);
-  return (
-    <div className="page-wrap">
-      <PageIntro eyebrow="Compare" title="Put the same facts side by side." text="Choose up to three companies. We use matching periods and definitions wherever possible." />
-      {!companies.length && <div className="market-notice"><strong>Nothing to compare yet.</strong><p>Pull two or more companies into the current session from Discover.</p></div>}
-      <div className="compare-picker">{companies.map((company) => <button className={selected.includes(company.id) ? "selected" : ""} disabled={!selected.includes(company.id) && selected.length >= 3} onClick={() => toggle(company.id)} key={company.id}><span>{selected.includes(company.id) ? "✓" : "+"}</span>{company.name}</button>)}</div>
-      {selectedCompanies.length < 2 ? <Empty title="Choose at least two companies" text="Comparison becomes available after you select a second company." /> : <ComparisonTable companies={selectedCompanies} openCompany={openCompany} />}
-    </div>
-  );
+type ComparisonGrowthMetricKey = keyof ResearchShelfAnalysis["growthComparisons"];
+type ComparisonMetricStatistics = {
+  median: number | null;
+  standardDeviation: number | null;
+  observations: number;
+  distribution: DistributionObservation[];
+};
+type ComparisonMetricEntry = {
+  company: Company;
+  statistics: ComparisonMetricStatistics;
+  color: string;
+};
+
+const comparisonCompanyPalette = ["#315f86", "#a77d2d", "#527a58", "#9b5560", "#6f5d92"] as const;
+const comparisonCompanyNegativePalette = ["#96434d", "#ad5961", "#7f3039", "#c36b73", "#873e52"] as const;
+const comparisonGrowthMetrics: Array<{
+  key: ComparisonGrowthMetricKey;
+  label: string;
+  methodology?: { formula: string; meaning: string };
+}> = [
+  { key: "revenue", label: "Revenue growth" },
+  { key: "grossProfit", label: "Gross profit growth" },
+  {
+    key: "grossOperatingLeverage",
+    label: "Gross Operating Leverage",
+    methodology: {
+      formula: "((Current gross profit − Prior gross profit) ÷ (Current revenue − Prior revenue)) × 100",
+      meaning: "This estimates how much gross profit changed for every 100 units of revenue change. It is an incremental conversion ratio, not a growth rate or a standalone quality score. Read it together with the direction of revenue; the result is unavailable when revenue did not change.",
+    },
+  },
+  { key: "operatingIncome", label: "Operating income growth" },
+];
+
+function comparisonGrowthEntries(companies: Company[], metric: ComparisonGrowthMetricKey): ComparisonMetricEntry[] {
+  return companies.map((company, index) => ({
+    company,
+    statistics: company.researchShelf!.growthComparisons[metric].company,
+    color: comparisonCompanyPalette[index % comparisonCompanyPalette.length],
+  }));
 }
 
-function ComparisonTable({ companies: selected, openCompany }: { companies: Company[]; openCompany: (id: string) => void }) {
+function comparisonMedianTakeaway(label: string, entries: ComparisonMetricEntry[]): string {
+  const available = entries
+    .filter((entry) => entry.statistics.median !== null && Number.isFinite(entry.statistics.median))
+    .sort((left, right) => right.statistics.median! - left.statistics.median!);
+  if (available.length < 2) return `At least two companies need a typical ${label.toLowerCase()} result before they can be compared.`;
+  const highest = available[0];
+  const lowest = available[available.length - 1];
+  const difference = highest.statistics.median! - lowest.statistics.median!;
+  if (Math.abs(difference) < 0.5) return `The selected companies have closely grouped typical ${label.toLowerCase()} results.`;
+  return `${highest.company.symbol} has the highest typical result at ${formatLevelPercent(highest.statistics.median)}, while ${lowest.company.symbol} has the lowest at ${formatLevelPercent(lowest.statistics.median)}.`;
+}
+
+function comparisonSpreadTakeaway(entries: ComparisonMetricEntry[]): string {
+  const available = entries
+    .filter((entry) => entry.statistics.standardDeviation !== null && Number.isFinite(entry.statistics.standardDeviation))
+    .sort((left, right) => left.statistics.standardDeviation! - right.statistics.standardDeviation!);
+  if (available.length < 2) return "At least two companies need enough annual observations before consistency can be compared.";
+  const steadiest = available[0];
+  const widest = available[available.length - 1];
+  if (Math.abs(widest.statistics.standardDeviation! - steadiest.statistics.standardDeviation!) < 0.5) return "The selected companies show a similar degree of year-to-year variation.";
+  return `${steadiest.company.symbol} has the narrowest year-to-year spread at ${formatLevelPoints(steadiest.statistics.standardDeviation)}, while ${widest.company.symbol} has the widest at ${formatLevelPoints(widest.statistics.standardDeviation)}.`;
+}
+
+function ComparisonMetricBars({ label, entries, statistic, spread = false }: {
+  label: string;
+  entries: ComparisonMetricEntry[];
+  statistic: "median" | "standardDeviation";
+  spread?: boolean;
+}) {
+  const values = entries.map((entry) => entry.statistics[statistic]).filter((value): value is number => value !== null && Number.isFinite(value));
+  const maximum = Math.max(1, ...values.map((value) => Math.abs(value)));
+  const formatValue = spread ? formatLevelPoints : formatLevelPercent;
+  return <div className="metric-comparison-block comparison-metric-bars" aria-label={`${label} for selected companies`}>
+    <div className="metric-comparison-label"><strong>{label}</strong>{spread && <small>Lower is steadier</small>}</div>
+    {entries.map((entry) => {
+      const value = entry.statistics[statistic];
+      const available = value !== null && Number.isFinite(value);
+      const width = available ? Math.max(3, (Math.abs(value) / maximum) * 100) : 0;
+      return <div className="metric-comparison-row compare-company" key={entry.company.id} style={{ "--comparison-color": entry.color } as React.CSSProperties}>
+        <span title={entry.company.name}>{entry.company.symbol}</span>
+        <div className="metric-comparison-track"><i className={available && value < 0 ? "negative" : ""} style={{ width: `${width}%` }} /></div>
+        <strong>{formatValue(value)}</strong>
+      </div>;
+    })}
+  </div>;
+}
+
+function ComparisonNormalDistributionCurve({ label, entries }: { label: string; entries: ComparisonMetricEntry[] }) {
+  const observations = entries.flatMap((entry) => entry.statistics.distribution
+    .filter((observation) => Number.isFinite(observation.value))
+    .map((observation) => ({ ...observation, entry })));
+  const mean = arithmeticMean(observations.map((observation) => observation.value));
+  const spread = sampleStandardDeviation(observations.map((observation) => observation.value));
+  if (mean === null || !observations.length) return <div className="distribution-unavailable">A distribution needs annual observations from the selected companies. None are available for this metric.</div>;
+  const width = 560;
+  const left = 58;
+  const right = 18;
+  const curveTop = 17;
+  const curveBaseline = 116;
+  const laneStart = 145;
+  const laneGap = 23;
+  const axisY = laneStart + (entries.length * laneGap) + 6;
+  const height = axisY + 28;
+  const plotWidth = width - left - right;
+  const x = (zScore: number) => left + ((zScore + 4) / 8) * plotWidth;
+  const curvePoints = Array.from({ length: 81 }, (_, index) => {
+    const zScore = -4 + (index / 10);
+    const relativeDensity = Math.exp(-0.5 * (zScore ** 2));
+    return { x: x(zScore), y: curveBaseline - (relativeDensity * (curveBaseline - curveTop)) };
+  });
+  const curvePath = curvePoints.map((point, index) => `${index ? "L" : "M"}${point.x.toFixed(1)},${point.y.toFixed(1)}`).join(" ");
+  const areaPath = `${curvePath} L${x(4)},${curveBaseline} L${x(-4)},${curveBaseline} Z`;
+  const standardize = (value: number) => Math.max(-4, Math.min(4, spread !== null && spread > 0 ? (value - mean) / spread : 0));
+  return <div className="normal-distribution-view comparison-normal-distribution">
+    <div className="distribution-chart-heading">
+      <div><strong>Standard normal distribution</strong><small>Only annual observations from the selected companies are positioned against their pooled comparison average.</small></div>
+      <span>Mean {formatLevelPercent(mean)} · σ {formatLevelPoints(spread)}</span>
+    </div>
+    <div className="distribution-legend" aria-label="Selected company legend">
+      <span><i className="curve" />Comparison curve</span>
+      {entries.map((entry) => <span key={entry.company.id}><i className="comparison-company-key" style={{ background: entry.color }} />{entry.company.symbol}</span>)}
+      <span><i className="comparison-median-key" />Company median</span>
+    </div>
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${label} standard normal distribution for ${entries.map((entry) => entry.company.name).join(", ")}`}>
+      <path d={areaPath} fill="#e7f0f6" />
+      <path d={curvePath} fill="none" stroke="#5f8dad" strokeWidth="2" />
+      <line x1={x(0)} x2={x(0)} y1={curveTop} y2={curveBaseline} stroke="#7192aa" strokeDasharray="3 4" />
+      {entries.map((entry, entryIndex) => {
+        const laneY = laneStart + (entryIndex * laneGap);
+        const companyObservations = observations.filter((observation) => observation.entry.company.id === entry.company.id);
+        const median = entry.statistics.median;
+        return <g key={entry.company.id}>
+          <text x="7" y={laneY + 3} className="distribution-lane-label">{entry.company.symbol}</text>
+          <line x1={left} x2={width - right} y1={laneY} y2={laneY} stroke="#e1e8ed" />
+          {companyObservations.map((observation, index) => <circle key={`${observation.label}-${index}`} cx={x(standardize(observation.value))} cy={laneY + ((index % 3) - 1) * 4} r="3.2" fill={entry.color} opacity=".72"><title>{`${entry.company.name} · ${observation.label} · ${formatLevelPercent(observation.value)}`}</title></circle>)}
+          {median !== null && Number.isFinite(median) && <polygon points={`${x(standardize(median))},${laneY - 5} ${x(standardize(median)) + 5},${laneY} ${x(standardize(median))},${laneY + 5} ${x(standardize(median)) - 5},${laneY}`} fill={entry.color} stroke="#fff" strokeWidth="1.1"><title>{`${entry.company.name} median · ${formatLevelPercent(median)}`}</title></polygon>}
+        </g>;
+      })}
+      <line x1={left} x2={width - right} y1={axisY} y2={axisY} stroke="#a7b2b9" />
+      {[-3, -2, -1, 0, 1, 2, 3].map((tick) => <g key={tick}><line x1={x(tick)} x2={x(tick)} y1={axisY} y2={axisY + 4} stroke="#8798a3" /><text x={x(tick)} y={axisY + 15} textAnchor="middle" className="distribution-axis-label">{tick === 0 ? "Mean" : `${tick > 0 ? "+" : "−"}${Math.abs(tick)}σ`}</text></g>)}
+    </svg>
+    <p className="distribution-caption">The curve is a normal reference, not a claim that the selected companies’ results are perfectly normal. Circles show annual observations; diamonds show each company’s median. Hover over a marker for details.</p>
+  </div>;
+}
+
+function ComparisonGrowthMetricCard({ metric, label, companies, methodology }: {
+  metric: ComparisonGrowthMetricKey;
+  label: string;
+  companies: Company[];
+  methodology?: { formula: string; meaning: string };
+}) {
+  const entries = comparisonGrowthEntries(companies, metric);
+  const availableMedians = entries.filter((entry) => entry.statistics.median !== null).length;
+  return <article className="metric-insight-card comparison-insight-card">
+    <header><h6>{label}</h6><span className="metric-summary-badge">{availableMedians} / {entries.length} comparable</span></header>
+    {methodology && <aside className="metric-methodology"><strong>How the application derives it</strong><code>{methodology.formula}</code><p>{methodology.meaning}</p></aside>}
+    <p className="metric-primary-takeaway">{comparisonMedianTakeaway(label, entries)}</p>
+    <ComparisonMetricBars label="Typical result (median)" entries={entries} statistic="median" />
+    <section className="metric-spread-section">
+      <ComparisonMetricBars label="Year-to-year spread" entries={entries} statistic="standardDeviation" spread />
+      <p className="metric-spread-takeaway">{comparisonSpreadTakeaway(entries)}</p>
+      <ComparisonNormalDistributionCurve label={label} entries={entries} />
+    </section>
+    <small className="metric-observation-count">{entries.map((entry) => `${entry.company.symbol}: ${entry.statistics.observations} observations`).join(" · ")}</small>
+  </article>;
+}
+
+function SelectedCompanyYoYComparisonChart({ title, metric, companies }: {
+  title: string;
+  metric: ComparisonYoYMetric;
+  companies: Company[];
+}) {
+  const intervals = comparisonYoYIntervals(companies, metric);
+  return <ClusteredColumnChart
+    title={title}
+    subtitle="Bar height displays only YoY change (%) for the selected companies"
+    absoluteUnit=""
+    data={intervals.map((interval) => ({
+      interval: yearInterval(interval.fromYear, interval.toYear),
+      percentValues: interval.values,
+      absoluteValues: companies.map(() => null),
+    }))}
+    series={companies.map((company, index) => ({
+      label: company.symbol,
+      color: comparisonCompanyPalette[index % comparisonCompanyPalette.length],
+      negativeColor: comparisonCompanyNegativePalette[index % comparisonCompanyNegativePalette.length],
+    }))}
+    showAbsoluteValues={false}
+  />;
+}
+
+function comparisonProfitabilityEntries(companies: Company[], metric: ProfitabilityMetricKey): ComparisonMetricEntry[] {
+  return companies.map((company, index) => ({
+    company,
+    statistics: company.researchShelf!.profitability.statistics[metric],
+    color: comparisonCompanyPalette[index % comparisonCompanyPalette.length],
+  }));
+}
+
+function ComparisonProfitabilityMetricCard({ metric, label, companies }: {
+  metric: ProfitabilityMetricKey;
+  label: string;
+  companies: Company[];
+}) {
+  const entries = comparisonProfitabilityEntries(companies, metric);
+  const availableMedians = entries.filter((entry) => entry.statistics.median !== null).length;
+  return <article className="metric-insight-card comparison-insight-card">
+    <header><h6>{label}</h6><span className="metric-summary-badge">{availableMedians} / {entries.length} comparable</span></header>
+    <p className="metric-primary-takeaway">{comparisonMedianTakeaway(label, entries)}</p>
+    <ComparisonMetricBars label="Typical result (median)" entries={entries} statistic="median" />
+    <section className="metric-spread-section">
+      <ComparisonMetricBars label="Year-to-year spread" entries={entries} statistic="standardDeviation" spread />
+      <p className="metric-spread-takeaway">{comparisonSpreadTakeaway(entries)}</p>
+      <ComparisonNormalDistributionCurve label={label} entries={entries} />
+    </section>
+    <small className="metric-observation-count">{entries.map((entry) => `${entry.company.symbol}: ${entry.statistics.observations} observations`).join(" · ")}</small>
+  </article>;
+}
+
+function comparisonAmountUnit(company: Company): string {
+  return company.currency.startsWith("US$") ? "USD millions" : "INR crores";
+}
+
+function SelectedCompanyProfitabilityChart({ title, metric, companies }: {
+  title: string;
+  metric: ProfitabilityMetricKey;
+  companies: Company[];
+}) {
+  const years = comparisonProfitabilityYears(companies, metric);
+  return <PercentageLevelChart
+    title={title}
+    subtitle="Percentage appears inside each bar · native absolute amount appears above"
+    absoluteUnit=""
+    seriesUnits={companies.map(comparisonAmountUnit)}
+    data={years.map((year) => ({ label: `FY ${year.year}`, values: year.values, absoluteValues: year.absoluteValues }))}
+    series={companies.map((company, index) => ({
+      label: `${company.symbol} · ${comparisonAmountUnit(company)}`,
+      color: comparisonCompanyPalette[index % comparisonCompanyPalette.length],
+      negativeColor: comparisonCompanyNegativePalette[index % comparisonCompanyNegativePalette.length],
+    }))}
+  />;
+}
+
+type ComparisonPerformanceBand = PerformanceBand | "contextual";
+
+function comparisonPerformanceBand(value: number | null, values: number[], direction: "higher" | "lower" | "contextual"): ComparisonPerformanceBand {
+  if (value === null || !Number.isFinite(value) || values.length < 2) return "unavailable";
+  if (direction === "contextual") return "contextual";
+  return performanceBand(value, {
+    lowerQuartile: percentile(values, 0.25),
+    median: percentile(values, 0.5),
+    upperQuartile: percentile(values, 0.75),
+    observations: values.length,
+    direction,
+  });
+}
+
+function ComparisonPerformanceBandCell({ value, peerValues, direction }: {
+  value: number | null;
+  peerValues: number[];
+  direction: "higher" | "lower" | "contextual";
+}) {
+  const band = comparisonPerformanceBand(value, peerValues, direction);
+  const title = band === "contextual"
+    ? "R&D intensity is shown for context and is not scored as better or worse."
+    : band === "unavailable"
+      ? "At least two selected-company observations are required for a relative band."
+      : `Relative ${band} band among ${peerValues.length} selected companies reporting this fiscal year.`;
+  return <td className={`growth-band profitability-band comparison-profitability-band ${band}`} title={title}><span>{formatLevelPercent(value)}</span></td>;
+}
+
+function ComparisonPerformanceBandLegend() {
+  return <div className="performance-band-guide comparison-performance-band-guide">
+    <div className="growth-band-key"><span className="negative">Weakest quartile</span><span className="moderate">Below median</span><span className="good">Above median</span><span className="excellent">Strongest quartile</span><span className="contextual">Contextual</span></div>
+    <p>Bands compare only the selected companies reporting in the same fiscal year. Higher margins and lower cost ratios rank better; R&amp;D intensity is contextual and is not scored.</p>
+  </div>;
+}
+
+function ComparisonProfitabilityYearTable({ companies }: { companies: Company[] }) {
+  const years = comparisonProfitabilityYears(companies, "grossMargin").map((point) => point.year);
+  return <section className="raw-income-section profitability-year-section comparison-profitability-year-section">
+    <div className="shelf-chart-heading"><div><h5>Annual margin and cost-structure record</h5><p>Selected company values aligned by fiscal year</p></div><span>Selected-company relative performance bands</span></div>
+    <ComparisonPerformanceBandLegend />
+    <div className="raw-income-table-wrap" data-horizontal-scroll><table className="raw-income-table profitability-year-table comparison-profitability-year-table"><thead><tr><th>Fiscal year</th><th>Company</th>{profitabilityMetrics.map((metric) => <th key={metric.key}>{metric.compactLabel}</th>)}</tr></thead><tbody>{years.flatMap((year) => companies.map((company) => {
+      const row = company.researchShelf!.profitability.yearly.find((point) => point.year === year);
+      return <tr key={`${year}-${company.id}`}><th>FY {year}</th><th className="comparison-company-cell"><strong>{company.symbol}</strong><small>{company.name}</small></th>{profitabilityMetrics.map((metric) => {
+        const peerValues = companies.map((peer) => peer.researchShelf!.profitability.yearly.find((point) => point.year === year)?.[metric.key]).filter((value): value is number => value !== null && value !== undefined && Number.isFinite(value));
+        return <ComparisonPerformanceBandCell key={metric.key} value={row?.[metric.key] ?? null} peerValues={peerValues} direction={metric.direction} />;
+      })}</tr>;
+    }))}</tbody></table></div>
+  </section>;
+}
+
+function ComparisonMarginsAndCostsCard({ companies }: { companies: Company[] }) {
+  return <div className="research-note profitability-note comparison-profitability-note">
+    <div className="growth-quality-heading">
+      <div><small>Selected-company profitability and reinvestment lens</small><h4>Margins &amp; Cost Structure</h4></div>
+      <span>{companies.length} companies · Research shelf data</span>
+    </div>
+    <p className="profitability-intro">Compare how much revenue remains after direct and operating costs, and how consistently each selected company reports its margin and cost structure.</p>
+    <section className="statistics-summary profitability-statistics-summary">
+      <StatisticalReadingGuide />
+      <div className="metric-insight-grid profitability-insight-grid">{profitabilityMetrics.map((metric) => <ComparisonProfitabilityMetricCard key={metric.key} metric={metric.key} label={metric.label} companies={companies} />)}</div>
+    </section>
+    <section className="comparison-profitability-charts" aria-label="Selected company margin and cost comparisons">
+      <SelectedCompanyProfitabilityChart title="Company comparison · Gross margin" metric="grossMargin" companies={companies} />
+      <SelectedCompanyProfitabilityChart title="Company comparison · Operating margin" metric="operatingMargin" companies={companies} />
+      <SelectedCompanyProfitabilityChart title="Company comparison · D&amp;A expense / revenue" metric="daRatio" companies={companies} />
+      <SelectedCompanyProfitabilityChart title="Company comparison · R&amp;D expense / revenue" metric="rdRatio" companies={companies} />
+    </section>
+    <ComparisonProfitabilityYearTable companies={companies} />
+  </div>;
+}
+
+function ComparisonGrowthQualityCard({ companies }: { companies: Company[] }) {
+  return <div className="research-note growth-quality-note comparison-growth-note">
+    <div className="growth-quality-heading">
+      <div><small>Selected companies</small><h4>Growth Quality</h4></div>
+      <span>{companies.length} companies · Research shelf data</span>
+    </div>
+    <section className="statistics-summary growth-statistics-summary">
+      <StatisticalReadingGuide />
+      <div className="metric-insight-grid growth-insight-grid">{comparisonGrowthMetrics.map((definition) => <ComparisonGrowthMetricCard key={definition.key} metric={definition.key} label={definition.label} companies={companies} methodology={definition.methodology} />)}</div>
+    </section>
+    <section className="comparison-yoy-charts" aria-label="Selected company year-over-year comparisons">
+      <SelectedCompanyYoYComparisonChart title="Revenue comparison" metric="revenue" companies={companies} />
+      <SelectedCompanyYoYComparisonChart title="Gross profit comparison" metric="grossProfit" companies={companies} />
+      <SelectedCompanyYoYComparisonChart title="Operating income comparison" metric="operatingIncome" companies={companies} />
+    </section>
+  </div>;
+}
+
+const comparisonCardLabels = ["Growth Quality", "Margins & costs"] as const;
+
+function ComparisonFolio({ companies }: { companies: Company[] }) {
+  const [activeCard, setActiveCard] = useState(0);
+  const swipeStartX = useRef<number | null>(null);
+  const moveCard = (direction: -1 | 1) => setActiveCard((current) => Math.min(comparisonCardLabels.length - 1, Math.max(0, current + direction)));
+  const finishSwipe = (event: React.PointerEvent<HTMLElement>) => {
+    if (swipeStartX.current === null) return;
+    const distance = event.clientX - swipeStartX.current;
+    swipeStartX.current = null;
+    if (distance > 55) moveCard(-1);
+    if (distance < -55) moveCard(1);
+  };
+  return <section className="comparison-folio-card">
+    <nav className="research-card-nav comparison-card-nav" aria-label="Comparison research cards">
+      <button className="card-cursor" onClick={() => moveCard(-1)} disabled={activeCard === 0} aria-label="Show previous comparison card">←</button>
+      <div className="research-card-tabs" role="tablist">{comparisonCardLabels.map((label, index) => <button type="button" role="tab" aria-selected={activeCard === index} className={activeCard === index ? "active" : ""} onClick={() => setActiveCard(index)} key={label}>{label}</button>)}</div>
+      <button className="card-cursor" onClick={() => moveCard(1)} disabled={activeCard === comparisonCardLabels.length - 1} aria-label="Show next comparison card">→</button>
+    </nav>
+    <div className="research-card-position"><span>{String(activeCard + 1).padStart(2, "0")} / {String(comparisonCardLabels.length).padStart(2, "0")}</span><small>Swipe left or right · Comparison folio</small></div>
+    <div className="research-card-viewport comparison-card-viewport" onPointerDown={(event) => { if (!(event.target as HTMLElement).closest("[data-horizontal-scroll]")) swipeStartX.current = event.clientX; }} onPointerUp={finishSwipe} onPointerCancel={() => { swipeStartX.current = null; }}>
+      {activeCard === 0 ? <ComparisonGrowthQualityCard companies={companies} /> : <ComparisonMarginsAndCostsCard companies={companies} />}
+    </div>
+  </section>;
+}
+
+function Compare({ companies }: { companies: Company[] }) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const availableCompanies = researchShelfCompanies(companies);
+  const availableIds = availableCompanies.map((company) => company.id);
+  const activeSelected = selected.filter((id) => availableIds.includes(id));
+  const selectedCompanies = availableCompanies.filter((company) => activeSelected.includes(company.id));
+  const toggle = (id: string) => setSelected((current) => toggleComparisonCompany(current, id, availableIds));
   return (
-    <div className="comparison-wrap">
-      <div className="comparison-note"><strong>Remember:</strong> A comparison describes differences. It does not decide which company is suitable for anyone.</div>
-      <div className="comparison-table" style={{ "--company-count": selected.length } as React.CSSProperties}>
-        <div className="comparison-row company-row"><span>Company</span>{selected.map((company) => <button key={company.id} onClick={() => openCompany(company.id)}><span className="company-monogram">{company.name[0]}</span><strong>{company.name}</strong><small>{company.sector}</small></button>)}</div>
-        {(Object.keys(metricMeta) as MetricKey[]).map((key) => <div className="comparison-row" key={key}><span><strong>{metricMeta[key].label}</strong><small>{metricMeta[key].explanation}</small></span>{selected.map((company) => { const series = company.metrics[key]; return <div key={company.id}><strong>{series.length ? formatCompanyMetric(company, key, latest(series).value) : "—"}</strong><small>{series.length ? company.reportingPeriod : "Tag unavailable"}</small></div>; })}</div>)}
-      </div>
+    <div className="page-wrap compare-page">
+      <header className="compare-page-heading">
+        <p>Discover <span>&gt;&gt;</span> Research <span>&gt;&gt;</span> Compare</p>
+        <h1>Compare Financials.</h1>
+      </header>
+      {!availableCompanies.length && <div className="market-notice"><strong>Nothing to compare yet.</strong><p>Pull companies into the Research shelf on Discover before opening Compare.</p></div>}
+      {availableCompanies.length > 0 && <>
+        <div className="comparison-note"><strong>Select two to five companies.</strong> Only companies currently available on the Discover Research shelf can be compared.</div>
+        <div className="compare-picker" aria-label="Choose companies to compare">{availableCompanies.map((company) => <button type="button" className={activeSelected.includes(company.id) ? "selected" : ""} disabled={!activeSelected.includes(company.id) && activeSelected.length >= MAX_COMPARISON_COMPANIES} onClick={() => toggle(company.id)} key={company.id}><span>{activeSelected.includes(company.id) ? "✓" : "+"}</span>{company.name}<small>{company.symbol}</small></button>)}</div>
+      </>}
+      {selectedCompanies.length < 2 ? <Empty title="Choose at least two companies" text={`Select up to ${MAX_COMPARISON_COMPANIES} companies from the Research shelf to build the comparison folio.`} /> : <ComparisonFolio companies={selectedCompanies} />}
     </div>
   );
 }

@@ -1,13 +1,10 @@
 import { companies as demoCompanies } from "./data/demo";
-import { normalizeSecResearch, type SecCompanyFacts, type SecSubmissions } from "./sec";
 import type { CatalogCompany, Company, DistributionObservation, GrowthStatistics, ProfitabilityMetricKey, ResearchShelfAnalysis } from "./types";
 
 export const MAX_SESSION_COMPANIES = 50;
 export const MAX_YEAR_RANGE = 7;
 export const liveDataEnabled = import.meta.env.VITE_DATA_MODE === "live";
 const apiBase = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-const sessionId = `${crypto.randomUUID().replace(/-/g, "")}${Date.now().toString(36)}`;
-const wait = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 const requiredEarningsFlowMetrics = [
   "revenue",
@@ -44,7 +41,7 @@ const demoCatalog: CatalogCompany[] = demoCompanies.map((company) => ({
   exchange: "Illustrative",
   country: "USA",
   provider: "TaRaSha preview",
-  research_available: 1,
+  data_available: 1,
 }));
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -219,7 +216,7 @@ function normalizeResearchShelfContract(company: Company): Company {
     || !shelf.earningsAndValuation.valuation.comparisons
     || !cashFlowIsCurrent
   ) {
-    throw new Error("TaRaShaConsumer received an older Research API response. Refresh the page after the Consumer deployment finishes, then pull the company again.");
+    throw new Error("TaRaSha Discover received an incompatible TaRaShaData.ai response. Refresh the page after deployment finishes, then pull the company again.");
   }
   if (!Array.isArray(shelf.industryConstituents)) shelf.industryConstituents = [];
   if (typeof shelf.industryConstituentsCustomized !== "boolean") shelf.industryConstituentsCustomized = false;
@@ -242,33 +239,19 @@ export async function pullCompanyResearch(catalog: CatalogCompany, fromYear: num
   if (toYear - fromYear + 1 > MAX_YEAR_RANGE) throw new Error(`Choose no more than ${MAX_YEAR_RANGE} years.`);
   if (!liveDataEnabled) {
     const demo = demoCompanies.find((company) => company.id === catalog.id);
-    if (!demo) throw new Error("Live Indian filing extraction is not available in the preview.");
+    if (!demo) throw new Error("Live TaRaShaData.ai coverage is not available in the preview.");
     await new Promise((resolve) => setTimeout(resolve, 350));
-    return { ...demo, dataMode: "illustrative", limitations: ["This is fictional preview data. Enable the SEC/Cloudflare configuration for live US filings."] };
+    return { ...demo, dataMode: "illustrative", limitations: ["This is fictional preview data. Enable the TaRaShaData.ai API configuration for live filing-derived data."] };
   }
-  if (catalog.data_access === "normalized") {
-    const params = new URLSearchParams({ companyId: catalog.id, fromYear: String(fromYear), toYear: String(toYear) });
-    return normalizeResearchShelfContract(await requestJson<Company>(`/api/research/company?${params}`));
-  }
-  if (catalog.country !== "USA" || !catalog.research_available) throw new Error("A lawful free structured filing source is not available for this market yet.");
-  await requestJson("/api/session/claim", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ companyId: catalog.id, sessionId, fromYear, toYear }),
-  });
-  const params = `companyId=${encodeURIComponent(catalog.id)}&sessionId=${encodeURIComponent(sessionId)}`;
-  // Keep upstream SEC requests sequential. This is slightly slower for one user,
-  // but makes aggregate traffic more predictable during the founding-user phase.
-  const facts = await requestJson<SecCompanyFacts>(`/api/sec/companyfacts?${params}`);
-  await wait(350);
-  const submissions = await requestJson<SecSubmissions>(`/api/sec/submissions?${params}`);
-  return normalizeSecResearch(catalog, facts, submissions, fromYear, toYear);
+  if (catalog.country !== "USA" || !catalog.data_available) throw new Error("TaRaShaData.ai does not currently publish normalized coverage for this company.");
+  const params = new URLSearchParams({ companyId: catalog.id, fromYear: String(fromYear), toYear: String(toYear) });
+  return normalizeResearchShelfContract(await requestJson<Company>(`/api/data/company?${params}`));
 }
 
 export async function recalculateIndustryConstituents(company: Company, constituentIds?: string[]): Promise<Company> {
   const shelf = company.researchShelf;
-  if (!liveDataEnabled || company.dataMode !== "research-db" || !shelf) throw new Error("Industry constituent editing is available for live Research database companies only.");
-  const updated = await requestJson<Company>("/api/research/company", {
+  if (!liveDataEnabled || company.dataMode !== "tarasha-data" || !shelf) throw new Error("Industry constituent editing is available for live TaRaShaData.ai companies only.");
+  const updated = await requestJson<Company>("/api/data/company", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
