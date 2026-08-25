@@ -16,8 +16,6 @@ permissions:
 env:
   AZURE_WEBAPP_NAME: tarasha-discover
   AZURE_RESOURCE_GROUP: TaRaShaDiscoverPreview
-  AZURE_PLAN_NAME: TaRaSha-Discover-Free
-  AZURE_LOCATION: centralus
   TARASHA_DISCOVER_API_ORIGIN: https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
 
 concurrency:
@@ -54,44 +52,21 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_6126EFFCB1A74261821006ECF19AE8D5 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_8ACF62F3171742308CDCC83EE421484A }}
 
-      - name: Create or update the isolated Consumer web app
+      - name: Configure the pre-provisioned isolated Consumer web app
         id: azure-app
         shell: bash
         run: |
           set -euo pipefail
 
-          az group create \
-            --name "$AZURE_RESOURCE_GROUP" \
-            --location "$AZURE_LOCATION" \
-            --output none
-
-          if ! az appservice plan show \
-            --resource-group "$AZURE_RESOURCE_GROUP" \
-            --name "$AZURE_PLAN_NAME" \
-            --output none 2>/dev/null; then
-            az appservice plan create \
-              --resource-group "$AZURE_RESOURCE_GROUP" \
-              --name "$AZURE_PLAN_NAME" \
-              --is-linux \
-              --sku FREE \
-              --location "$AZURE_LOCATION" \
-              --output none
-          fi
-
           node_runtime="$(az webapp list-runtimes --os linux --query "[?runtime == 'Node' && contains(version, '22')].config | [0]" --output tsv)"
           node_runtime="${node_runtime:-NODE|22-lts}"
-          create_runtime="${node_runtime/|/:}"
 
           if ! az webapp show \
             --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$AZURE_WEBAPP_NAME" \
             --output none 2>/dev/null; then
-            az webapp create \
-              --resource-group "$AZURE_RESOURCE_GROUP" \
-              --plan "$AZURE_PLAN_NAME" \
-              --name "$AZURE_WEBAPP_NAME" \
-              --runtime "$create_runtime" \
-              --output none
+            echo "The pre-provisioned ${AZURE_RESOURCE_GROUP}/${AZURE_WEBAPP_NAME} web app was not found." >&2
+            exit 1
           fi
 
           az webapp config set \
