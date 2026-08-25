@@ -15,8 +15,14 @@ permissions:
 
 env:
   AZURE_WEBAPP_NAME: tarasha-discover
-  RESEARCH_WEBAPP_NAME: TaRaSha
+  AZURE_RESOURCE_GROUP: TaRaShaDiscoverPreview
+  AZURE_PLAN_NAME: TaRaSha-Discover-Free
+  AZURE_LOCATION: centralus
   TARASHA_DISCOVER_API_ORIGIN: https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
+
+concurrency:
+  group: tarasha-discover-azure-production
+  cancel-in-progress: true
 
 jobs:
   build-and-deploy:
@@ -48,43 +54,55 @@ jobs:
           tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_6126EFFCB1A74261821006ECF19AE8D5 }}
           subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_8ACF62F3171742308CDCC83EE421484A }}
 
-      - name: Create or update the separate Consumer web app
+      - name: Create or update the isolated Consumer web app
         id: azure-app
         shell: bash
         run: |
           set -euo pipefail
 
-          research_app="$(az webapp list --query "[?name=='${RESEARCH_WEBAPP_NAME}'] | [0].[resourceGroup,serverFarmId]" --output tsv)"
-          if [[ -z "$research_app" ]]; then
-            echo "The existing ${RESEARCH_WEBAPP_NAME} web app was not found in this subscription." >&2
-            exit 1
+          az group create \
+            --name "$AZURE_RESOURCE_GROUP" \
+            --location "$AZURE_LOCATION" \
+            --output none
+
+          if ! az appservice plan show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_PLAN_NAME" \
+            --output none 2>/dev/null; then
+            az appservice plan create \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --name "$AZURE_PLAN_NAME" \
+              --is-linux \
+              --sku FREE \
+              --location "$AZURE_LOCATION" \
+              --output none
           fi
 
-          read -r resource_group plan_id <<< "$research_app"
-          plan_name="${plan_id##*/}"
           node_runtime="$(az webapp list-runtimes --os linux --query "[?runtime == 'Node' && contains(version, '22')].config | [0]" --output tsv)"
           node_runtime="${node_runtime:-NODE|22-lts}"
           create_runtime="${node_runtime/|/:}"
 
-          existing_app="$(az webapp list --query "[?name=='${AZURE_WEBAPP_NAME}'] | [0].name" --output tsv)"
-          if [[ -z "$existing_app" ]]; then
+          if ! az webapp show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --output none 2>/dev/null; then
             az webapp create \
-              --resource-group "$resource_group" \
-              --plan "$plan_name" \
+              --resource-group "$AZURE_RESOURCE_GROUP" \
+              --plan "$AZURE_PLAN_NAME" \
               --name "$AZURE_WEBAPP_NAME" \
               --runtime "$create_runtime" \
               --output none
           fi
 
           az webapp config set \
-            --resource-group "$resource_group" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$AZURE_WEBAPP_NAME" \
             --linux-fx-version "$node_runtime" \
             --startup-file "npm start" \
             --output none
 
           az webapp config appsettings set \
-            --resource-group "$resource_group" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$AZURE_WEBAPP_NAME" \
             --settings \
               TARASHA_DISCOVER_API_ORIGIN="$TARASHA_DISCOVER_API_ORIGIN" \
@@ -93,13 +111,13 @@ jobs:
             --output none
 
           az webapp update \
-            --resource-group "$resource_group" \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
             --name "$AZURE_WEBAPP_NAME" \
             --https-only true \
             --output none
 
-          hostname="$(az webapp show --resource-group "$resource_group" --name "$AZURE_WEBAPP_NAME" --query defaultHostName --output tsv)"
-          echo "resource-group=$resource_group" >> "$GITHUB_OUTPUT"
+          hostname="$(az webapp show --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --query defaultHostName --output tsv)"
+          echo "resource-group=$AZURE_RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
           echo "hostname=$hostname" >> "$GITHUB_OUTPUT"
 
       - name: Package the Azure application
