@@ -3,7 +3,9 @@
   "name": "tarasha-consumer-platform",
   "pages_build_output_dir": "./dist",
   "compatibility_date": "2026-07-11",
-  // Set TARASHA_DATA_API_URL in the Cloudflare preview environment.
+  "vars": {
+    "TARASHA_DATA_API_URL": "https://tarasha-data.azurewebsites.net"
+  },
   // If the API is protected, store TARASHA_DATA_API_KEY as an encrypted secret.
   "d1_databases": [
     {

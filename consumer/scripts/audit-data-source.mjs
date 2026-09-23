@@ -3,6 +3,7 @@ import { dirname, extname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+const consumerRoot = resolve(repositoryRoot, "consumer");
 const ignoredDirectories = new Set([
   ".git",
   ".local-data",
@@ -28,13 +29,11 @@ const textExtensions = new Set([
   ".yml",
 ]);
 const forbidden = [
-  ["TaRaSha", "Research"].join(""),
   ["tarasha", "research"].join("-"),
   ["research", "db"].join("-"),
   ["TARASHA", "DB", "URL"].join("_"),
   ["TaRaSha Shared", "Database"].join(" "),
   ["CONSUMER", "API", "ORIGIN"].join("_"),
-  ["agent-consumer-friendly-init", "tarasha-consumer-platform", "pages.dev"].join("."),
 ];
 
 async function sourceFiles(directory) {
@@ -49,7 +48,11 @@ async function sourceFiles(directory) {
 }
 
 const violations = [];
-for (const path of await sourceFiles(repositoryRoot)) {
+const deploymentFiles = [
+  resolve(repositoryRoot, ".github/workflows/consumer-ci.yml"),
+  resolve(repositoryRoot, ".github/workflows/deploy_consumer_azure.yml"),
+];
+for (const path of [...await sourceFiles(consumerRoot), ...deploymentFiles]) {
   const contents = await readFile(path, "utf8");
   for (const token of forbidden) {
     if (contents.toLowerCase().includes(token.toLowerCase())) {

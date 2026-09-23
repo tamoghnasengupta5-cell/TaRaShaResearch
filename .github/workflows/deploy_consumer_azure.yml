@@ -1,0 +1,134 @@
+name: Build and deploy TaRaSha Discover to Azure
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "consumer/**"
+      - ".github/workflows/deploy_consumer_azure.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AZURE_WEBAPP_NAME: tarasha-discover
+  AZURE_RESOURCE_GROUP: TaRaShaDiscoverPreview
+  TARASHA_DISCOVER_API_ORIGIN: https://agent-consumer-friendly-init.tarasha-consumer-platform.pages.dev
+
+concurrency:
+  group: tarasha-discover-azure-production
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: consumer/package-lock.json
+
+      - name: Test and build Consumer
+        working-directory: consumer
+        env:
+          VITE_DATA_MODE: live
+        run: |
+          npm ci
+          npm run check
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_B107E395102F432F9F2110DE2D39D5F1 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_6126EFFCB1A74261821006ECF19AE8D5 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_8ACF62F3171742308CDCC83EE421484A }}
+
+      - name: Configure the pre-provisioned isolated Consumer web app
+        id: azure-app
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          node_runtime="$(az webapp list-runtimes --os linux --query "[?runtime == 'Node' && contains(version, '22')].config | [0]" --output tsv)"
+          node_runtime="${node_runtime:-NODE|22-lts}"
+
+          if ! az webapp show \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --output none 2>/dev/null; then
+            echo "The pre-provisioned ${AZURE_RESOURCE_GROUP}/${AZURE_WEBAPP_NAME} web app was not found." >&2
+            exit 1
+          fi
+
+          az webapp config set \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --linux-fx-version "$node_runtime" \
+            --startup-file "npm start" \
+            --output none
+
+          az webapp config appsettings set \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --settings \
+              TARASHA_DISCOVER_API_ORIGIN="$TARASHA_DISCOVER_API_ORIGIN" \
+              SCM_DO_BUILD_DURING_DEPLOYMENT=false \
+              WEBSITES_PORT=8080 \
+            --output none
+
+          az webapp update \
+            --resource-group "$AZURE_RESOURCE_GROUP" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --https-only true \
+            --output none
+
+          hostname="$(az webapp show --resource-group "$AZURE_RESOURCE_GROUP" --name "$AZURE_WEBAPP_NAME" --query defaultHostName --output tsv)"
+          echo "resource-group=$AZURE_RESOURCE_GROUP" >> "$GITHUB_OUTPUT"
+          echo "hostname=$hostname" >> "$GITHUB_OUTPUT"
+
+      - name: Package the Azure application
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir consumer-azure-package
+          cp -R consumer/dist consumer-azure-package/dist
+          cp consumer/server.mjs consumer/package.json consumer/package-lock.json consumer-azure-package/
+          cd consumer-azure-package
+          zip -q -r ../consumer-azure.zip .
+
+      - name: Deploy Consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          az webapp deploy \
+            --resource-group "${{ steps.azure-app.outputs.resource-group }}" \
+            --name "$AZURE_WEBAPP_NAME" \
+            --src-path consumer-azure.zip \
+            --type zip \
+            --clean true \
+            --restart true \
+            --output none
+
+      - name: Verify deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          consumer_url="https://${{ steps.azure-app.outputs.hostname }}"
+          for attempt in {1..18}; do
+            if curl --fail --silent --show-error "$consumer_url/healthz"; then
+              echo "TaRaSha Discover: $consumer_url" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "The Consumer web app did not become healthy in time." >&2
+          exit 1
