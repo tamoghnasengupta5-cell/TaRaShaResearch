@@ -301,8 +301,65 @@ export interface BusinessSegmentRevenue {
   sourceUrl: string | null;
 }
 
-export interface CompanyRevenueStory {
+export interface RevenueOffering {
+  id: string;
+  label: string;
+  /** Values use the same millions-based reporting currency as company metrics. */
+  revenueByPeriod: Record<string, number | null>;
+  sourceByPeriod?: Record<string, string>;
+  sourcesByPeriod?: Record<string, string[]>;
+  children?: RevenueOffering[];
+}
+
+export interface RevenueAdjustmentEntry {
+  id: string;
+  label: string;
+  definition: string;
+  /** Values use the same millions-based reporting currency as company metrics. */
+  valueByPeriod: Record<string, number | null>;
+  sourceByPeriod: Record<string, string>;
+  sourcesByPeriod: Record<string, string[]>;
+  derivationByPeriod: Record<string, string>;
+  coverageByPeriod: Record<string, string>;
+}
+
+export interface RevenueAdjustmentImpact {
+  id: string;
+  label: string;
+  definition: string;
+  /** Signed values use the same millions-based reporting currency as company metrics. */
+  valueByPeriod: Record<string, number | null>;
+  directionByPeriod: Record<string, "positive" | "negative" | "neutral">;
+  openingBalanceByPeriod: Record<string, number | null>;
+  closingBalanceByPeriod: Record<string, number | null>;
+  sourcesByPeriod: Record<string, string[]>;
+  derivationByPeriod: Record<string, string>;
+  coverageByPeriod: Record<string, string>;
+}
+
+export interface AdjustedRevenuePoint {
+  fiscalYear: number;
+  periodType?: "annual" | "ttm";
+  periodEnd: string;
+  reportedRevenue: number;
+  totalAdjustment: number | null;
+  adjustedRevenue: number | null;
+  reportedGrowthPercent: number | null;
+  adjustedGrowthPercent: number | null;
+  growthDifferencePp: number | null;
+  appliedAdjustmentIds: string[];
+  sourceUrls: string[];
+}
+
+export interface AdjustedRevenueStory {
   status: "available" | "unavailable";
+  reason: string | null;
+  points: AdjustedRevenuePoint[];
+  methodology: string;
+}
+
+export interface CompanyRevenueStory {
+  status: "available" | "undetermined" | "unavailable";
   reason: string | null;
   latestFiscalYear: number | null;
   latestPeriodEnd: string | null;
@@ -418,6 +475,345 @@ export interface CompanyCashConversionStory {
   sourceUrl: string | null;
 }
 
+export interface CompanyBalanceSheetTrendPoint {
+  fiscalYear: number;
+  value: number;
+  percentageOfBase: number | null;
+}
+
+export interface CompanyBalanceSheetComponent {
+  key: string;
+  label: string;
+  value: number | null;
+  percentageOfBase: number | null;
+  trend: CompanyBalanceSheetTrendPoint[];
+  children: Array<{
+    key: string;
+    label: string;
+    value: number | null;
+    percentageOfBase: number | null;
+    interestRatePercent: number | null;
+  }>;
+}
+
+export interface CompanyBalanceSheetStory {
+  status: "available" | "unavailable";
+  reason: string | null;
+  latestFiscalYear: number | null;
+  latestPeriodEnd: string | null;
+  reportingCurrency: string;
+  displayUnit: string;
+  years: number[];
+  equation: {
+    assets: number | null;
+    liabilities: number | null;
+    shareholdersEquity: number | null;
+  };
+  assets: CompanyBalanceSheetComponent[];
+  liabilities: CompanyBalanceSheetComponent[];
+  shareholdersEquity: CompanyBalanceSheetComponent[];
+  health: {
+    totalCash: number | null;
+    totalDebt: number | null;
+    netCashDebt: number | null;
+    netDebtToEbitda: number | null;
+    interestCoverage: number | null;
+    weightedAverageCostOfDebt: number | null;
+    weightedAverageCostOfDebtFiscalYear: number | null;
+    weightedAverageCostOfDebtNote: string;
+  };
+  summary: string | null;
+  methodology: string;
+  sourceUrl: string | null;
+}
+
+export type StockRiskRange = "1Y" | "3Y" | "5Y" | "7Y" | "10Y";
+
+export interface CompanyStockRiskPoint {
+  date: string;
+  value: number;
+}
+
+export interface CompanyStockRiskDistributionBin {
+  key: string;
+  label: string;
+  months: number;
+  percentage: number | null;
+}
+
+export interface CompanyStockRiskSeries {
+  key: "company" | "market" | "sector";
+  name: string;
+  symbol: string;
+  role: string;
+  sourceUrl: string;
+  startDate: string;
+  endDate: string;
+  tradingDays: number;
+  monthlyObservations: number;
+  annualizedVolatilityPercent: number | null;
+  betaToMarket: number | null;
+  maximumDrawdownPercent: number | null;
+  worstMonthlyReturnPercent: number | null;
+  bestMonthlyReturnPercent: number | null;
+  positiveMonthsPercent: number | null;
+  negativeMonthsPercent: number | null;
+  flatMonthsPercent: number | null;
+  drawdown: CompanyStockRiskPoint[];
+  rollingVolatility: CompanyStockRiskPoint[];
+  monthlyDistribution: CompanyStockRiskDistributionBin[];
+}
+
+export interface CompanyStockRiskPeriod {
+  range: StockRiskRange;
+  startDate: string;
+  endDate: string;
+  series: CompanyStockRiskSeries[];
+  riskSummary: string;
+  drawdownSummary: string;
+  positiveMonthsSummary: string;
+}
+
+export interface CompanyStockRiskStory {
+  status: "available" | "unavailable";
+  reason: string | null;
+  symbol: string | null;
+  asOf: string | null;
+  availableRanges: StockRiskRange[];
+  defaultRange: StockRiskRange | null;
+  sectorBenchmark: {
+    name: string;
+    symbol: string;
+    selectionBasis: string;
+  } | null;
+  periods: Partial<Record<StockRiskRange, CompanyStockRiskPeriod>>;
+  source: {
+    name: string;
+    sourceRole: string;
+    delayed: boolean;
+    persisted: boolean;
+    cost: string;
+    priceBasis: string;
+  };
+  methodology: string;
+  quality: {
+    companyObservations: number | null;
+    marketObservations: number | null;
+    sectorObservations: number | null;
+    alignment: string | null;
+    warnings: string[];
+  } | null;
+}
+
+export type MarketPricingMetricKey =
+  | "pe"
+  | "forward_pe"
+  | "ev_ebitda"
+  | "ev_ebit"
+  | "price_sales"
+  | "price_book"
+  | "fcf_yield"
+  | "peg";
+
+export interface CompanyMarketPricingMetric {
+  key: MarketPricingMetricKey;
+  label: string;
+  shortLabel: string;
+  current: number;
+  unit: "multiple" | "percent";
+  basis: string;
+}
+
+export interface CompanyMarketPricingHistoryMetric {
+  key: Exclude<MarketPricingMetricKey, "forward_pe" | "peg">;
+  label: string;
+  current: number;
+  median: number;
+  low: number;
+  high: number;
+  percentile: number;
+  unit: "multiple" | "percent";
+  observations: number;
+}
+
+export interface CompanyMarketPricingWindow {
+  key: "5Y" | "10Y";
+  years: number;
+  startDate: string | null;
+  endDate: string | null;
+  observations: number;
+  metrics: CompanyMarketPricingHistoryMetric[];
+}
+
+export interface CompanyMarketPricingPeer {
+  cik: string | null;
+  name: string;
+  symbol: string;
+  isCompany: boolean;
+  price: number | null;
+  pe: number | null;
+  evEbitda: number | null;
+  fcfYield: number | null;
+  basis: string;
+}
+
+export interface CompanyMarketPricingStory {
+  status: "available" | "unavailable";
+  reason: string | null;
+  symbol: string | null;
+  currency: string | null;
+  asOf: string | null;
+  marketState: string | null;
+  currentPrice: number | null;
+  currentMetrics: CompanyMarketPricingMetric[];
+  windows: Partial<Record<"5Y" | "10Y", CompanyMarketPricingWindow>>;
+  valuationRead: string | null;
+  impliedExpectations: Array<{
+    key: "revenue_growth" | "fcf_growth" | "operating_margin" | "discount_rate";
+    label: string;
+    value: number;
+    detail: string;
+  }>;
+  peerFramework: string;
+  peers: CompanyMarketPricingPeer[];
+  treasuryComparison: {
+    fcfYield: number | null;
+    treasuryYield: number | null;
+    spread: number | null;
+    treasuryAsOf: string | null;
+    sourceName: string;
+    sourceUrl: string;
+    cost: string;
+  } | null;
+  analystEstimates: {
+    status: "available" | "unavailable";
+    reason: string | null;
+    baseCase: number | null;
+    bullCase: number | null;
+    bearCase: number | null;
+    analystCount: number | null;
+    currentPrice: number | null;
+    currentVsBasePercent: number | null;
+    sourceName: string;
+    sourceUrl: string | null;
+    cost: string;
+  } | null;
+  takeaway: string | null;
+  source: {
+    financials: string;
+    peerFramework: string;
+    marketName: string;
+    marketRole: string;
+    marketUrl: string;
+    cost: string;
+    persisted: boolean;
+    priceBasis: string;
+  } | null;
+  methodology: string;
+  quality: {
+    warnings: string[];
+    historyObservations: number | null;
+    peerQuotes: number | null;
+    analystConsensusAvailable: boolean;
+  } | null;
+}
+
+export type StockHistoryRange = "1Y" | "3Y" | "5Y" | "10Y" | "Max";
+export type StockHistoryMode = "price" | "total_return" | "revenue" | "eps" | "free_cash_flow";
+
+export interface CompanyStockHistoryPricePoint {
+  date: string;
+  close: number;
+  adjustedClose: number;
+  volume: number | null;
+}
+
+export interface CompanyStockHistoryFundamentalPoint {
+  date: string;
+  fiscalYear: number;
+  value: number;
+  sourceUrl: string | null;
+  unit: string | null;
+}
+
+export interface CompanyStockHistoryFundamentalSeries {
+  label: string;
+  points: CompanyStockHistoryFundamentalPoint[];
+}
+
+export interface CompanyStockHistoryPerformance {
+  range: StockHistoryRange;
+  startDate: string;
+  endDate: string;
+  priceChangePercent: number | null;
+  totalReturnPercent: number | null;
+  cagrPercent: number | null;
+  sp500TotalReturnPercent: number | null;
+  high: number | null;
+  low: number | null;
+}
+
+export interface CompanyStockHistoryEvent {
+  date: string;
+  type: "earnings" | "filing" | "corporate_action" | "strategy";
+  title: string;
+  detail: string;
+  sourceUrl: string | null;
+}
+
+export interface CompanyStockHistoryStory {
+  status: "available" | "unavailable";
+  reason: string | null;
+  symbol: string | null;
+  currency: string | null;
+  asOf: string | null;
+  marketState: string | null;
+  availableRanges: StockHistoryRange[];
+  defaultRange: StockHistoryRange | null;
+  prices: CompanyStockHistoryPricePoint[];
+  fundamentals: {
+    revenue: CompanyStockHistoryFundamentalSeries;
+    eps: CompanyStockHistoryFundamentalSeries;
+    freeCashFlow: CompanyStockHistoryFundamentalSeries;
+  };
+  events: CompanyStockHistoryEvent[];
+  performance: Partial<Record<StockHistoryRange, CompanyStockHistoryPerformance>>;
+  glance: {
+    currentPrice: number | null;
+    marketCap: number | null;
+    dilutedShares: number | null;
+    averageDailyVolume3m: number | null;
+  };
+  strategy: {
+    status: "available" | "unavailable";
+    reason: string | null;
+    points: string[];
+    sourceName: string;
+    sourceDate: string | null;
+    sourceUrl: string | null;
+    cost: string;
+    methodology: string;
+  };
+  source: {
+    financials: string;
+    filings: string;
+    marketName: string;
+    marketRole: string;
+    marketUrl: string;
+    benchmarkUrl: string;
+    cost: string;
+    persisted: boolean;
+    priceBasis: string;
+  } | null;
+  methodology: string;
+  quality: {
+    warnings: string[];
+    rawPriceObservations: number | null;
+    displayPriceObservations: number | null;
+    fundamentalYears: number[];
+  } | null;
+}
+
 export interface Company {
   id: string;
   logoUrl?: string;
@@ -434,9 +830,30 @@ export interface Company {
   metrics: Record<MetricKey, YearValue[]>;
   researchShelf?: ResearchShelfAnalysis;
   companyStory?: {
-    revenueSegments: CompanyRevenueStory;
-    costStructure: CompanyCostStructureStory;
-    cashConversion: CompanyCashConversionStory;
+    revenueSegments?: CompanyRevenueStory;
+    revenueOfferings?: {
+      offerings: RevenueOffering[];
+      offeringAxis?: string | null;
+      status?: "available" | "unavailable";
+      reason?: string | null;
+      annualTotals?: Record<string, number | null>;
+      annualPeriodEnds?: Record<string, string>;
+      totalSourceByPeriod?: Record<string, string>;
+      totalSourcesByPeriod?: Record<string, string[]>;
+      methodology?: string;
+      adjustmentMethodology?: string;
+      adjustmentEntries?: RevenueAdjustmentEntry[];
+      adjustmentImpacts?: RevenueAdjustmentImpact[];
+      adjustedRevenue?: AdjustedRevenueStory;
+      qualityWarnings?: string[];
+      ttm?: { periodEnd: string; revenue: number; priorYearRevenue: number | null };
+    };
+    costStructure?: CompanyCostStructureStory;
+    cashConversion?: CompanyCashConversionStory;
+    balanceSheet?: CompanyBalanceSheetStory;
+    stockRisk?: CompanyStockRiskStory;
+    marketPricing?: CompanyMarketPricingStory;
+    stockHistory?: CompanyStockHistoryStory;
   };
   notes: {
     growth: string;
@@ -494,4 +911,4 @@ export interface FilingDocument {
   url: string;
 }
 
-export type Page = "home" | "login" | "discover" | "company" | "compare" | "watchlist" | "learn";
+export type Page = "home" | "login" | "discover" | "company" | "compare" | "watchlist" | "learn" | "reconciliation";

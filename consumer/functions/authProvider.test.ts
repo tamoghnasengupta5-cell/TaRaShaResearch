@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import {
   accountSummary,
+  authenticateApplicationAccount,
   authenticateAccount,
   AUTH_SCHEMA_SQL,
   type AuthDatabase,
@@ -9,6 +10,7 @@ import {
   registerAccount,
   resetAccountPassword,
   securityQuestionFor,
+  verifyAdminSession,
 } from "./authProvider";
 
 class TestStatement implements AuthPreparedStatement {
@@ -59,7 +61,7 @@ describe("database-backed Consumer accounts", () => {
     expect(JSON.stringify(stored)).not.toContain(registration.password);
     expect(JSON.stringify(stored)).not.toContain(registration.securityAnswer);
     await expect(authenticateAccount(db, authSecret, "ADA.RESEARCH", registration.password, options))
-      .resolves.toEqual({ name: registration.name, username: registration.username });
+      .resolves.toEqual({ name: registration.name, username: registration.username, role: "user" });
   });
 
   it("resets a password only after the recovery answer matches", async () => {
@@ -93,5 +95,29 @@ describe("database-backed Consumer accounts", () => {
     await registerAccount(db, authSecret, registration, options);
     await expect(securityQuestionFor(db, authSecret, registration.username)).resolves.toBe(registration.securityQuestion);
     await expect(securityQuestionFor(db, authSecret, "missing.user")).resolves.toMatch(/\?$/);
+  });
+
+  it("issues a signed Admin session only for the configured Admin credentials", async () => {
+    const admin = await authenticateApplicationAccount(
+      db,
+      authSecret,
+      "Admin",
+      "Admin@123",
+      "Admin@123",
+      options,
+    );
+
+    expect(admin).toMatchObject({ username: "Admin", role: "admin" });
+    expect(admin.adminToken).toMatch(/^v1\./);
+    await expect(verifyAdminSession(authSecret, admin.adminToken || "", options.now()))
+      .resolves.toBe(true);
+    await expect(authenticateApplicationAccount(
+      db,
+      authSecret,
+      "Admin",
+      "wrong-password",
+      "Admin@123",
+      options,
+    )).rejects.toThrow("incorrect");
   });
 });

@@ -8,10 +8,11 @@ import type { ComparisonYoYMetric } from "./comparison";
 import { liveDataEnabled, MAX_SESSION_COMPANIES, MAX_YEAR_RANGE, pullCompanyResearch, recalculateIndustryConstituents, searchCompanyCatalog } from "./liveData";
 import { arithmeticMean, extremeOutlierBounds, isExtremeOutlier, percentile, sampleStandardDeviation } from "./statistics";
 import type { CashFlowBridgeMetricValue, CashFlowYear, CatalogCompany, Company, DistributionObservation, EarningsFlowMetricKey, EarningsFlowYear, FcffBridgeMetricKey, FcfeBridgeMetricKey, GrowthComparison, IndustryConstituent, IndustryDeltaPoint, IndustryLevelPoint, MetricKey, Page, PerformanceThresholds, ProfitabilityMetricBands, ProfitabilityMetricKey, ProfitabilityYearPoint, RawIncomePoint, ResearchShelfAnalysis, StatementFact, StatementGroup, ValuationMetricKey, WorkingCapitalPeriodBreakdown, YearValue } from "./types";
-import researchJourneyHero from "./assets/research-journey-hero-v2.jpg";
+import researchJourneyHero from "./assets/research-journey-hero-mockup.jpg";
 import tarashaLogo from "./assets/tarasha-logo.png";
 import { CompanyStoryHome } from "./CompanyStoryHome";
 import { GlobalMarketOverview } from "./GlobalMarketOverview";
+import { DataReconciliationAdmin } from "./DataReconciliationAdmin";
 
 const navItems: { page: Page; label: string; icon: string }[] = [
   { page: "home", label: "Home", icon: "⌂" },
@@ -22,17 +23,22 @@ const navItems: { page: Page; label: string; icon: string }[] = [
 ];
 
 const SESSION_USER_KEY = "tarasha-auth-session";
-const protectedPages = new Set<Page>(["discover", "company", "compare", "watchlist", "learn"]);
+const protectedPages = new Set<Page>(["discover", "company", "compare", "watchlist", "learn", "reconciliation"]);
 
 function pageFromHash(): Page {
   const value = window.location.hash.replace(/^#\/?/, "") as Page;
-  return ["home", "login", "discover", "compare", "watchlist", "learn"].includes(value) ? value : "home";
+  return ["home", "login", "discover", "compare", "watchlist", "learn", "reconciliation"].includes(value) ? value : "home";
 }
 
 function sessionUser(): AuthenticatedUser | null {
   try {
     const value = JSON.parse(sessionStorage.getItem(SESSION_USER_KEY) ?? "null");
-    return value && typeof value.name === "string" && typeof value.username === "string" ? value : null;
+    return value
+      && typeof value.name === "string"
+      && typeof value.username === "string"
+      && ["admin", "user"].includes(value.role)
+      ? value
+      : null;
   } catch {
     return null;
   }
@@ -59,6 +65,9 @@ function App() {
       if (!authUser && protectedPages.has(requestedPage)) {
         setPage("login");
         window.history.replaceState(null, "", "#/login");
+      } else if (requestedPage === "reconciliation" && authUser?.role !== "admin") {
+        setPage("home");
+        window.history.replaceState(null, "", "#/home");
       } else {
         setPage(requestedPage);
       }
@@ -69,7 +78,9 @@ function App() {
   }, [authUser]);
 
   const navigate = (next: Page) => {
-    const destination = !authUser && protectedPages.has(next) ? "login" : next;
+    const destination = !authUser && protectedPages.has(next)
+      ? "login"
+      : next === "reconciliation" && authUser?.role !== "admin" ? "home" : next;
     setPage(destination);
     if (destination !== "company") window.history.pushState(null, "", `#/${destination}`);
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -159,9 +170,10 @@ function App() {
         {authUser && visiblePage === "compare" && <Compare companies={sessionCompanies} />}
         {authUser && visiblePage === "watchlist" && <Watchlist companies={sessionCompanies} ids={watchlist} openCompany={openCompany} toggleWatch={toggleWatch} navigate={navigate} />}
         {authUser && visiblePage === "learn" && <Learn />}
+        {authUser?.role === "admin" && authUser.adminToken && visiblePage === "reconciliation" && <DataReconciliationAdmin token={authUser.adminToken} />}
       </main>
       <Footer navigate={navigate} isAuthenticated={Boolean(authUser)} />
-      {authUser && <MobileNav page={visiblePage} navigate={navigate} />}
+      {authUser && <MobileNav page={visiblePage} navigate={navigate} user={authUser} />}
     </div>
   );
 }
@@ -235,13 +247,14 @@ function Header({ page, navigate, user, logout, onSelectCompany }: { page: Page;
         {navItems.map((item) => (
           <button key={item.page} className={page === item.page || (page === "company" && item.page === "home") ? "active" : ""} onClick={() => navigate(item.page)}>{item.label}</button>
         ))}
+        {user.role === "admin" && <button className={page === "reconciliation" ? "active" : ""} onClick={() => navigate("reconciliation")}>Data Reconciliation</button>}
       </nav>}
       {user && <div className="header-account"><span><small>Signed in as</small><strong>{user.username}</strong></span><button onClick={logout}>Log out</button></div>}
     </header>
   );
 }
 
-function MobileNav({ page, navigate }: { page: Page; navigate: (page: Page) => void }) {
+function MobileNav({ page, navigate, user }: { page: Page; navigate: (page: Page) => void; user: AuthenticatedUser }) {
   return (
     <nav className="mobile-nav" aria-label="Mobile navigation">
       {navItems.map((item) => (
@@ -249,6 +262,7 @@ function MobileNav({ page, navigate }: { page: Page; navigate: (page: Page) => v
           <span>{item.icon}</span>{item.label}
         </button>
       ))}
+      {user.role === "admin" && <button className={page === "reconciliation" ? "active" : ""} onClick={() => navigate("reconciliation")}><span>✓</span>Reconcile</button>}
     </nav>
   );
 }
@@ -261,9 +275,6 @@ function Home({ navigate }: {
       <img className="home-hero-image" src={researchJourneyHero} alt="A path of research notes leading through a landscape toward the horizon" />
       <div className="home-hero-shade" />
       <div className="home-hero-copy">
-        <p className="eyebrow">Structured company intelligence</p>
-        <h1>Company data, organized for understanding.</h1>
-        <p>Explore the financial performance, operating trends, and fundamentals of publicly listed companies.</p>
         <button className="button primary hero-login-button" onClick={() => navigate("login")}>Log in to Discover<span>→</span></button>
       </div>
     </section>
@@ -281,7 +292,6 @@ function LoginPage({ onAuthenticated, navigate }: { onAuthenticated: (user: Auth
     <div className="auth-intro">
       <p className="eyebrow">Private research workspace</p>
       <h1>Welcome to<br />TaRaSha Discover.</h1>
-      <p>Sign in to search companies, compare evidence, maintain a watchlist, and keep learning.</p>
       <button className="auth-back" onClick={() => navigate("home")}>← Return home</button>
     </div>
     <div className="auth-panel">

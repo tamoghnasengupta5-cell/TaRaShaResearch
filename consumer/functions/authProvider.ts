@@ -11,9 +11,13 @@ export interface AuthDatabase {
 export interface AuthenticatedAccount {
   name: string;
   username: string;
+  role: "admin" | "user";
+  adminToken?: string;
 }
 
-export interface RegistrationPayload extends AuthenticatedAccount {
+export interface RegistrationPayload {
+  name: string;
+  username: string;
   securityQuestion: string;
   securityAnswer: string;
   password: string;
@@ -85,6 +89,7 @@ const encoder = new TextEncoder();
 const DEFAULT_PBKDF2_ITERATIONS = 600_000;
 const RATE_LIMIT_WINDOW_SECONDS = 15 * 60;
 const RATE_LIMIT_ATTEMPTS = 10;
+const ADMIN_SESSION_SECONDS = 8 * 60 * 60;
 const derivedKeyCache = new Map<string, Promise<CryptoKey>>();
 
 function cleanName(value: unknown): string {
@@ -188,6 +193,57 @@ function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
   return difference === 0;
 }
 
+async function signedValue(authSecret: string, purpose: string, value: string): Promise<Uint8Array> {
+  const key = await derivedKey(
+    authSecret,
+    purpose,
+    { name: "HMAC", hash: "SHA-256", length: 256 },
+    ["sign"],
+  );
+  return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(value)));
+}
+
+async function secureTextEqual(authSecret: string, purpose: string, left: string, right: string): Promise<boolean> {
+  const [leftDigest, rightDigest] = await Promise.all([
+    signedValue(authSecret, purpose, left),
+    signedValue(authSecret, purpose, right),
+  ]);
+  return constantTimeEqual(leftDigest, rightDigest);
+}
+
+async function createAdminSession(authSecret: string, now: number): Promise<string> {
+  const payload = bytesToBase64Url(encoder.encode(JSON.stringify({
+    sub: "Admin",
+    role: "admin",
+    iat: now,
+    exp: now + ADMIN_SESSION_SECONDS,
+    nonce: bytesToBase64Url(randomBytes(16)),
+  })));
+  const signature = await signedValue(authSecret, "admin-session-v1", payload);
+  return `v1.${payload}.${bytesToBase64Url(signature)}`;
+}
+
+export async function verifyAdminSession(
+  authSecret: string,
+  token: string,
+  now = Math.floor(Date.now() / 1000),
+): Promise<boolean> {
+  const [version, payload, signatureText] = String(token || "").split(".");
+  if (version !== "v1" || !payload || !signatureText) return false;
+  const expected = await signedValue(authSecret, "admin-session-v1", payload);
+  if (!constantTimeEqual(expected, base64UrlToBytes(signatureText))) return false;
+  try {
+    const claims = JSON.parse(new TextDecoder().decode(base64UrlToBytes(payload))) as {
+      sub?: string;
+      role?: string;
+      exp?: number;
+    };
+    return claims.sub === "Admin" && claims.role === "admin" && Number(claims.exp) > now;
+  } catch {
+    return false;
+  }
+}
+
 async function verifyCredential(
   authSecret: string,
   purpose: "password" | "security-answer",
@@ -288,7 +344,7 @@ export async function registerAccount(
     }
     throw new AuthError("Account registration is temporarily unavailable.", 503);
   }
-  return { name, username };
+  return { name, username, role: "user" };
 }
 
 export async function authenticateAccount(
@@ -318,6 +374,33 @@ export async function authenticateAccount(
   return {
     name: await decryptField(authSecret, account.name_ciphertext),
     username: await decryptField(authSecret, account.username_ciphertext),
+    role: "user",
+  };
+}
+
+export async function authenticateApplicationAccount(
+  db: AuthDatabase,
+  authSecret: string,
+  username: string,
+  password: string,
+  adminPassword: string,
+  options: AuthServiceOptions = {},
+): Promise<AuthenticatedAccount> {
+  const configured = optionsWithDefaults(options);
+  if (normalizedUsername(username) !== "admin") {
+    return authenticateAccount(db, authSecret, username, password, options);
+  }
+  const lookup = await usernameLookup(authSecret, "admin");
+  const limitKey = `login:${lookup}`;
+  await enforceRateLimit(db, limitKey, configured.now());
+  const valid = await secureTextEqual(authSecret, "admin-password-check", password, adminPassword);
+  if (!valid) throw new AuthError("Username or password is incorrect.", 401);
+  await clearRateLimit(db, limitKey);
+  return {
+    name: "TaRaSha Administrator",
+    username: "Admin",
+    role: "admin",
+    adminToken: await createAdminSession(authSecret, configured.now()),
   };
 }
 

@@ -6,11 +6,12 @@ import {
 } from "../dataProvider";
 import {
   accountSummary,
-  authenticateAccount,
+  authenticateApplicationAccount,
   AuthError,
   registerAccount,
   resetAccountPassword,
   securityQuestionFor,
+  verifyAdminSession,
   type AuthDatabase,
 } from "../authProvider";
 import { getMarketOverview } from "../marketOverviewProvider";
@@ -19,6 +20,8 @@ interface Env extends DataProviderEnv {
   DB: AuthDatabase;
   ADMIN_SYNC_KEY?: string;
   CONSUMER_AUTH_SECRET: string;
+  CONSUMER_ADMIN_PASSWORD?: string;
+  TARASHA_DATA_ADMIN_KEY?: string;
 }
 
 const MAX_YEAR_RANGE = 7;
@@ -151,9 +154,47 @@ async function loginUser(request: Request, env: Env): Promise<Response> {
   type Body = { username?: string; password?: string };
   const body = await request.json<Body>().catch(() => ({} as Body));
   try {
-    return json(await authenticateAccount(env.DB, env.CONSUMER_AUTH_SECRET, String(body.username ?? ""), String(body.password ?? "")));
+    return json(await authenticateApplicationAccount(
+      env.DB,
+      env.CONSUMER_AUTH_SECRET,
+      String(body.username ?? ""),
+      String(body.password ?? ""),
+      env.CONSUMER_ADMIN_PASSWORD || "Admin@123",
+    ));
   } catch (cause) {
     return cause instanceof AuthError ? error(cause.message, cause.status) : error("Account login is temporarily unavailable.", 503);
+  }
+}
+
+async function proxyDataReconciliation(request: Request, env: Env): Promise<Response> {
+  const authorization = request.headers.get("authorization") || "";
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!await verifyAdminSession(env.CONSUMER_AUTH_SECRET, token)) {
+    return error("Admin authorization failed.", 401);
+  }
+  const base = String(env.TARASHA_DATA_API_URL || "").trim().replace(/\/$/, "");
+  const adminKey = String(env.TARASHA_DATA_ADMIN_KEY || "").trim();
+  if (!base || !adminKey) return error("Data reconciliation is not configured.", 503);
+  const incoming = new URL(request.url);
+  const suffix = incoming.pathname.replace(/^\/api\/admin\/data-reconciliation\/?/, "");
+  const upstream = new URL(`/v1/admin/data-reconciliation${suffix ? `/${suffix}` : ""}`, base);
+  upstream.search = incoming.search;
+  const headers = new Headers();
+  const contentType = request.headers.get("content-type");
+  if (contentType) headers.set("content-type", contentType);
+  headers.set("accept", "application/json");
+  headers.set("x-admin-key", adminKey);
+  headers.set("x-admin-actor", "Admin");
+  const body = ["GET", "HEAD"].includes(request.method)
+    ? undefined
+    : await request.arrayBuffer();
+  try {
+    const response = await fetch(upstream, { method: request.method, headers, body });
+    const responseHeaders = new Headers(response.headers);
+    responseHeaders.set("cache-control", "private, no-store, max-age=0");
+    return new Response(response.body, { status: response.status, headers: responseHeaders });
+  } catch {
+    return error("TaRaShaData reconciliation service is unavailable.", 502);
   }
 }
 
@@ -190,6 +231,9 @@ async function adminUserSummary(request: Request, env: Env): Promise<Response> {
 export const onRequest: PagesFunction<Env> = async (context) => {
   const { request, env } = context;
   const [first, second, third] = pathParts(request);
+  if (first === "admin" && second === "data-reconciliation") {
+    return proxyDataReconciliation(request, env);
+  }
   if (request.method === "GET" && first === "health") {
     return json({ ok: true, provider: "tarasha-data", configured: Boolean(env.TARASHA_DATA_API_URL), financialStorage: "browser-session-only" });
   }

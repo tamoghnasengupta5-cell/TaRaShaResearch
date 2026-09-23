@@ -7,7 +7,7 @@ import { DatabaseSync, type StatementSync } from "node:sqlite";
 import type { Plugin } from "vite";
 import {
   accountSummary,
-  authenticateAccount,
+  authenticateApplicationAccount,
   AUTH_SCHEMA_SQL,
   AuthError,
   type AuthDatabase,
@@ -15,6 +15,7 @@ import {
   registerAccount,
   resetAccountPassword,
   securityQuestionFor,
+  verifyAdminSession,
 } from "./functions/authProvider";
 
 class LocalPreparedStatement implements AuthPreparedStatement {
@@ -73,8 +74,8 @@ function saveKeychainSecret(secret: string): boolean {
   return result.status === 0;
 }
 
-function localAuthSecret(): string {
-  const configured = String(process.env.CONSUMER_AUTH_SECRET || "").trim();
+function localAuthSecret(environment: NodeJS.ProcessEnv = process.env): string {
+  const configured = String(environment.CONSUMER_AUTH_SECRET || "").trim();
   if (configured) return configured;
   const keychain = readKeychainSecret();
   if (keychain) return keychain;
@@ -86,6 +87,45 @@ function localAuthSecret(): string {
   if (saveKeychainSecret(generated)) return generated;
   writeFileSync(fallbackPath, generated, { encoding: "utf8", mode: 0o600 });
   return generated;
+}
+
+function envFileValue(contents: string, name: string): string {
+  const assignment = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=\\s*(.*)$`);
+  for (const line of contents.split(/\r?\n/)) {
+    const match = line.match(assignment);
+    if (!match) continue;
+    const raw = match[1].trim();
+    if (
+      raw.length >= 2
+      && ((raw.startsWith('"') && raw.endsWith('"')) || (raw.startsWith("'") && raw.endsWith("'")))
+    ) {
+      return raw.slice(1, -1).trim();
+    }
+    return raw.replace(/\s+#.*$/, "").trim();
+  }
+  return "";
+}
+
+export function localDataReconciliationAdminKey(
+  environment: NodeJS.ProcessEnv = process.env,
+  candidateFiles?: string[],
+): string {
+  const configured = String(
+    environment.TARASHA_DATA_ADMIN_KEY || environment.ADMIN_API_KEY || "",
+  ).trim();
+  if (configured) return configured;
+
+  const files = candidateFiles ?? [
+    String(environment.TARASHA_DATA_ENV_PATH || "").trim(),
+    resolve(process.cwd(), "../../TaRaShaData.ai/.env"),
+    resolve(process.cwd(), "../TaRaShaData.ai/.env"),
+  ];
+  for (const filename of new Set(files.filter(Boolean))) {
+    if (!existsSync(filename)) continue;
+    const value = envFileValue(readFileSync(filename, "utf8"), "ADMIN_API_KEY");
+    if (value) return value;
+  }
+  return "";
 }
 
 function sendJson(response: ServerResponse, status: number, data: unknown): void {
@@ -111,15 +151,59 @@ async function readJsonBody(request: IncomingMessage): Promise<Record<string, un
   }
 }
 
-export function localAuthApiPlugin(): Plugin {
+async function readRawBody(request: IncomingMessage, maximumBytes = 3 * 1024 * 1024): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > maximumBytes) throw new AuthError("Request body is too large.", 413);
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function proxyDataReconciliation(
+  request: IncomingMessage,
+  response: ServerResponse,
+  authSecret: string,
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  const authorization = String(request.headers.authorization || "");
+  const token = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+  if (!await verifyAdminSession(authSecret, token)) throw new AuthError("Admin authorization failed.", 401);
+  const base = String(environment.TARASHA_DATA_API_URL || "http://127.0.0.1:8000").trim().replace(/\/$/, "");
+  const adminKey = localDataReconciliationAdminKey(environment);
+  if (!adminKey) throw new AuthError("Data reconciliation is not configured.", 503);
+  const incoming = new URL(request.url || "/", "http://localhost");
+  const suffix = incoming.pathname.replace(/^\/api\/admin\/data-reconciliation\/?/, "");
+  const upstream = new URL(`/v1/admin/data-reconciliation${suffix ? `/${suffix}` : ""}`, base);
+  upstream.search = incoming.search;
+  const headers = new Headers({ Accept: "application/json", "X-Admin-Key": adminKey, "X-Admin-Actor": "Admin" });
+  const contentType = request.headers["content-type"];
+  if (contentType) headers.set("Content-Type", contentType);
+  const method = request.method || "GET";
+  const rawBody = ["GET", "HEAD"].includes(method) ? undefined : await readRawBody(request);
+  const body = rawBody
+    ? rawBody.buffer.slice(rawBody.byteOffset, rawBody.byteOffset + rawBody.byteLength) as ArrayBuffer
+    : undefined;
+  const upstreamResponse = await fetch(upstream, { method, headers, body });
+  response.statusCode = upstreamResponse.status;
+  response.setHeader("cache-control", "no-store");
+  const upstreamContentType = upstreamResponse.headers.get("content-type");
+  if (upstreamContentType) response.setHeader("content-type", upstreamContentType);
+  response.end(Buffer.from(await upstreamResponse.arrayBuffer()));
+}
+
+export function localAuthApiPlugin(environment: NodeJS.ProcessEnv = process.env): Plugin {
   const directory = localDataDirectory();
-  const databasePath = String(process.env.CONSUMER_AUTH_DB_PATH || "").trim() || resolve(directory, "tarasha-consumer-auth.db");
+  const databasePath = String(environment.CONSUMER_AUTH_DB_PATH || "").trim() || resolve(directory, "tarasha-consumer-auth.db");
   const sqlite = new DatabaseSync(databasePath);
   sqlite.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
   sqlite.exec(AUTH_SCHEMA_SQL);
   const db = new LocalAuthDatabase(sqlite);
-  const authSecret = localAuthSecret();
-  const adminKey = String(process.env.ADMIN_SYNC_KEY || authSecret).trim();
+  const authSecret = localAuthSecret(environment);
+  const adminKey = String(environment.ADMIN_SYNC_KEY || authSecret).trim();
 
   return {
     name: "tarasha-local-auth-api",
@@ -129,7 +213,8 @@ export function localAuthApiPlugin(): Plugin {
         const url = new URL(request.url || "/", "http://localhost");
         const isAuth = url.pathname.startsWith("/api/auth/");
         const isAdminSummary = url.pathname === "/api/admin/users/summary";
-        if (!isAuth && !isAdminSummary) {
+        const isDataReconciliation = url.pathname.startsWith("/api/admin/data-reconciliation");
+        if (!isAuth && !isAdminSummary && !isDataReconciliation) {
           next();
           return;
         }
@@ -149,7 +234,17 @@ export function localAuthApiPlugin(): Plugin {
           }
           if (request.method === "POST" && url.pathname === "/api/auth/login") {
             const body = await readJsonBody(request);
-            sendJson(response, 200, await authenticateAccount(db, authSecret, String(body.username ?? ""), String(body.password ?? "")));
+            sendJson(response, 200, await authenticateApplicationAccount(
+              db,
+              authSecret,
+              String(body.username ?? ""),
+              String(body.password ?? ""),
+              String(environment.CONSUMER_ADMIN_PASSWORD || "Admin@123"),
+            ));
+            return;
+          }
+          if (isDataReconciliation) {
+            await proxyDataReconciliation(request, response, authSecret, environment);
             return;
           }
           if (request.method === "POST" && url.pathname === "/api/auth/security-question") {

@@ -11,9 +11,9 @@ The browser calls same-origin `/api` endpoints. The local Vite middleware or Clo
 - `GET /v1/companies/search` supplies the company catalogue.
 - `GET /v1/companies/{identifier}/coverage` exposes normalized annual coverage by statement and fiscal-year span.
 - `GET /v1/companies/{identifier}/logo` supplies the CIK-resolved, provenance-backed company logo through the same-origin `/api/data/company-logo` proxy.
-- `POST /v1/discover/company-dataset` supplies company metadata, normalized annual income/balance/cash-flow statements, filing links, governed revenue/cost/cash-conversion story contracts, and the selected industry constituent datasets in one response.
+- `POST /v1/discover/company-dataset` supplies company metadata, normalized annual statements, filing links, governed Company Story contracts (including price/fundamental history), and the selected industry constituent datasets in one response.
 - Discover derives growth, profitability, earnings bridges, cash-flow bridges, and industry statistics from those TaRaShaData.ai fields in transient browser memory.
-- Enterprise Value and trailing P/E remain visibly unavailable until TaRaShaData.ai publishes a governed company-level market-data contract.
+- Delayed market displays, benchmarks, analyst fields, and management-commentary excerpts are acquired only inside TaRaShaData.ai through explicit zero-cost, source-linked contracts.
 
 There is no legacy product database connection, direct SEC browser proxy, or alternate live financial-data fallback.
 
@@ -25,7 +25,7 @@ There is no legacy product database connection, direct SEC browser proxy, or alt
 - Fifty-company transient research shelf
 - Normalized income-statement, balance-sheet, cash-flow, and share-fact tables
 - Growth, profitability, earnings, working-capital, FCFF, and FCFE analysis
-- Company Story chapters for revenue mix, operating cost structure, and source-traceable operating-profit-to-FCFF conversion
+- Company Story chapters 01–07, including source-traceable revenue, costs, cash conversion, balance sheet, stock risk, valuation, and historical price-versus-fundamentals views
 - Editable industry constituent basket backed by TaRaShaData.ai peer metadata
 - Side-by-side comparison for up to three companies
 - Device-local watchlist
@@ -64,6 +64,28 @@ server-only `TARASHA_DATA_API_URL` in `.env.local`. If a deployment requires a
 read credential, set `TARASHA_DATA_API_KEY`; never expose it through a `VITE_*`
 variable.
 
+The **Data Reconciliation** tab is available only after signing in as `Admin`.
+For local acceptance testing, the approved initial password is `Admin@123`.
+Configure `CONSUMER_ADMIN_PASSWORD` as a server-side secret, set
+`TARASHA_DATA_ADMIN_KEY` to the TaRaShaData `ADMIN_API_KEY`, and use a stable
+`CONSUMER_AUTH_SECRET` of at least 32 characters. The browser receives a signed,
+time-limited Admin session; it never receives the upstream admin key.
+
+For local development, Discover automatically reads `ADMIN_API_KEY` from the
+sibling `TaRaShaData.ai/.env` when `TARASHA_DATA_ADMIN_KEY` is not present in
+Discover's `.env.local`. If the repositories are stored elsewhere, set the
+server-only `TARASHA_DATA_ENV_PATH` to the upstream `.env` file. Production does
+not use filesystem discovery and still requires `TARASHA_DATA_ADMIN_KEY`.
+
+From the Admin tab, **Run Batch** requires a `.xlsx` or `.csv` file containing a
+`ticker` column and an optional `exchange` column. **Schedule** requires its own
+ticker file and supports daily or weekly execution in the selected timezone.
+Every result can be opened to inspect the SEC source, TaRaShaData target,
+calculation evidence, and developer investigation note. Company quality is shown
+separately for the Income Statement, Balance Sheet, and Cash Flow Statement; each
+score opens its own control-level drill-down. The dashboard retains and searches
+the five most recent batch runs by batch number, ticker, or company name.
+
 `DEV_API_TARGET` remains an optional way to proxy all `/api` requests to an already deployed Discover Pages environment. When it is set, the local TaRaShaData.ai middleware is disabled.
 
 Local registrations are stored in `.local-data/tarasha-consumer-auth.db`. On macOS, the local field-encryption secret is created in Keychain automatically. On other systems, set `CONSUMER_AUTH_SECRET` to a value of at least 32 characters.
@@ -84,7 +106,8 @@ configured `tarasha-data` provider and refuses to serve if that check fails.
 2. Bind the existing D1 account database as `DB` in the preview environment.
 3. Configure `TARASHA_DATA_API_URL` as a preview environment variable.
 4. If needed, configure `TARASHA_DATA_API_KEY` as an encrypted secret.
-5. Configure `CONSUMER_AUTH_SECRET` and `ADMIN_SYNC_KEY` as encrypted secrets.
+5. Configure `TARASHA_DATA_ADMIN_KEY`, `CONSUMER_ADMIN_PASSWORD`,
+   `CONSUMER_AUTH_SECRET`, and `ADMIN_SYNC_KEY` as encrypted secrets.
 6. Set the preview build variable `VITE_DATA_MODE=live`.
 7. Keep the founding-user deployment behind the existing Cloudflare Access policy.
 
@@ -97,7 +120,7 @@ The Pages Function applies `no-store`; financial responses are not copied into D
 - **Industry context:** TaRaShaData.ai universe categories and ingested peer relationships.
 - **Persistence:** financial responses remain in browser session memory; Discover stores no financial copy.
 - **Coverage:** currently USA companies with ingested, standardized TaRaShaData.ai observations. India searches return no live matches until TaRaShaData.ai adds that coverage.
-- **Traceability:** filing links and TaRaShaData.ai provenance remain available in the response contract.
+- **Traceability:** filing, market-history, benchmark, and management-source links plus TaRaShaData.ai derivations remain available in the response contract.
 - **Company identity:** logos are fetched from TaRaShaData.ai's stored identity-asset endpoint; Discover never hotlinks an external logo provider.
 
 ## Product boundary

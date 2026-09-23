@@ -156,8 +156,12 @@ interface DataApiFiling {
 interface DataApiDiscoverDataset {
   company: DataApiCompany;
   business_segments?: DataApiBusinessSegments;
+  revenue_offerings?: DataApiRevenueOfferings;
   operating_cost_structure?: DataApiCostStructure;
   cash_conversion?: DataApiCashConversion;
+  stock_risk?: DataApiStockRisk;
+  market_pricing?: DataApiMarketPricing;
+  stock_history?: DataApiStockHistory;
   normalized_coverage: DataApiNormalizedCoverage;
   country: "USA";
   industry_buckets: DataApiIndustryBucket[];
@@ -165,6 +169,483 @@ interface DataApiDiscoverDataset {
   constituents: DataApiConstituent[];
   datasets: DataApiDataset[];
   filings: DataApiFiling[];
+}
+
+type DataApiStockRiskRange = "1Y" | "3Y" | "5Y" | "7Y" | "10Y";
+
+interface DataApiStockRiskSeries {
+  key: "company" | "market" | "sector";
+  name: string;
+  symbol: string;
+  role: string;
+  source_url: string;
+  start_date: string;
+  end_date: string;
+  trading_days: number;
+  monthly_observations: number;
+  annualized_volatility_percent: number | null;
+  beta_to_market: number | null;
+  maximum_drawdown_percent: number | null;
+  worst_monthly_return_percent: number | null;
+  best_monthly_return_percent: number | null;
+  positive_months_percent: number | null;
+  negative_months_percent: number | null;
+  flat_months_percent: number | null;
+  drawdown: Array<{ date: string; value: number }>;
+  rolling_volatility: Array<{ date: string; value: number }>;
+  monthly_distribution: Array<{
+    key: string;
+    label: string;
+    months: number;
+    percentage: number | null;
+  }>;
+}
+
+interface DataApiStockRiskPeriod {
+  range: DataApiStockRiskRange;
+  start_date: string;
+  end_date: string;
+  series: DataApiStockRiskSeries[];
+  risk_summary: string;
+  drawdown_summary: string;
+  positive_months_summary: string;
+}
+
+interface DataApiStockRisk {
+  status: "available" | "unavailable";
+  reason: string | null;
+  symbol?: string | null;
+  as_of?: string | null;
+  available_ranges: DataApiStockRiskRange[];
+  default_range?: DataApiStockRiskRange | null;
+  sector_benchmark?: {
+    name: string;
+    symbol: string;
+    selection_basis: string;
+  } | null;
+  periods: Partial<Record<DataApiStockRiskRange, DataApiStockRiskPeriod>>;
+  source: {
+    name: string;
+    source_role: string;
+    delayed: boolean;
+    persisted: boolean;
+    cost: string;
+    price_basis: string;
+  };
+  methodology?: string;
+  quality?: {
+    company_observations?: number | null;
+    market_observations?: number | null;
+    sector_observations?: number | null;
+    alignment?: string | null;
+    warnings?: string[];
+  };
+}
+
+type DataApiMarketPricingMetricKey = "pe" | "forward_pe" | "ev_ebitda" | "ev_ebit" | "price_sales" | "price_book" | "fcf_yield" | "peg";
+
+interface DataApiMarketPricing {
+  status: "available" | "unavailable";
+  reason: string | null;
+  symbol?: string | null;
+  currency?: string | null;
+  as_of?: string | null;
+  market_state?: string | null;
+  current_price?: number | null;
+  current_metrics?: Array<{
+    key: DataApiMarketPricingMetricKey;
+    label: string;
+    short_label: string;
+    current: number;
+    unit: "multiple" | "percent";
+    basis: string;
+  }>;
+  windows?: Partial<Record<"5Y" | "10Y", {
+    key: "5Y" | "10Y";
+    years: number;
+    start_date: string | null;
+    end_date: string | null;
+    observations: number;
+    metrics: Array<{
+      key: Exclude<DataApiMarketPricingMetricKey, "forward_pe" | "peg">;
+      label: string;
+      current: number;
+      median: number;
+      low: number;
+      high: number;
+      percentile: number;
+      unit: "multiple" | "percent";
+      observations: number;
+    }>;
+  }>>;
+  valuation_read?: string | null;
+  implied_expectations?: Array<{
+    key: "revenue_growth" | "fcf_growth" | "operating_margin" | "discount_rate";
+    label: string;
+    value: number;
+    detail: string;
+  }>;
+  peer_framework?: string;
+  peers?: Array<{
+    cik: string | null;
+    name: string;
+    symbol: string;
+    is_company: boolean;
+    price: number | null;
+    pe: number | null;
+    ev_ebitda: number | null;
+    fcf_yield: number | null;
+    basis: string;
+  }>;
+  treasury_comparison?: {
+    fcf_yield: number | null;
+    treasury_yield: number | null;
+    spread: number | null;
+    treasury_as_of: string | null;
+    source_name: string;
+    source_url: string;
+    cost: string;
+  };
+  analyst_estimates?: {
+    status: "available" | "unavailable";
+    reason: string | null;
+    base_case: number | null;
+    bull_case: number | null;
+    bear_case: number | null;
+    analyst_count: number | null;
+    current_price: number | null;
+    current_vs_base_percent: number | null;
+    source_name: string;
+    source_url: string | null;
+    cost: string;
+  };
+  takeaway?: string | null;
+  source?: {
+    financials: string;
+    peer_framework: string;
+    market_name: string;
+    market_role: string;
+    market_url: string;
+    cost: string;
+    persisted: boolean;
+    price_basis: string;
+  };
+  methodology?: string;
+  quality?: {
+    warnings?: string[];
+    history_observations?: number | null;
+    peer_quotes?: number | null;
+    analyst_consensus_available?: boolean;
+  };
+}
+
+type DataApiStockHistoryRange = "1Y" | "3Y" | "5Y" | "10Y" | "Max";
+
+interface DataApiStockHistory {
+  status: "available" | "unavailable";
+  reason: string | null;
+  symbol?: string | null;
+  currency?: string | null;
+  as_of?: string | null;
+  market_state?: string | null;
+  available_ranges?: DataApiStockHistoryRange[];
+  default_range?: DataApiStockHistoryRange | null;
+  prices?: Array<{
+    date: string;
+    close: number;
+    adjusted_close: number;
+    volume: number | null;
+  }>;
+  fundamentals?: {
+    revenue?: DataApiStockHistoryFundamental;
+    eps?: DataApiStockHistoryFundamental;
+    free_cash_flow?: DataApiStockHistoryFundamental;
+  };
+  events?: Array<{
+    date: string;
+    type: "earnings" | "filing" | "corporate_action" | "strategy";
+    title: string;
+    detail: string;
+    source_url: string | null;
+  }>;
+  performance?: Partial<Record<DataApiStockHistoryRange, {
+    range: DataApiStockHistoryRange;
+    start_date: string;
+    end_date: string;
+    price_change_percent: number | null;
+    total_return_percent: number | null;
+    cagr_percent: number | null;
+    sp500_total_return_percent: number | null;
+    high: number | null;
+    low: number | null;
+  }>>;
+  glance?: {
+    current_price: number | null;
+    market_cap: number | null;
+    diluted_shares: number | null;
+    average_daily_volume_3m: number | null;
+  };
+  strategy?: {
+    status: "available" | "unavailable";
+    reason: string | null;
+    points: string[];
+    source_name: string;
+    source_date: string | null;
+    source_url: string | null;
+    cost: string;
+    methodology: string;
+  };
+  source?: {
+    financials: string;
+    filings: string;
+    market_name: string;
+    market_role: string;
+    market_url: string;
+    benchmark_url: string;
+    cost: string;
+    persisted: boolean;
+    price_basis: string;
+  };
+  methodology?: string;
+  quality?: {
+    warnings?: string[];
+    raw_price_observations?: number | null;
+    display_price_observations?: number | null;
+    fundamental_years?: number[];
+  };
+}
+
+interface DataApiStockHistoryFundamental {
+  label: string;
+  points: Array<{
+    date: string;
+    fiscal_year: number;
+    value: number;
+    source_url: string | null;
+    unit: string | null;
+  }>;
+}
+
+interface DataApiOfferingPoint {
+  revenue_display: { value: string; unit: string };
+  source_url?: string;
+  period_end?: string;
+}
+interface DataApiRevenueSource {
+  source_url?: string;
+  accession?: string | null;
+  concept?: string;
+  role?: string;
+}
+interface DataApiOffering {
+  id: string;
+  label: string;
+  history: Record<string, DataApiOfferingPoint>;
+  ttm?: (DataApiOfferingPoint & { sources: Array<{ source_url: string }> }) | null;
+  children?: DataApiOffering[];
+}
+interface DataApiAdjustmentPoint {
+  value_display: { value: string; unit: string };
+  coverage?: string;
+  derivation?: string;
+  sources?: DataApiRevenueSource[];
+}
+interface DataApiAdjustmentEntry {
+  id: string;
+  label: string;
+  definition?: string;
+  history: Record<string, DataApiAdjustmentPoint>;
+  ttm?: DataApiAdjustmentPoint | null;
+}
+interface DataApiAdjustmentImpactPoint extends DataApiAdjustmentPoint {
+  direction: "positive" | "negative" | "neutral";
+  opening_balance_display?: { value: string; unit: string };
+  closing_balance_display?: { value: string; unit: string };
+}
+interface DataApiAdjustmentImpact {
+  id: string;
+  label: string;
+  definition?: string;
+  history: Record<string, DataApiAdjustmentImpactPoint>;
+  ttm?: DataApiAdjustmentImpactPoint | null;
+}
+interface DataApiAdjustedRevenuePoint {
+  fiscal_year: number;
+  period_type?: "ttm";
+  period_end: string;
+  reported_revenue_display: { value: string; unit: string };
+  total_adjustment_display?: { value: string; unit: string } | null;
+  adjusted_revenue_display?: { value: string; unit: string } | null;
+  reported_growth_percent?: string | null;
+  adjusted_growth_percent?: string | null;
+  growth_difference_pp?: string | null;
+  applied_adjustment_ids?: string[];
+  sources?: DataApiRevenueSource[];
+}
+interface DataApiAdjustedRevenue {
+  status: "available" | "unavailable";
+  reason?: string | null;
+  points?: DataApiAdjustedRevenuePoint[];
+  methodology?: string;
+}
+interface DataApiRevenueOfferings {
+  status?: "available" | "unavailable";
+  axis?: string | null;
+  offerings: DataApiOffering[];
+  annual_totals: Record<string, DataApiOfferingPoint>;
+  methodology?: string;
+  adjustment_methodology?: string;
+  adjustment_entries?: DataApiAdjustmentEntry[];
+  revenue_adjustment_impacts?: DataApiAdjustmentImpact[];
+  adjusted_revenue?: DataApiAdjustedRevenue;
+  quality_warnings?: string[];
+  reason?: string | null;
+  ttm?: { period_end: string; revenue_display: { value: string; unit: string }; prior_year_revenue_display: { value: string; unit: string } | null; sources?: DataApiRevenueSource[]; prior_year_sources?: DataApiRevenueSource[] } | null;
+}
+
+interface Offering { id: string; label: string; revenueByPeriod: Record<string, number | null>; sourceByPeriod: Record<string, string>; sourcesByPeriod: Record<string, string[]>; children?: Offering[] }
+export function revenueOfferingStory(payload: DataApiRevenueOfferings | undefined) {
+  if (!payload) return undefined;
+  const sourceUrls = (sources?: DataApiRevenueSource[]) => [
+    ...new Set((sources ?? []).flatMap(source => source.source_url ? [source.source_url] : [])),
+  ];
+  const firstSource = (sources?: DataApiRevenueSource[]) => sourceUrls(sources)[0];
+  function offering(item: DataApiOffering): Offering {
+    const revenueByPeriod: Record<string, number | null> = {};
+    const sourceByPeriod: Record<string, string> = {};
+    const sourcesByPeriod: Record<string, string[]> = {};
+    for (const [year, point] of Object.entries(item.history)) {
+      revenueByPeriod[year] = finiteNumber(point.revenue_display.value);
+      if (point.source_url) {
+        sourceByPeriod[year] = point.source_url;
+        sourcesByPeriod[year] = [point.source_url];
+      }
+    }
+    if (item.ttm) {
+      revenueByPeriod.TTM = finiteNumber(item.ttm.revenue_display.value);
+      const sources = sourceUrls(item.ttm.sources);
+      const source = sources[0];
+      if (source) sourceByPeriod.TTM = source;
+      if (sources.length) sourcesByPeriod.TTM = sources;
+    }
+    return { id: item.id, label: item.label, revenueByPeriod, sourceByPeriod, sourcesByPeriod, children: item.children?.map(offering) };
+  }
+  const revenue = finiteNumber(payload.ttm?.revenue_display.value);
+  const totalSourceByPeriod = Object.fromEntries(Object.entries(payload.annual_totals).flatMap(([year, point]) => point.source_url ? [[year, point.source_url]] : []));
+  const totalSourcesByPeriod: Record<string, string[]> = Object.fromEntries(Object.entries(payload.annual_totals).flatMap(([year, point]) => point.source_url ? [[year, [point.source_url]]] : []));
+  const ttmSource = firstSource(payload.ttm?.sources);
+  if (ttmSource) totalSourceByPeriod.TTM = ttmSource;
+  const ttmSources = [
+    ...new Set([
+      ...sourceUrls(payload.ttm?.sources),
+      ...sourceUrls(payload.ttm?.prior_year_sources),
+    ]),
+  ];
+  if (ttmSources.length) totalSourcesByPeriod.TTM = ttmSources;
+  return {
+    status: payload.status,
+    reason: payload.reason,
+    offerings: payload.offerings.map(offering),
+    offeringAxis: payload.axis,
+    annualTotals: Object.fromEntries(Object.entries(payload.annual_totals).map(([year, point]) => [year, finiteNumber(point.revenue_display.value)])),
+    annualPeriodEnds: Object.fromEntries(Object.entries(payload.annual_totals).flatMap(([year, point]) => point.period_end ? [[year, point.period_end]] : [])),
+    totalSourceByPeriod,
+    totalSourcesByPeriod,
+    methodology: payload.methodology,
+    adjustmentMethodology: payload.adjustment_methodology,
+    adjustmentEntries: (payload.adjustment_entries ?? []).map(item => {
+      const valueByPeriod: Record<string, number | null> = {};
+      const sourceByPeriod: Record<string, string> = {};
+      const sourcesByPeriod: Record<string, string[]> = {};
+      const derivationByPeriod: Record<string, string> = {};
+      const coverageByPeriod: Record<string, string> = {};
+      for (const [period, point] of Object.entries(item.history)) {
+        valueByPeriod[period] = finiteNumber(point.value_display.value);
+        const sources = sourceUrls(point.sources);
+        const source = sources[0];
+        if (source) sourceByPeriod[period] = source;
+        if (sources.length) sourcesByPeriod[period] = sources;
+        if (point.derivation) derivationByPeriod[period] = point.derivation;
+        if (point.coverage) coverageByPeriod[period] = point.coverage;
+      }
+      if (item.ttm) {
+        valueByPeriod.TTM = finiteNumber(item.ttm.value_display.value);
+        const sources = sourceUrls(item.ttm.sources);
+        const source = sources[0];
+        if (source) sourceByPeriod.TTM = source;
+        if (sources.length) sourcesByPeriod.TTM = sources;
+        if (item.ttm.derivation) derivationByPeriod.TTM = item.ttm.derivation;
+        if (item.ttm.coverage) coverageByPeriod.TTM = item.ttm.coverage;
+      }
+      return { id: item.id, label: item.label, definition: item.definition ?? "Issuer-reported revenue disclosure.", valueByPeriod, sourceByPeriod, sourcesByPeriod, derivationByPeriod, coverageByPeriod };
+    }),
+    adjustmentImpacts: (payload.revenue_adjustment_impacts ?? []).map(item => {
+      const valueByPeriod: Record<string, number | null> = {};
+      const directionByPeriod: Record<string, "positive" | "negative" | "neutral"> = {};
+      const openingBalanceByPeriod: Record<string, number | null> = {};
+      const closingBalanceByPeriod: Record<string, number | null> = {};
+      const sourcesByPeriod: Record<string, string[]> = {};
+      const derivationByPeriod: Record<string, string> = {};
+      const coverageByPeriod: Record<string, string> = {};
+      for (const [period, point] of Object.entries(item.history)) {
+        valueByPeriod[period] = finiteNumber(point.value_display.value);
+        directionByPeriod[period] = point.direction;
+        openingBalanceByPeriod[period] = finiteNumber(point.opening_balance_display?.value);
+        closingBalanceByPeriod[period] = finiteNumber(point.closing_balance_display?.value);
+        const sources = sourceUrls(point.sources);
+        if (sources.length) sourcesByPeriod[period] = sources;
+        if (point.derivation) derivationByPeriod[period] = point.derivation;
+        if (point.coverage) coverageByPeriod[period] = point.coverage;
+      }
+      if (item.ttm) {
+        const point = item.ttm;
+        valueByPeriod.TTM = finiteNumber(point.value_display.value);
+        directionByPeriod.TTM = point.direction;
+        openingBalanceByPeriod.TTM = finiteNumber(point.opening_balance_display?.value);
+        closingBalanceByPeriod.TTM = finiteNumber(point.closing_balance_display?.value);
+        const sources = sourceUrls(point.sources);
+        if (sources.length) sourcesByPeriod.TTM = sources;
+        if (point.derivation) derivationByPeriod.TTM = point.derivation;
+        if (point.coverage) coverageByPeriod.TTM = point.coverage;
+      }
+      return {
+        id: item.id,
+        label: item.label,
+        definition: item.definition ?? "Source-backed annual movement in a revenue timing balance.",
+        valueByPeriod,
+        directionByPeriod,
+        openingBalanceByPeriod,
+        closingBalanceByPeriod,
+        sourcesByPeriod,
+        derivationByPeriod,
+        coverageByPeriod,
+      };
+    }),
+    adjustedRevenue: payload.adjusted_revenue ? {
+      status: payload.adjusted_revenue.status,
+      reason: payload.adjusted_revenue.reason ?? null,
+      points: (payload.adjusted_revenue.points ?? []).flatMap(point => {
+        const reportedRevenue = finiteNumber(point.reported_revenue_display.value);
+        if (reportedRevenue === null) return [];
+        return [{
+          fiscalYear: point.fiscal_year,
+          periodType: (point.period_type ?? "annual") as "annual" | "ttm",
+          periodEnd: point.period_end,
+          reportedRevenue,
+          totalAdjustment: finiteNumber(point.total_adjustment_display?.value),
+          adjustedRevenue: finiteNumber(point.adjusted_revenue_display?.value),
+          reportedGrowthPercent: finiteNumber(point.reported_growth_percent),
+          adjustedGrowthPercent: finiteNumber(point.adjusted_growth_percent),
+          growthDifferencePp: finiteNumber(point.growth_difference_pp),
+          appliedAdjustmentIds: point.applied_adjustment_ids ?? [],
+          sourceUrls: sourceUrls(point.sources),
+        }];
+      }),
+      methodology: payload.adjusted_revenue.methodology ?? "Only source-backed TaRaShaData adjustments are applied; missing balances are not estimated.",
+    } : undefined,
+    qualityWarnings: payload.quality_warnings ?? [],
+    ttm: payload.ttm && revenue !== null ? { periodEnd: payload.ttm.period_end, revenue, priorYearRevenue: finiteNumber(payload.ttm.prior_year_revenue_display?.value) } : undefined,
+  };
 }
 
 interface DataApiBusinessSegmentHistory {
@@ -191,7 +672,7 @@ interface DataApiBusinessSegment {
 }
 
 interface DataApiBusinessSegments {
-  status: "available" | "unavailable";
+  status: "available" | "undetermined" | "unavailable";
   reason: string | null;
   latest_fiscal_year: number | null;
   latest_period_end: string | null;
@@ -349,16 +830,30 @@ const factDescriptions: Record<string, string> = {
   shortTermInvestments: "Reported short-term investments.",
   accountsReceivable: "Amounts due from customers and other debtors.",
   inventory: "Reported inventory balance.",
+  prepaidExpenses: "Reported prepaid expenses and other prepaid operating assets.",
   currentAssets: "Assets expected to turn into cash or be used in the operating cycle.",
+  propertyPlantEquipment: "Reported property, plant and equipment, net of accumulated depreciation.",
+  goodwill: "Reported goodwill from acquired businesses.",
+  otherIntangibleAssets: "Reported intangible assets other than goodwill.",
   assets: "Total reported assets.",
   accountsPayable: "Amounts owed to suppliers and other creditors.",
+  unearnedRevenueCurrent: "Revenue collected or billed before delivery and classified as current.",
+  unearnedRevenueLongTerm: "Revenue collected or billed before delivery and classified as non-current.",
   currentDebt: "Borrowings classified as current.",
+  longTermDebt: "Borrowings classified as non-current.",
+  shortTermLeaseLiabilities: "Lease obligations classified as current.",
+  longTermLeaseLiabilities: "Lease obligations classified as non-current.",
   shortTermBorrowings: "Short-term borrowings reported separately from the current portion of long-term debt.",
   currentPortionLongTermDebt: "Long-term borrowings due within the current period.",
   currentLiabilities: "Obligations classified as current.",
   longTermLiabilities: "Reported longer-term obligations.",
   totalDebt: "Total reported borrowings.",
+  liabilities: "Total reported liabilities.",
   equity: "Reported shareholders’ equity.",
+  commonStock: "Reported par or stated value of issued common stock.",
+  additionalPaidInCapital: "Capital contributed by shareholders above common-stock par value.",
+  retainedEarnings: "Cumulative earnings retained in the business after dividends.",
+  comprehensiveIncome: "Accumulated other comprehensive income or loss reported in equity.",
   operatingCash: "Net cash generated or used by operations.",
   capex: "Reported capital expenditure.",
   depreciation: "Reported depreciation and amortization.",
@@ -484,7 +979,7 @@ export async function searchDataCompanies(env: DataProviderEnv, query: string, c
     }));
 }
 
-function finiteNumber(value: string | null | undefined): number | null {
+function finiteNumber(value: string | number | null | undefined): number | null {
   if (value === null || value === undefined) return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -699,6 +1194,278 @@ function cashConversionStory(payload: DataApiCashConversion | undefined, reporti
     takeaway: payload.takeaway,
     methodology: payload.methodology,
     sourceUrl: payload.source_url,
+  };
+}
+
+const stockRiskDisplayRanges: DataApiStockRiskRange[] = ["1Y", "3Y", "5Y", "10Y"];
+const stockRiskPeriodRanges: DataApiStockRiskRange[] = ["1Y", "3Y", "5Y", "7Y", "10Y"];
+
+function stockRiskStory(payload: DataApiStockRisk | undefined) {
+  const source = payload?.source ?? {
+    name: "TaRaShaData market-history pipeline",
+    source_role: "Zero-cost adjusted market-price history",
+    delayed: true,
+    persisted: false,
+    cost: "$0",
+    price_basis: "Daily adjusted close",
+  };
+  const periods = Object.fromEntries(stockRiskPeriodRanges.flatMap((range) => {
+    const period = payload?.periods?.[range];
+    if (!period) return [];
+    return [[range, {
+      range: period.range,
+      startDate: period.start_date,
+      endDate: period.end_date,
+      series: period.series.map((series) => ({
+        key: series.key,
+        name: series.name,
+        symbol: series.symbol,
+        role: series.role,
+        sourceUrl: series.source_url,
+        startDate: series.start_date,
+        endDate: series.end_date,
+        tradingDays: series.trading_days,
+        monthlyObservations: series.monthly_observations,
+        annualizedVolatilityPercent: series.annualized_volatility_percent,
+        betaToMarket: series.beta_to_market,
+        maximumDrawdownPercent: series.maximum_drawdown_percent,
+        worstMonthlyReturnPercent: series.worst_monthly_return_percent,
+        bestMonthlyReturnPercent: series.best_monthly_return_percent,
+        positiveMonthsPercent: series.positive_months_percent,
+        negativeMonthsPercent: series.negative_months_percent,
+        flatMonthsPercent: series.flat_months_percent,
+        drawdown: series.drawdown.filter((point) => Number.isFinite(point.value)),
+        rollingVolatility: series.rolling_volatility.filter((point) => Number.isFinite(point.value)),
+        monthlyDistribution: series.monthly_distribution.map((bin) => ({
+          key: bin.key,
+          label: bin.label,
+          months: bin.months,
+          percentage: bin.percentage,
+        })),
+      })),
+      riskSummary: period.risk_summary,
+      drawdownSummary: period.drawdown_summary,
+      positiveMonthsSummary: period.positive_months_summary,
+    }]];
+  }));
+  return {
+    status: payload?.status ?? "unavailable" as const,
+    reason: payload?.reason ?? "TaRaShaData did not return sufficient aligned company and benchmark price history.",
+    symbol: payload?.symbol ?? null,
+    asOf: payload?.as_of ?? null,
+    availableRanges: payload?.available_ranges?.filter((range) => stockRiskDisplayRanges.includes(range)) ?? [],
+    defaultRange: payload?.default_range && stockRiskDisplayRanges.includes(payload.default_range) ? payload.default_range : null,
+    sectorBenchmark: payload?.sector_benchmark ? {
+      name: payload.sector_benchmark.name,
+      symbol: payload.sector_benchmark.symbol,
+      selectionBasis: payload.sector_benchmark.selection_basis,
+    } : null,
+    periods,
+    source: {
+      name: source.name,
+      sourceRole: source.source_role,
+      delayed: source.delayed,
+      persisted: source.persisted,
+      cost: source.cost,
+      priceBasis: source.price_basis,
+    },
+    methodology: payload?.methodology ?? "No risk metric is estimated when aligned adjusted-price history is insufficient.",
+    quality: payload?.quality ? {
+      companyObservations: payload.quality.company_observations ?? null,
+      marketObservations: payload.quality.market_observations ?? null,
+      sectorObservations: payload.quality.sector_observations ?? null,
+      alignment: payload.quality.alignment ?? null,
+      warnings: payload.quality.warnings ?? [],
+    } : null,
+  };
+}
+
+function marketPricingStory(payload: DataApiMarketPricing | undefined) {
+  const windows = Object.fromEntries((["5Y", "10Y"] as const).flatMap((key) => {
+    const window = payload?.windows?.[key];
+    if (!window) return [];
+    return [[key, {
+      key: window.key,
+      years: window.years,
+      startDate: window.start_date,
+      endDate: window.end_date,
+      observations: window.observations,
+      metrics: window.metrics.filter((metric) => [metric.current, metric.median, metric.low, metric.high, metric.percentile].every(Number.isFinite)),
+    }]];
+  }));
+  return {
+    status: payload?.status ?? "unavailable" as const,
+    reason: payload?.reason ?? "TaRaShaData did not return a valid delayed market-pricing snapshot.",
+    symbol: payload?.symbol ?? null,
+    currency: payload?.currency ?? null,
+    asOf: payload?.as_of ?? null,
+    marketState: payload?.market_state ?? null,
+    currentPrice: finiteNumber(payload?.current_price),
+    currentMetrics: (payload?.current_metrics ?? []).filter((metric) => Number.isFinite(metric.current)).map((metric) => ({
+      key: metric.key,
+      label: metric.label,
+      shortLabel: metric.short_label,
+      current: metric.current,
+      unit: metric.unit,
+      basis: metric.basis,
+    })),
+    windows,
+    valuationRead: payload?.valuation_read ?? null,
+    impliedExpectations: (payload?.implied_expectations ?? []).filter((item) => Number.isFinite(item.value)),
+    peerFramework: payload?.peer_framework ?? "TaRaShaData SEC-SIC peer framework",
+    peers: (payload?.peers ?? []).map((peer) => ({
+      cik: peer.cik,
+      name: peer.name,
+      symbol: peer.symbol,
+      isCompany: peer.is_company,
+      price: finiteNumber(peer.price),
+      pe: finiteNumber(peer.pe),
+      evEbitda: finiteNumber(peer.ev_ebitda),
+      fcfYield: finiteNumber(peer.fcf_yield),
+      basis: peer.basis,
+    })),
+    treasuryComparison: payload?.treasury_comparison ? {
+      fcfYield: finiteNumber(payload.treasury_comparison.fcf_yield),
+      treasuryYield: finiteNumber(payload.treasury_comparison.treasury_yield),
+      spread: finiteNumber(payload.treasury_comparison.spread),
+      treasuryAsOf: payload.treasury_comparison.treasury_as_of,
+      sourceName: payload.treasury_comparison.source_name,
+      sourceUrl: payload.treasury_comparison.source_url,
+      cost: payload.treasury_comparison.cost,
+    } : null,
+    analystEstimates: payload?.analyst_estimates ? {
+      status: payload.analyst_estimates.status,
+      reason: payload.analyst_estimates.reason,
+      baseCase: finiteNumber(payload.analyst_estimates.base_case),
+      bullCase: finiteNumber(payload.analyst_estimates.bull_case),
+      bearCase: finiteNumber(payload.analyst_estimates.bear_case),
+      analystCount: payload.analyst_estimates.analyst_count,
+      currentPrice: finiteNumber(payload.analyst_estimates.current_price),
+      currentVsBasePercent: finiteNumber(payload.analyst_estimates.current_vs_base_percent),
+      sourceName: payload.analyst_estimates.source_name,
+      sourceUrl: payload.analyst_estimates.source_url,
+      cost: payload.analyst_estimates.cost,
+    } : null,
+    takeaway: payload?.takeaway ?? null,
+    source: payload?.source ? {
+      financials: payload.source.financials,
+      peerFramework: payload.source.peer_framework,
+      marketName: payload.source.market_name,
+      marketRole: payload.source.market_role,
+      marketUrl: payload.source.market_url,
+      cost: payload.source.cost,
+      persisted: payload.source.persisted,
+      priceBasis: payload.source.price_basis,
+    } : null,
+    methodology: payload?.methodology ?? "No valuation metric is estimated when a required TaRaShaData financial denominator or delayed market price is unavailable.",
+    quality: payload?.quality ? {
+      warnings: payload.quality.warnings ?? [],
+      historyObservations: payload.quality.history_observations ?? null,
+      peerQuotes: payload.quality.peer_quotes ?? null,
+      analystConsensusAvailable: payload.quality.analyst_consensus_available ?? false,
+    } : null,
+  };
+}
+
+const stockHistoryRanges: DataApiStockHistoryRange[] = ["1Y", "3Y", "5Y", "10Y", "Max"];
+
+function stockHistoryFundamental(payload: DataApiStockHistoryFundamental | undefined, label: string) {
+  return {
+    label: payload?.label ?? label,
+    points: (payload?.points ?? []).flatMap((point) => {
+      const value = finiteNumber(point.value);
+      if (value === null || !Number.isInteger(point.fiscal_year)) return [];
+      return [{
+        date: point.date,
+        fiscalYear: point.fiscal_year,
+        value,
+        sourceUrl: point.source_url,
+        unit: point.unit,
+      }];
+    }),
+  };
+}
+
+function stockHistoryStory(payload: DataApiStockHistory | undefined) {
+  const performance = Object.fromEntries(stockHistoryRanges.flatMap((range) => {
+    const item = payload?.performance?.[range];
+    if (!item) return [];
+    return [[range, {
+      range: item.range,
+      startDate: item.start_date,
+      endDate: item.end_date,
+      priceChangePercent: finiteNumber(item.price_change_percent),
+      totalReturnPercent: finiteNumber(item.total_return_percent),
+      cagrPercent: finiteNumber(item.cagr_percent),
+      sp500TotalReturnPercent: finiteNumber(item.sp500_total_return_percent),
+      high: finiteNumber(item.high),
+      low: finiteNumber(item.low),
+    }]];
+  }));
+  const source = payload?.source;
+  const strategy = payload?.strategy;
+  return {
+    status: payload?.status ?? "unavailable" as const,
+    reason: payload?.reason ?? "TaRaShaData did not return usable historical price coverage.",
+    symbol: payload?.symbol ?? null,
+    currency: payload?.currency ?? null,
+    asOf: payload?.as_of ?? null,
+    marketState: payload?.market_state ?? null,
+    availableRanges: payload?.available_ranges?.filter((range) => stockHistoryRanges.includes(range)) ?? [],
+    defaultRange: payload?.default_range ?? null,
+    prices: (payload?.prices ?? []).flatMap((point) => {
+      const close = finiteNumber(point.close);
+      const adjustedClose = finiteNumber(point.adjusted_close);
+      if (close === null || adjustedClose === null) return [];
+      return [{ date: point.date, close, adjustedClose, volume: finiteNumber(point.volume) }];
+    }),
+    fundamentals: {
+      revenue: stockHistoryFundamental(payload?.fundamentals?.revenue, "Revenue"),
+      eps: stockHistoryFundamental(payload?.fundamentals?.eps, "Earnings Per Share"),
+      freeCashFlow: stockHistoryFundamental(payload?.fundamentals?.free_cash_flow, "Free Cash Flow"),
+    },
+    events: (payload?.events ?? []).map((event) => ({
+      date: event.date,
+      type: event.type,
+      title: event.title,
+      detail: event.detail,
+      sourceUrl: event.source_url,
+    })),
+    performance,
+    glance: {
+      currentPrice: finiteNumber(payload?.glance?.current_price),
+      marketCap: finiteNumber(payload?.glance?.market_cap),
+      dilutedShares: finiteNumber(payload?.glance?.diluted_shares),
+      averageDailyVolume3m: finiteNumber(payload?.glance?.average_daily_volume_3m),
+    },
+    strategy: {
+      status: strategy?.status ?? "unavailable" as const,
+      reason: strategy?.reason ?? "No source-specific management strategy was available.",
+      points: strategy?.points ?? [],
+      sourceName: strategy?.source_name ?? "TaRaShaData SEC filing pipeline",
+      sourceDate: strategy?.source_date ?? null,
+      sourceUrl: strategy?.source_url ?? null,
+      cost: strategy?.cost ?? "$0",
+      methodology: strategy?.methodology ?? "No strategy statement is generated without management source language.",
+    },
+    source: source ? {
+      financials: source.financials,
+      filings: source.filings,
+      marketName: source.market_name,
+      marketRole: source.market_role,
+      marketUrl: source.market_url,
+      benchmarkUrl: source.benchmark_url,
+      cost: source.cost,
+      persisted: source.persisted,
+      priceBasis: source.price_basis,
+    } : null,
+    methodology: payload?.methodology ?? "No historical performance is estimated when source observations are unavailable.",
+    quality: payload?.quality ? {
+      warnings: payload.quality.warnings ?? [],
+      rawPriceObservations: payload.quality.raw_price_observations ?? null,
+      displayPriceObservations: payload.quality.display_price_observations ?? null,
+      fundamentalYears: payload.quality.fundamental_years ?? [],
+    } : null,
   };
 }
 
@@ -1668,6 +2435,314 @@ function netDebtSeries(debt: YearValue[], cash: YearValue[], investments: YearVa
   }));
 }
 
+function firstAvailableSeries(facts: DataFactRow[], keys: string[]): YearValue[] {
+  for (const key of keys) {
+    const series = seriesFor(facts, key);
+    if (series.length) return series;
+  }
+  return [];
+}
+
+function combineAvailableSeries(series: YearValue[][]): YearValue[] {
+  const years = [...new Set(series.flatMap((values) => values.map((point) => point.year)))].sort((left, right) => left - right);
+  return years.flatMap((year) => {
+    const reported = series.flatMap((values) => {
+      const point = values.find((candidate) => candidate.year === year);
+      return point ? [point.value] : [];
+    });
+    return reported.length ? [{ year, value: reported.reduce((total, value) => total + value, 0) }] : [];
+  });
+}
+
+function coalesceSeries(primary: YearValue[], fallback: YearValue[]): YearValue[] {
+  const primaryByYear = new Map(primary.map((point) => [point.year, point.value]));
+  const fallbackByYear = new Map(fallback.map((point) => [point.year, point.value]));
+  return [...new Set([...primaryByYear.keys(), ...fallbackByYear.keys()])]
+    .sort((left, right) => left - right)
+    .map((year) => ({ year, value: primaryByYear.get(year) ?? fallbackByYear.get(year)! }));
+}
+
+function valueForYear(series: YearValue[], year: number | null): number | null {
+  if (year === null) return null;
+  return series.find((point) => point.year === year)?.value ?? null;
+}
+
+function percentOfBase(value: number | null, base: number | null): number | null {
+  return value !== null && base !== null && base !== 0 ? (value / Math.abs(base)) * 100 : null;
+}
+
+function normalizedPercentValue(value: number | null): number | null {
+  if (value === null || !Number.isFinite(value)) return null;
+  return Math.abs(value) <= 1 ? value * 100 : value;
+}
+
+function latestPointAtOrBefore(series: YearValue[], year: number | null): YearValue | null {
+  if (year === null) return null;
+  return [...series]
+    .filter((point) => point.year <= year && Number.isFinite(point.value))
+    .sort((left, right) => right.year - left.year)[0] ?? null;
+}
+
+function averageBalanceForYear(series: YearValue[], year: number): number | null {
+  const current = valueForYear(series, year);
+  if (current === null || current === 0) return null;
+  const prior = [...series]
+    .filter((point) => point.year < year && Number.isFinite(point.value))
+    .sort((left, right) => right.year - left.year)[0]?.value;
+  return prior === undefined ? Math.abs(current) : (Math.abs(current) + Math.abs(prior)) / 2;
+}
+
+function buildBalanceSheetStory(
+  facts: DataFactRow[],
+  dataset: DataApiDataset,
+  reportingCurrency: string,
+  displayUnit: string,
+) {
+  const assets = firstAvailableSeries(facts, ["assets"]);
+  const equity = firstAvailableSeries(facts, ["equity", "shareholders_equity"]);
+  const derivedLiabilities = derivedSeries(assets, equity, (totalAssets, shareholdersEquity) => totalAssets - shareholdersEquity);
+  const liabilities = coalesceSeries(firstAvailableSeries(facts, ["liabilities", "total_liabilities"]), derivedLiabilities);
+  const equationYears = assets
+    .map((point) => point.year)
+    .filter((year) => valueForYear(liabilities, year) !== null && valueForYear(equity, year) !== null)
+    .sort((left, right) => left - right)
+    .slice(-5);
+  const latestFiscalYear = equationYears.at(-1) ?? null;
+
+  const reportedCashCushion = firstAvailableSeries(facts, ["totalCash", "cashAndShortTermInvestments", "total_cash", "cash_and_short_term_investments"]);
+  const cash = reportedCashCushion.length
+    ? reportedCashCushion
+    : combineAvailableSeries([
+      firstAvailableSeries(facts, ["cash"]),
+      firstAvailableSeries(facts, ["shortTermInvestments", "short_term_investments"]),
+    ]);
+  const accountsReceivable = firstAvailableSeries(facts, ["accountsReceivable", "accounts_receivable"]);
+  const inventory = firstAvailableSeries(facts, ["inventory"]);
+  const prepaidExpenses = firstAvailableSeries(facts, ["prepaidExpenses", "prepaid_expenses"]);
+  const prepaidExpensesAndOtherCurrentAssets = coalesceSeries(
+    prepaidExpenses,
+    firstAvailableSeries(facts, ["prepaid_expenses_and_other_current_assets", "other_current_assets"]),
+  );
+  const operatingCurrentAssets = combineAvailableSeries([accountsReceivable, inventory, prepaidExpensesAndOtherCurrentAssets]);
+  const propertyPlantEquipment = firstAvailableSeries(facts, ["propertyPlantEquipment", "property_plant_equipment_net", "property_plant_and_equipment_net"]);
+  const goodwill = firstAvailableSeries(facts, ["goodwill"]);
+  const otherIntangibleAssets = firstAvailableSeries(facts, ["otherIntangibleAssets", "intangible_assets_net_excluding_goodwill", "finite_lived_intangible_assets_net"]);
+
+  const unearnedRevenueCurrent = firstAvailableSeries(facts, ["unearnedRevenueCurrent", "unearned_revenue", "deferred_revenue_current", "contract_liabilities_current"]);
+  const unearnedRevenueLongTerm = firstAvailableSeries(facts, ["unearnedRevenueLongTerm", "unearned_revenue_noncurrent", "deferred_revenue_noncurrent", "contract_liabilities_noncurrent"]);
+  const unearnedRevenue = combineAvailableSeries([unearnedRevenueCurrent, unearnedRevenueLongTerm]);
+  const accountsPayable = firstAvailableSeries(facts, ["accountsPayable", "accounts_payable"]);
+  const totalDebtReported = firstAvailableSeries(facts, ["totalDebt", "total_debt"]);
+  const shortTermDebt = firstAvailableSeries(facts, ["currentDebt", "shortTermBorrowings", "short_term_debt"]);
+  const longTermDebt = firstAvailableSeries(facts, ["longTermDebt", "long_term_debt"]);
+  const shortTermLeases = firstAvailableSeries(facts, ["shortTermLeaseLiabilities", "current_lease_liabilities", "lease_liabilities_current", "operating_lease_liabilities_current", "finance_lease_liabilities_current"]);
+  const longTermLeases = firstAvailableSeries(facts, ["longTermLeaseLiabilities", "long_term_leases", "lease_liabilities_noncurrent", "operating_lease_liabilities_noncurrent", "finance_lease_liabilities_noncurrent"]);
+  const totalDebt = totalDebtReported.length ? totalDebtReported : combineAvailableSeries([shortTermDebt, longTermDebt, shortTermLeases, longTermLeases]);
+  const shortTermDebtRate = firstAvailableSeries(facts, ["shortTermDebtWeightedAverageInterestRate", "short_term_debt_weighted_average_interest_rate", "short_term_debt_interest_rate", "short_term_borrowing_rate"]);
+  const reportedDebtRate = firstAvailableSeries(facts, ["debtWeightedAverageInterestRate", "debt_weighted_average_interest_rate", "long_term_debt_interest_rate", "long_term_borrowing_rate"]);
+  const operatingLeaseRate = firstAvailableSeries(facts, ["operatingLeaseWeightedAverageDiscountRate", "operating_lease_weighted_average_discount_rate", "lease_discount_rate"]);
+  const financeLeaseRate = firstAvailableSeries(facts, ["financeLeaseWeightedAverageDiscountRate", "finance_lease_weighted_average_discount_rate"]);
+  const shortTermLeaseRate = operatingLeaseRate.length ? operatingLeaseRate : financeLeaseRate;
+  const longTermLeaseRate = operatingLeaseRate.length ? operatingLeaseRate : financeLeaseRate;
+
+  const commonStock = firstAvailableSeries(facts, ["commonStock", "common_stock", "common_stock_value"]);
+  const additionalPaidInCapital = firstAvailableSeries(facts, ["additionalPaidInCapital", "additional_paid_in_capital"]);
+  const combinedCommonStockAndPaidInCapital = firstAvailableSeries(facts, ["commonStockAndPaidInCapital", "common_stock_and_additional_paid_in_capital"]);
+  const retainedEarnings = firstAvailableSeries(facts, ["retainedEarnings", "retained_earnings", "retained_earnings_accumulated_deficit"]);
+  const comprehensiveIncome = firstAvailableSeries(facts, ["comprehensiveIncome", "accumulated_other_comprehensive_income", "accumulated_other_comprehensive_income_loss"]);
+
+  const ebitda = firstAvailableSeries(facts, ["ebitda"]);
+  const ebit = firstAvailableSeries(facts, ["ebit", "operatingIncome"]);
+  const interestExpense = firstAvailableSeries(facts, ["interestExpense", "interest_expense"]);
+  const weightedAverageCost = firstAvailableSeries(facts, ["weighted_average_cost_of_debt", "weighted_average_interest_rate_debt"]);
+
+  const latestAssets = valueForYear(assets, latestFiscalYear);
+  const latestLiabilities = valueForYear(liabilities, latestFiscalYear);
+  const latestEquity = valueForYear(equity, latestFiscalYear);
+  const component = (
+    key: string,
+    label: string,
+    series: YearValue[],
+    base: YearValue[],
+    children: Array<{ key: string; label: string; series: YearValue[]; rate?: YearValue[] }> = [],
+  ) => ({
+    key,
+    label,
+    value: valueForYear(series, latestFiscalYear),
+    percentageOfBase: percentOfBase(valueForYear(series, latestFiscalYear), valueForYear(base, latestFiscalYear)),
+    trend: equationYears.flatMap((fiscalYear) => {
+      const value = valueForYear(series, fiscalYear);
+      return value === null ? [] : [{
+        fiscalYear,
+        value,
+        percentageOfBase: percentOfBase(value, valueForYear(base, fiscalYear)),
+      }];
+    }),
+    children: children.map((child) => ({
+      key: child.key,
+      label: child.label,
+      value: valueForYear(child.series, latestFiscalYear),
+      percentageOfBase: percentOfBase(valueForYear(child.series, latestFiscalYear), valueForYear(base, latestFiscalYear)),
+      interestRatePercent: normalizedPercentValue(valueForYear(child.rate ?? [], latestFiscalYear)),
+    })),
+  });
+
+  const latestCash = valueForYear(cash, latestFiscalYear);
+  const latestDebt = valueForYear(totalDebt, latestFiscalYear);
+  const latestEbitda = valueForYear(ebitda, latestFiscalYear);
+  const latestEbit = valueForYear(ebit, latestFiscalYear);
+  const latestInterestExpense = valueForYear(interestExpense, latestFiscalYear);
+  const netCashDebt = latestCash !== null && latestDebt !== null ? latestCash - latestDebt : null;
+  const netDebtToEbitda = latestDebt !== null && latestCash !== null && latestEbitda !== null && latestEbitda !== 0
+    ? (latestDebt - latestCash) / latestEbitda
+    : null;
+  const interestCoverage = latestEbit !== null && latestInterestExpense !== null && latestInterestExpense !== 0
+    ? latestEbit / Math.abs(latestInterestExpense)
+    : null;
+  const interestBearingDebt = combineAvailableSeries([shortTermDebt, longTermDebt]);
+  let weightedAverageCostOfDebt = normalizedPercentValue(valueForYear(weightedAverageCost, latestFiscalYear));
+  let weightedAverageCostOfDebtFiscalYear = weightedAverageCostOfDebt === null ? null : latestFiscalYear;
+  let weightedAverageCostOfDebtNote = weightedAverageCostOfDebt === null
+    ? "Not calculable from reported inputs"
+    : "Issuer-reported borrowing cost";
+  if (weightedAverageCostOfDebt === null && latestFiscalYear !== null) {
+    const currentReportedRate = valueForYear(reportedDebtRate, latestFiscalYear);
+    if (currentReportedRate !== null) {
+      weightedAverageCostOfDebt = normalizedPercentValue(currentReportedRate);
+      weightedAverageCostOfDebtFiscalYear = latestFiscalYear;
+      weightedAverageCostOfDebtNote = "Issuer-reported weighted borrowing rate";
+    }
+  }
+  if (weightedAverageCostOfDebt === null && latestFiscalYear !== null) {
+    const averageDebt = averageBalanceForYear(interestBearingDebt, latestFiscalYear);
+    if (averageDebt !== null && latestInterestExpense !== null) {
+      weightedAverageCostOfDebt = Math.abs(latestInterestExpense) / averageDebt * 100;
+      weightedAverageCostOfDebtFiscalYear = latestFiscalYear;
+      weightedAverageCostOfDebtNote = `FY${latestFiscalYear} interest expense ÷ average borrowings`;
+    }
+  }
+  if (weightedAverageCostOfDebt === null) {
+    const latestLeaseRate = [
+      latestPointAtOrBefore(operatingLeaseRate, latestFiscalYear),
+      latestPointAtOrBefore(financeLeaseRate, latestFiscalYear),
+    ].filter((point): point is YearValue => point !== null).sort((left, right) => right.year - left.year)[0] ?? null;
+    const latestBorrowings = valueForYear(interestBearingDebt, latestFiscalYear);
+    if (
+      latestLeaseRate
+      && latestDebt !== null
+      && latestDebt > 0
+      && (latestBorrowings === null || latestBorrowings === 0)
+    ) {
+      weightedAverageCostOfDebt = normalizedPercentValue(latestLeaseRate.value);
+      weightedAverageCostOfDebtFiscalYear = latestLeaseRate.year;
+      weightedAverageCostOfDebtNote = `Lease-only funding · FY${latestLeaseRate.year} disclosed discount rate`;
+    } else if (latestDebt === null || latestDebt === 0) {
+      weightedAverageCostOfDebtNote = "Not applicable · no reported debt";
+    }
+  }
+  if (weightedAverageCostOfDebt === null) {
+    const latestReportedRate = latestPointAtOrBefore(reportedDebtRate, latestFiscalYear);
+    if (latestReportedRate) {
+      weightedAverageCostOfDebt = normalizedPercentValue(latestReportedRate.value);
+      weightedAverageCostOfDebtFiscalYear = latestReportedRate.year;
+      weightedAverageCostOfDebtNote = `Latest disclosed borrowing rate · FY${latestReportedRate.year}`;
+    }
+  }
+  if (weightedAverageCostOfDebt === null && latestFiscalYear !== null) {
+    const candidateYears = interestExpense
+      .map((point) => point.year)
+      .filter((year) => year < latestFiscalYear && averageBalanceForYear(interestBearingDebt, year) !== null)
+      .sort((left, right) => right - left);
+    const costYear = candidateYears[0] ?? null;
+    const averageDebt = costYear === null ? null : averageBalanceForYear(interestBearingDebt, costYear);
+    const interest = costYear === null ? null : valueForYear(interestExpense, costYear);
+    if (costYear !== null && averageDebt !== null && interest !== null) {
+      weightedAverageCostOfDebt = Math.abs(interest) / averageDebt * 100;
+      weightedAverageCostOfDebtFiscalYear = costYear;
+      weightedAverageCostOfDebtNote = `Latest calculable cost · FY${costYear} interest expense ÷ average borrowings`;
+    }
+  }
+  const cashPercent = percentOfBase(latestCash, latestAssets);
+  const summary = latestFiscalYear === null
+    ? null
+    : cashPercent === null
+      ? `FY${latestFiscalYear} balances reconcile through the accounting equation; the cash cushion was not separately reported.`
+      : `${cashPercent.toFixed(1)}% of assets is held in cash and cash equivalents. ${netCashDebt === null ? "Net cash or debt could not be calculated from the reported facts." : netCashDebt >= 0 ? "Cash exceeds total debt, adding balance-sheet flexibility." : "Debt exceeds cash, so repayment capacity and interest cover matter."}`;
+  const latestBalanceItem = [...dataset.balance.items]
+    .filter((item) => item.period.type === "annual" && Number(item.period.end.slice(0, 4)) === latestFiscalYear)
+    .sort((left, right) => right.period.end.localeCompare(left.period.end))[0];
+
+  return {
+    status: latestFiscalYear === null ? "unavailable" as const : "available" as const,
+    reason: latestFiscalYear === null ? "TaRaShaData did not return total assets and shareholders’ equity for a common annual period." : null,
+    latestFiscalYear,
+    latestPeriodEnd: latestBalanceItem?.period.end ?? null,
+    reportingCurrency,
+    displayUnit,
+    years: equationYears,
+    equation: { assets: latestAssets, liabilities: latestLiabilities, shareholdersEquity: latestEquity },
+    assets: [
+      component("cash", "Cash & short-term investments cushion", cash, assets),
+      component("operating_current_assets", "Receivables, inventory & other current assets", operatingCurrentAssets, assets, [
+        { key: "accounts_receivable", label: "Receivables", series: accountsReceivable },
+        { key: "inventory", label: "Inventory", series: inventory },
+        { key: "prepaid_expenses", label: "Prepaids & other current assets", series: prepaidExpensesAndOtherCurrentAssets },
+      ]),
+      component("property_plant_equipment", "Property, plant & equipment", propertyPlantEquipment, assets),
+      component("goodwill", "Goodwill", goodwill, assets),
+      component("other_intangible_assets", "Other intangible assets", otherIntangibleAssets, assets),
+    ],
+    liabilities: [
+      component("unearned_revenue", "Unearned revenue", unearnedRevenue, liabilities, [
+        { key: "unearned_revenue_current", label: "Current", series: unearnedRevenueCurrent },
+        { key: "unearned_revenue_long_term", label: "Long term", series: unearnedRevenueLongTerm },
+      ]),
+      component("borrowings", "Borrowings", totalDebt, liabilities, [
+        { key: "short_term_debt", label: "Short-term borrowings", series: shortTermDebt, rate: shortTermDebtRate },
+        { key: "long_term_debt", label: "Long-term borrowings", series: longTermDebt, rate: reportedDebtRate },
+        { key: "short_term_leases", label: "Short-term leases", series: shortTermLeases, rate: shortTermLeaseRate },
+        { key: "long_term_leases", label: "Long-term leases", series: longTermLeases, rate: longTermLeaseRate },
+      ]),
+      component("accounts_payable", "Accounts payable", accountsPayable, liabilities),
+    ],
+    shareholdersEquity: [
+      component(
+        "common_stock",
+        valueForYear(combinedCommonStockAndPaidInCapital, latestFiscalYear) !== null && valueForYear(additionalPaidInCapital, latestFiscalYear) === null
+          ? "Common stock & APIC (reported together)"
+          : "Common stock",
+        valueForYear(combinedCommonStockAndPaidInCapital, latestFiscalYear) !== null && valueForYear(additionalPaidInCapital, latestFiscalYear) === null
+          ? combinedCommonStockAndPaidInCapital
+          : commonStock,
+        equity,
+      ),
+      component(
+        "additional_paid_in_capital",
+        valueForYear(combinedCommonStockAndPaidInCapital, latestFiscalYear) !== null && valueForYear(additionalPaidInCapital, latestFiscalYear) === null
+          ? "APIC (not separately reported)"
+          : "Additional paid-in capital",
+        additionalPaidInCapital,
+        equity,
+      ),
+      component("retained_earnings", "Retained earnings", retainedEarnings, equity),
+      component("comprehensive_income", "Comprehensive income", comprehensiveIncome, equity),
+    ],
+    health: {
+      totalCash: latestCash,
+      totalDebt: latestDebt,
+      netCashDebt,
+      netDebtToEbitda,
+      interestCoverage,
+      weightedAverageCostOfDebt,
+      weightedAverageCostOfDebtFiscalYear,
+      weightedAverageCostOfDebtNote,
+    },
+    summary,
+    methodology: "Annual normalized balance-sheet facts are divided by the relevant reported total for each fiscal year. Total liabilities is derived as assets less shareholders’ equity only when the issuer total is absent. The cash cushion and net cash (debt) include cash equivalents and short-term investments. Weighted average cost of debt uses an issuer-reported rate when available; otherwise it is absolute annual interest expense divided by average short- and long-term borrowings, or the disclosed lease discount rate for lease-only funding. The metric’s displayed note identifies the fiscal year and method. The plain-language health label screens net cash or debt, Net Debt / EBITDA (≤1x and ≤2.5x), and interest coverage (≥5x and ≥2x); it is context, not a recommendation. Missing components are never estimated.",
+    sourceUrl: latestBalanceItem?.provenance?.source_url ?? null,
+  };
+}
+
 const dataMetricToDiscoverFact: Record<string, string> = {
   revenue: "revenue",
   cost_of_revenue: "costOfRevenue",
@@ -1691,16 +2766,48 @@ const dataMetricToDiscoverFact: Record<string, string> = {
   cash_flow_depreciation_amortization: "depreciation",
   cash: "cash",
   short_term_investments: "shortTermInvestments",
+  cash_and_short_term_investments: "cashAndShortTermInvestments",
+  total_cash: "totalCash",
   accounts_receivable: "accountsReceivable",
   inventory: "inventory",
+  prepaid_expenses: "prepaidExpenses",
   current_assets: "currentAssets",
+  property_plant_equipment_net: "propertyPlantEquipment",
+  property_plant_and_equipment_net: "propertyPlantEquipment",
+  goodwill: "goodwill",
+  intangible_assets_net_excluding_goodwill: "otherIntangibleAssets",
+  other_intangible_assets: "otherIntangibleAssets",
   assets: "assets",
   accounts_payable: "accountsPayable",
+  unearned_revenue: "unearnedRevenueCurrent",
+  deferred_revenue_current: "unearnedRevenueCurrent",
+  contract_liabilities_current: "unearnedRevenueCurrent",
+  deferred_revenue_noncurrent: "unearnedRevenueLongTerm",
+  contract_liabilities_noncurrent: "unearnedRevenueLongTerm",
+  unearned_revenue_noncurrent: "unearnedRevenueLongTerm",
   short_term_debt: "currentDebt",
+  long_term_debt: "longTermDebt",
+  lease_liabilities_current: "shortTermLeaseLiabilities",
+  operating_lease_liabilities_current: "shortTermLeaseLiabilities",
+  current_lease_liabilities: "shortTermLeaseLiabilities",
+  lease_liabilities_noncurrent: "longTermLeaseLiabilities",
+  operating_lease_liabilities_noncurrent: "longTermLeaseLiabilities",
+  long_term_leases: "longTermLeaseLiabilities",
+  short_term_debt_weighted_average_interest_rate: "shortTermDebtWeightedAverageInterestRate",
+  debt_weighted_average_interest_rate: "debtWeightedAverageInterestRate",
+  operating_lease_weighted_average_discount_rate: "operatingLeaseWeightedAverageDiscountRate",
+  finance_lease_weighted_average_discount_rate: "financeLeaseWeightedAverageDiscountRate",
   current_liabilities: "currentLiabilities",
   long_term_liabilities: "longTermLiabilities",
   total_debt: "totalDebt",
+  liabilities: "liabilities",
   shareholders_equity: "equity",
+  common_stock_value: "commonStock",
+  common_stock: "commonStock",
+  common_stock_and_additional_paid_in_capital: "commonStockAndPaidInCapital",
+  additional_paid_in_capital: "additionalPaidInCapital",
+  retained_earnings: "retainedEarnings",
+  accumulated_other_comprehensive_income: "comprehensiveIncome",
   operating_cash_flow: "operatingCash",
   capital_expenditures: "capex",
   share_based_compensation: "shareBasedCompensation",
@@ -2031,8 +3138,13 @@ export async function pullDataCompany(env: DataProviderEnv, companyId: string, f
     },
     companyStory: {
       revenueSegments: revenueSegmentStory(payload.business_segments, payload.company.reporting_currency),
+      revenueOfferings: revenueOfferingStory(payload.revenue_offerings),
       costStructure: costStructureStory(payload.operating_cost_structure, payload.company.reporting_currency),
       cashConversion: cashConversionStory(payload.cash_conversion, payload.company.reporting_currency),
+      balanceSheet: buildBalanceSheetStory(facts, targetDataset, payload.company.reporting_currency, amountUnit),
+      stockRisk: stockRiskStory(payload.stock_risk),
+      marketPricing: marketPricingStory(payload.market_pricing),
+      stockHistory: stockHistoryStory(payload.stock_history),
     },
     researchShelf: {
       fromYear,

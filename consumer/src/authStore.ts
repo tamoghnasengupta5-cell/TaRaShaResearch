@@ -1,9 +1,13 @@
 export interface AuthenticatedUser {
   name: string;
   username: string;
+  role: "admin" | "user";
+  adminToken?: string;
 }
 
-export interface RegistrationInput extends AuthenticatedUser {
+export interface RegistrationInput {
+  name: string;
+  username: string;
   securityQuestion: string;
   securityAnswer: string;
   password: string;

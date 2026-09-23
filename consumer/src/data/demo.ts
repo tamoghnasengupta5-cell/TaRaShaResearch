@@ -1,4 +1,68 @@
-import type { Company } from "../types";
+import type { Company, CompanyBalanceSheetComponent, CompanyBalanceSheetStory, YearValue } from "../types";
+
+const balanceYears = [2022, 2023, 2024, 2025, 2026];
+const demoAssets: YearValue[] = [6200, 6550, 6900, 7350, 7800].map((value, index) => ({ year: balanceYears[index], value }));
+const demoLiabilities: YearValue[] = [3600, 3700, 3800, 3940, 4050].map((value, index) => ({ year: balanceYears[index], value }));
+const demoEquity: YearValue[] = [2600, 2850, 3100, 3410, 3750].map((value, index) => ({ year: balanceYears[index], value }));
+
+function demoBalanceComponent(key: string, label: string, values: number[], base: YearValue[], children: CompanyBalanceSheetComponent["children"] = []): CompanyBalanceSheetComponent {
+  const series = values.map((value, index) => ({ year: balanceYears[index], value }));
+  const latest = series[series.length - 1];
+  const latestBase = base[base.length - 1];
+  return {
+    key,
+    label,
+    value: latest.value,
+    percentageOfBase: (latest.value / Math.abs(latestBase.value)) * 100,
+    trend: series.map((point, index) => ({ fiscalYear: point.year, value: point.value, percentageOfBase: (point.value / Math.abs(base[index].value)) * 100 })),
+    children,
+  };
+}
+
+const demoBalanceSheet: CompanyBalanceSheetStory = {
+  status: "available",
+  reason: null,
+  latestFiscalYear: 2026,
+  latestPeriodEnd: "2026-03-31",
+  reportingCurrency: "INR",
+  displayUnit: "INR crore",
+  years: balanceYears,
+  equation: { assets: 7800, liabilities: 4050, shareholdersEquity: 3750 },
+  assets: [
+    demoBalanceComponent("cash", "Cash & cash equivalents", [500, 620, 560, 800, 950], demoAssets),
+    demoBalanceComponent("operating_current_assets", "Receivables, inventory & prepaids", [1700, 1760, 1900, 2020, 2140], demoAssets, [
+      { key: "receivables", label: "Receivables", value: 980, percentageOfBase: 12.6, interestRatePercent: null },
+      { key: "inventory", label: "Inventory", value: 910, percentageOfBase: 11.7, interestRatePercent: null },
+      { key: "prepaids", label: "Prepaid expenses", value: 250, percentageOfBase: 3.2, interestRatePercent: null },
+    ]),
+    demoBalanceComponent("property_plant_equipment", "Property, plant & equipment", [2100, 2210, 2360, 2480, 2570], demoAssets),
+    demoBalanceComponent("goodwill", "Goodwill", [420, 420, 470, 470, 470], demoAssets),
+    demoBalanceComponent("other_intangible_assets", "Other intangible assets", [310, 290, 275, 250, 225], demoAssets),
+  ],
+  liabilities: [
+    demoBalanceComponent("unearned_revenue", "Unearned revenue", [170, 185, 210, 235, 260], demoLiabilities, [
+      { key: "current", label: "Current", value: 220, percentageOfBase: 5.4, interestRatePercent: null },
+      { key: "long", label: "Long term", value: 40, percentageOfBase: 1, interestRatePercent: null },
+    ]),
+    demoBalanceComponent("borrowings", "Borrowings", [1200, 1140, 1060, 970, 880], demoLiabilities, [
+      { key: "short", label: "Short-term borrowings", value: 120, percentageOfBase: 3, interestRatePercent: 6.2 },
+      { key: "long", label: "Long-term borrowings", value: 650, percentageOfBase: 16, interestRatePercent: 7.1 },
+      { key: "short-lease", label: "Short-term leases", value: 35, percentageOfBase: .9, interestRatePercent: 6.8 },
+      { key: "long-lease", label: "Long-term leases", value: 75, percentageOfBase: 1.9, interestRatePercent: 6.8 },
+    ]),
+    demoBalanceComponent("accounts_payable", "Accounts payable", [760, 790, 825, 850, 870], demoLiabilities),
+  ],
+  shareholdersEquity: [
+    demoBalanceComponent("common_stock", "Common stock", [125, 125, 125, 125, 125], demoEquity),
+    demoBalanceComponent("additional_paid_in_capital", "Additional paid-in capital", [680, 720, 760, 790, 830], demoEquity),
+    demoBalanceComponent("retained_earnings", "Retained earnings", [1760, 2000, 2250, 2530, 2850], demoEquity),
+    demoBalanceComponent("comprehensive_income", "Comprehensive income", [35, 5, -35, -35, -55], demoEquity),
+  ],
+  health: { totalCash: 950, totalDebt: 880, netCashDebt: 70, netDebtToEbitda: -.05, interestCoverage: 12.4, weightedAverageCostOfDebt: 6.9, weightedAverageCostOfDebtFiscalYear: 2025, weightedAverageCostOfDebtNote: "FY2025 interest expense ÷ average borrowings" },
+  summary: "Cash now exceeds borrowings, leverage has fallen for five consecutive years, and operating profit covers interest expense comfortably.",
+  methodology: "Illustrative annual preview data arranged using the TaRaSha balance-sheet contract. The health label screens net cash or debt, leverage and interest cover and is not a recommendation. Live mode uses normalized issuer filings and never estimates missing facts.",
+  sourceUrl: null,
+};
 
 export const companies: Company[] = [
   {
@@ -18,6 +82,7 @@ export const companies: Company[] = [
       freeCashFlow: [{ year: 2022, value: 280 }, { year: 2023, value: 330 }, { year: 2024, value: 305 }, { year: 2025, value: 410 }, { year: 2026, value: 438 }],
       netDebt: [{ year: 2022, value: 760 }, { year: 2023, value: 690 }, { year: 2024, value: 610 }, { year: 2025, value: 505 }, { year: 2026, value: 410 }],
     },
+    companyStory: { balanceSheet: demoBalanceSheet },
     notes: {
       growth: "Sales have increased in each of the last five reported years.",
       profitability: "The company kept a little more operating profit from every ₹100 of sales this year.",

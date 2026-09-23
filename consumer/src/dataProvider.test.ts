@@ -50,9 +50,31 @@ function dataset(
     item("current_assets", "Current Assets", year, 480 + index * 20),
     item("cash", "Cash & Cash Equivalents", year, 90 + index * 10),
     item("short_term_investments", "Short-Term Investments", year, 20),
+    item("accounts_receivable", "Accounts Receivable", year, 140 + index * 10),
+    item("inventory", "Inventory", year, 70 + index * 5),
+    item("prepaid_expenses", "Prepaid Expenses", year, 20 + index * 2),
+    item("property_plant_equipment_net", "Property, Plant & Equipment", year, 250 + index * 20),
+    item("goodwill", "Goodwill", year, 100),
+    item("intangible_assets_net_excluding_goodwill", "Other Intangible Assets", year, 60 - index * 5),
+    item("assets", "Total Assets", year, [900, 980, 1070][index]),
     item("current_liabilities", "Current Liabilities", year, 330 + index * 20),
     item("short_term_debt", "Short-Term Debt", year, 40),
+    item("long_term_debt", "Long-Term Debt", year, 260 + index * 20),
+    item("lease_liabilities_current", "Current Lease Liabilities", year, 10 + index),
+    item("lease_liabilities_noncurrent", "Long-Term Lease Liabilities", year, 20 + index * 2),
+    item("deferred_revenue_current", "Current Unearned Revenue", year, 60 + index * 5),
+    item("deferred_revenue_noncurrent", "Long-Term Unearned Revenue", year, 30),
+    item("accounts_payable", "Accounts Payable", year, 80 + index * 5),
     item("total_debt", "Total Debt", year, 300 + index * 20),
+    item("liabilities", "Total Liabilities", year, [500, 540, 590][index]),
+    item("shareholders_equity", "Shareholders' Equity", year, [400, 440, 480][index]),
+    item("common_stock_value", "Common Stock", year, 5),
+    item("additional_paid_in_capital", "Additional Paid-In Capital", year, 200 + index * 10),
+    item("retained_earnings", "Retained Earnings", year, 205 + index * 22),
+    item("accumulated_other_comprehensive_income", "Accumulated Other Comprehensive Income", year, -10 + index),
+    item("short_term_debt_interest_rate", "Short-Term Debt Rate", year, .045, "ratio"),
+    item("long_term_debt_interest_rate", "Long-Term Debt Rate", year, .04, "ratio"),
+    item("weighted_average_cost_of_debt", "Weighted Average Cost of Debt", year, .041, "ratio"),
   ]);
   const cashItems = years.flatMap((year, index) => [
     item("operating_cash_flow", "Operating Cash Flow", year, 180 + index * 20),
@@ -75,6 +97,56 @@ function dataset(
     income: { statement: "income", metrics: [], items: incomeItems },
     balance: { statement: "balance", metrics: [], items: balanceItems },
     cash_flow: { statement: "cash_flow", metrics: [], items: cashItems },
+  };
+}
+
+function stockRiskSeries(key: "company" | "sector" | "market", symbol: string) {
+  const offset = key === "company" ? 0 : key === "sector" ? 4 : -2;
+  return {
+    key,
+    name: key === "company" ? "Alpha Systems" : key === "sector" ? "Technology sector (XLK)" : "S&P 500",
+    symbol,
+    role: key === "company" ? "Company" : "Benchmark",
+    source_url: `https://finance.yahoo.com/quote/${symbol}/history/`,
+    start_date: "2021-08-20",
+    end_date: "2026-08-20",
+    trading_days: 1258,
+    monthly_observations: 60,
+    annualized_volatility_percent: 19.2 + offset,
+    beta_to_market: key === "market" ? 1 : .87 + offset / 100,
+    maximum_drawdown_percent: -27.1 - offset,
+    worst_monthly_return_percent: -16.4 - offset,
+    best_monthly_return_percent: 15.3 + offset,
+    positive_months_percent: 60,
+    negative_months_percent: 40,
+    flat_months_percent: 0,
+    drawdown: [{ date: "2021-08-20", value: 0 }, { date: "2022-06-20", value: -27.1 - offset }, { date: "2026-08-20", value: -2 }],
+    rolling_volatility: [{ date: "2021-08-20", value: 18 + offset }, { date: "2022-06-20", value: 30 + offset }, { date: "2026-08-20", value: 19.2 + offset }],
+    monthly_distribution: [
+      { key: "lt_15", label: "< −15%", months: 1, percentage: 1.67 },
+      { key: "neg_15_10", label: "−15% to −10%", months: 4, percentage: 6.67 },
+      { key: "neg_10_5", label: "−10% to −5%", months: 9, percentage: 15 },
+      { key: "neg_5_0", label: "−5% to 0%", months: 10, percentage: 16.67 },
+      { key: "pos_0_5", label: "0% to 5%", months: 24, percentage: 40 },
+      { key: "pos_5_10", label: "5% to 10%", months: 9, percentage: 15 },
+      { key: "gt_10", label: "> 10%", months: 3, percentage: 5 },
+    ],
+  };
+}
+
+function stockRiskPeriod(range: "1Y" | "3Y" | "5Y" | "7Y" | "10Y") {
+  return {
+    range,
+    start_date: "2021-08-20",
+    end_date: "2026-08-20",
+    series: [
+      stockRiskSeries("company", "ALPHA"),
+      stockRiskSeries("sector", "XLK"),
+      stockRiskSeries("market", "^GSPC"),
+    ],
+    risk_summary: "Alpha was less volatile than its sector benchmark.",
+    drawdown_summary: "Alpha's drawdown was shallower than both benchmarks.",
+    positive_months_summary: "Alpha had positive returns in 60% of months.",
   };
 }
 
@@ -281,6 +353,54 @@ function discoverPayload(customized = false) {
       methodology: "FCFF uses normalized annual TaRaShaData inputs only.",
       source_url: "https://www.sec.gov/Archives/alpha-20251231.xml",
     },
+    stock_risk: {
+      status: "available",
+      reason: null,
+      symbol: "ALPHA",
+      as_of: "2026-08-20",
+      available_ranges: ["1Y", "3Y", "5Y", "7Y", "10Y"],
+      default_range: "5Y",
+      market_benchmark: { key: "market", name: "S&P 500", symbol: "^GSPC", role: "Broad-market benchmark" },
+      sector_benchmark: { key: "sector", name: "Technology sector (XLK)", symbol: "XLK", role: "Sector benchmark", selection_basis: "Mapped from SEC SIC 3571" },
+      periods: {
+        "1Y": stockRiskPeriod("1Y"),
+        "3Y": stockRiskPeriod("3Y"),
+        "5Y": stockRiskPeriod("5Y"),
+        "7Y": stockRiskPeriod("7Y"),
+        "10Y": stockRiskPeriod("10Y"),
+      },
+      source: { name: "Yahoo Finance chart service", source_role: "Zero-cost market history", delayed: true, persisted: false, cost: "$0", price_basis: "Daily adjusted close" },
+      methodology: "Daily returns; volatility uses sample standard deviation × √252.",
+      quality: { company_observations: 2780, market_observations: 2780, sector_observations: 2780, alignment: "Exact shared trading dates", warnings: [] },
+    },
+    stock_history: {
+      status: "available",
+      reason: null,
+      symbol: "ALPHA",
+      currency: "USD",
+      as_of: "2026-08-20T20:00:00Z",
+      market_state: "CLOSED",
+      available_ranges: ["5Y", "Max"],
+      default_range: "5Y",
+      prices: [
+        { date: "2021-08-20", close: 50, adjusted_close: 45, volume: 1_000_000 },
+        { date: "2026-08-20", close: 100, adjusted_close: 100, volume: 1_500_000 },
+      ],
+      fundamentals: {
+        revenue: { label: "Revenue", points: [{ date: "2025-12-31", fiscal_year: 2025, value: 1000, source_url: "https://www.sec.gov/example", unit: "USD millions" }] },
+        eps: { label: "Earnings Per Share", points: [{ date: "2025-12-31", fiscal_year: 2025, value: 3, source_url: "https://www.sec.gov/example", unit: "USD per share" }] },
+        free_cash_flow: { label: "Free Cash Flow", points: [{ date: "2025-12-31", fiscal_year: 2025, value: 150, source_url: "https://www.sec.gov/example", unit: "USD millions" }] },
+      },
+      events: [{ date: "2026-02-15", type: "earnings", title: "Annual results filed", detail: "10-K", source_url: "https://www.sec.gov/example" }],
+      performance: {
+        "5Y": { range: "5Y", start_date: "2021-08-20", end_date: "2026-08-20", price_change_percent: 100, total_return_percent: 122.22, cagr_percent: 14.87, sp500_total_return_percent: 70, high: 100, low: 50 },
+      },
+      glance: { current_price: 100, market_cap: 5000, diluted_shares: 50, average_daily_volume_3m: 1_400_000 },
+      strategy: { status: "available", reason: null, points: ["We will continue to invest in product development."], source_name: "Alpha management commentary", source_date: "2026-02-15", source_url: "https://www.sec.gov/example", cost: "$0", methodology: "Source-verbatim management statements." },
+      source: { financials: "TaRaShaData normalized issuer filings", filings: "TaRaShaData stored SEC filing metadata", market_name: "Yahoo Finance chart service", market_role: "Delayed display", market_url: "https://finance.yahoo.com/quote/ALPHA/history/", benchmark_url: "https://finance.yahoo.com/quote/%5EGSPC/history/", cost: "$0", persisted: false, price_basis: "Price uses close; total return uses adjusted close." },
+      methodology: "FCF equals operating cash flow less capital expenditure.",
+      quality: { warnings: [], raw_price_observations: 1258, display_price_observations: 700, fundamental_years: [2025] },
+    },
     normalized_coverage: {
       available: true,
       data_access: "normalized",
@@ -443,6 +563,45 @@ describe("TaRaShaData.ai provider", () => {
       components: [{ key: "change_receivables", value: -5 }],
     });
     expect(company.companyStory?.cashConversion.metrics).toMatchObject({ fcff: 151, conversionPercent: 75.5 });
+    expect(company.companyStory?.balanceSheet).toMatchObject({
+      status: "available",
+      latestFiscalYear: 2025,
+      equation: { assets: 1070, liabilities: 590, shareholdersEquity: 480 },
+      health: { totalCash: 130, totalDebt: 340, netCashDebt: -210 },
+    });
+    expect(company.companyStory?.balanceSheet.health.weightedAverageCostOfDebt).toBeCloseTo(4.1);
+    expect(company.companyStory?.balanceSheet.assets.find((component) => component.key === "cash")?.trend).toHaveLength(2);
+    expect(company.companyStory?.balanceSheet.liabilities.find((component) => component.key === "borrowings")?.children).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "short_term_debt", value: 40, interestRatePercent: 4.5 }),
+      expect.objectContaining({ key: "long_term_debt", value: 300, interestRatePercent: 4 }),
+    ]));
+    expect(company.companyStory?.stockRisk).toMatchObject({
+      status: "available",
+      symbol: "ALPHA",
+      defaultRange: "5Y",
+      availableRanges: ["1Y", "3Y", "5Y", "10Y"],
+      source: { name: "Yahoo Finance chart service", cost: "$0", persisted: false },
+      sectorBenchmark: { symbol: "XLK", selectionBasis: "Mapped from SEC SIC 3571" },
+    });
+    expect(company.companyStory?.stockRisk?.periods["5Y"]?.series[0]).toMatchObject({
+      symbol: "ALPHA",
+      annualizedVolatilityPercent: 19.2,
+      maximumDrawdownPercent: -27.1,
+      positiveMonthsPercent: 60,
+    });
+    expect(company.companyStory?.stockRisk?.periods["7Y"]?.series[0]).toMatchObject({
+      symbol: "ALPHA",
+      monthlyObservations: 60,
+    });
+    expect(company.companyStory?.stockHistory).toMatchObject({
+      status: "available",
+      symbol: "ALPHA",
+      defaultRange: "5Y",
+      availableRanges: ["5Y", "Max"],
+      glance: { currentPrice: 100, marketCap: 5000, dilutedShares: 50 },
+      strategy: { status: "available", points: ["We will continue to invest in product development."] },
+    });
+    expect(company.companyStory?.stockHistory?.fundamentals.freeCashFlow.points[0]).toMatchObject({ value: 150, fiscalYear: 2025 });
     expect(company.researchShelf?.industryBucket).toBe("Computer Systems");
     expect(company.researchShelf?.industryCompanyCount).toBe(2);
     expect(company.researchShelf?.growthComparisons.revenue.industryBucket.median).toBe(17.5);
@@ -464,6 +623,52 @@ describe("TaRaShaData.ai provider", () => {
     expect(body.constituent_identifiers).toEqual(["0000000002"]);
     expect(company.researchShelf?.industryConstituentsCustomized).toBe(true);
     expect(company.researchShelf?.industryConstituents.map((item) => item.id)).toEqual(["data-0000000002"]);
+  });
+
+  it("calculates weighted average cost of debt from interest expense and average borrowings", async () => {
+    const payload = discoverPayload(true);
+    payload.datasets[0].balance.items = payload.datasets[0].balance.items.filter(
+      (fact) => !["weighted_average_cost_of_debt", "long_term_debt_interest_rate"].includes(fact.metric),
+    );
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const company = await pullDataCompany(env, "data-0000000001", 2024, 2025);
+
+    expect(company.companyStory?.balanceSheet.health.weightedAverageCostOfDebt).toBeCloseTo(10 / 330 * 100);
+    expect(company.companyStory?.balanceSheet.health.weightedAverageCostOfDebtFiscalYear).toBe(2025);
+    expect(company.companyStory?.balanceSheet.health.weightedAverageCostOfDebtNote).toBe(
+      "FY2025 interest expense ÷ average borrowings",
+    );
+  });
+
+  it("uses the disclosed lease discount rate when funding is lease-only", async () => {
+    const payload = discoverPayload(true);
+    payload.datasets[0].income.items = payload.datasets[0].income.items.filter(
+      (fact) => fact.metric !== "interest_expense",
+    );
+    payload.datasets[0].balance.items = payload.datasets[0].balance.items.filter(
+      (fact) => ![
+        "weighted_average_cost_of_debt",
+        "short_term_debt_interest_rate",
+        "long_term_debt_interest_rate",
+        "short_term_debt",
+        "long_term_debt",
+        "total_debt",
+      ].includes(fact.metric),
+    );
+    payload.datasets[0].balance.items.push(
+      item("operating_lease_weighted_average_discount_rate", "Operating Lease Discount Rate", 2025, .052, "ratio"),
+    );
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const company = await pullDataCompany(env, "data-0000000001", 2024, 2025);
+
+    expect(company.companyStory?.balanceSheet.health.weightedAverageCostOfDebt).toBeCloseTo(5.2);
+    expect(company.companyStory?.balanceSheet.health.weightedAverageCostOfDebtNote).toBe(
+      "Lease-only funding · FY2025 disclosed discount rate",
+    );
   });
 
   it("uses sample deviation for year-over-year growth", () => {
