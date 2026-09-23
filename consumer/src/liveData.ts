@@ -1,0 +1,265 @@
+import { companies as demoCompanies } from "./data/demo";
+import type { CatalogCompany, Company, DistributionObservation, GrowthStatistics, ProfitabilityMetricKey, ResearchShelfAnalysis } from "./types";
+
+export const MAX_SESSION_COMPANIES = 50;
+export const MAX_YEAR_RANGE = 7;
+export const liveDataEnabled = import.meta.env.VITE_DATA_MODE === "live";
+const apiBase = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
+
+const requiredEarningsFlowMetrics = [
+  "revenue",
+  "cogs",
+  "grossProfit",
+  "sga",
+  "researchAndDevelopment",
+  "otherOperatingExpense",
+  "ebitda",
+  "depreciationAndAmortization",
+  "ebit",
+  "interestExpense",
+  "ebt",
+  "taxes",
+  "netProfit",
+  "minorityInterestInEarnings",
+  "earningsFromDiscontinuedOperations",
+  "commonDividendsPaid",
+  "other",
+  "netIncomeToCommon",
+  "currentYearEarningsRetained",
+  "dilutedShares",
+  "eps",
+] as const;
+
+const requiredFcffBridgeMetrics = ["ebit", "nopat", "depreciationAndAmortization", "capitalExpenditure", "workingCapitalImpact", "fcff"] as const;
+const requiredFcfeBridgeMetrics = ["netIncomeToCommon", "depreciationAndAmortization", "shareBasedCompensation", "otherAdjustments", "capitalExpenditure", "workingCapitalImpact", "netBorrowing", "fcfe"] as const;
+
+const demoCatalog: CatalogCompany[] = demoCompanies.map((company) => ({
+  id: company.id,
+  cik: null,
+  name: company.name,
+  ticker: company.symbol,
+  exchange: "Illustrative",
+  country: "USA",
+  provider: "TaRaSha preview",
+  data_available: 1,
+}));
+
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`${apiBase}${path}`, init);
+  const payload = await response.json().catch(() => ({})) as { error?: string };
+  if (!response.ok) throw new Error(payload.error || `Data request failed with status ${response.status}.`);
+  return payload as T;
+}
+
+export function backfillResearchDistributions(shelf: ResearchShelfAnalysis): ResearchShelfAnalysis {
+  for (const point of shelf.companyDeltas ?? []) {
+    if (typeof point.grossOperatingLeverage !== "number") {
+      point.grossOperatingLeverage = point.revenue === null || point.revenue === 0 || point.grossProfit === null
+        ? null
+        : (point.grossProfit / point.revenue) * 100;
+    }
+  }
+  if (Array.isArray(shelf.rawIncome)) {
+    const rows = [...shelf.rawIncome].sort((left, right) => left.year - right.year);
+    for (let index = 0; index < rows.length; index += 1) {
+      const current = rows[index];
+      const prior = rows[index - 1];
+      if (typeof current.grossOperatingLeverage === "number" || current.grossOperatingLeverage === null) continue;
+      const revenueChange = prior && current.revenue !== null && prior.revenue !== null ? current.revenue - prior.revenue : null;
+      const grossProfitChange = prior && current.grossProfit !== null && prior.grossProfit !== null ? current.grossProfit - prior.grossProfit : null;
+      current.grossOperatingLeverage = revenueChange === null || revenueChange === 0 || grossProfitChange === null
+        ? null
+        : (grossProfitChange / revenueChange) * 100;
+    }
+  }
+  if (!shelf.growthComparisons.grossOperatingLeverage) {
+    const distribution = (shelf.companyDeltas ?? [])
+      .filter((point) => point.grossOperatingLeverage !== null && Number.isFinite(point.grossOperatingLeverage))
+      .map((point) => ({ label: `Company · FY ${point.fromYear}–${point.toYear}`, value: point.grossOperatingLeverage! }));
+    const values = distribution.map((observation) => observation.value).sort((left, right) => left - right);
+    const middle = Math.floor(values.length / 2);
+    const median = values.length ? (values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2) : null;
+    const average = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+    const standardDeviation = values.length <= 1
+      ? (values.length ? 0 : null)
+      : Math.sqrt(values.reduce((total, value) => total + ((value - average!) ** 2), 0) / (values.length - 1));
+    const company: GrowthStatistics = {
+      median,
+      standardDeviation,
+      observations: values.length,
+      distribution,
+      startYear: null,
+      endYear: null,
+      startValue: null,
+      endValue: null,
+      totalChange: null,
+    };
+    const industryBucket: GrowthStatistics = {
+      median: null,
+      standardDeviation: null,
+      observations: 0,
+      distribution: [],
+      startYear: null,
+      endYear: null,
+      startValue: null,
+      endValue: null,
+      totalChange: null,
+    };
+    shelf.growthComparisons.grossOperatingLeverage = { company, industryBucket };
+  }
+  const growthMetrics: Array<{
+    comparison: keyof ResearchShelfAnalysis["growthComparisons"];
+    delta: "revenueChangePercent" | "grossProfitChangePercent" | "grossOperatingLeverage" | "operatingIncomeChangePercent";
+  }> = [
+    { comparison: "revenue", delta: "revenueChangePercent" },
+    { comparison: "grossProfit", delta: "grossProfitChangePercent" },
+    { comparison: "grossOperatingLeverage", delta: "grossOperatingLeverage" },
+    { comparison: "operatingIncome", delta: "operatingIncomeChangePercent" },
+  ];
+  for (const metric of growthMetrics) {
+    const comparison = shelf.growthComparisons[metric.comparison];
+    if (!Array.isArray(comparison.company.distribution)) {
+      comparison.company.distribution = shelf.companyDeltas
+        .filter((point) => point[metric.delta] !== null && Number.isFinite(point[metric.delta]))
+        .map((point) => ({ label: `Company · FY ${point.fromYear}–${point.toYear}`, value: point[metric.delta]! }));
+    }
+    if (!Array.isArray(comparison.industryBucket.distribution)) comparison.industryBucket.distribution = [];
+  }
+  const profitabilityMetrics: ProfitabilityMetricKey[] = ["grossMargin", "operatingMargin", "cogsRatio", "sgaRatio", "daRatio", "rdRatio"];
+  for (const metric of profitabilityMetrics) {
+    const companyStatistics = shelf.profitability.statistics[metric];
+    const industryStatistics = shelf.profitability.industryStatistics[metric];
+    if (!Array.isArray(companyStatistics.distribution)) {
+      companyStatistics.distribution = shelf.profitability.yearly
+        .filter((point) => point[metric] !== null && Number.isFinite(point[metric]))
+        .map((point) => ({ label: `Company · FY ${point.year}`, value: point[metric]! } satisfies DistributionObservation));
+    }
+    if (!Array.isArray(industryStatistics.distribution)) industryStatistics.distribution = [];
+  }
+  return shelf;
+}
+
+function normalizeResearchShelfContract(company: Company): Company {
+  const shelf = company.researchShelf;
+  const earningsFlowIsCurrent = Array.isArray(shelf?.earningsAndValuation?.earningsFlow)
+    && shelf.earningsAndValuation.earningsFlow.every((point) => {
+      const metrics = point?.metrics as Record<string, unknown> | undefined;
+      return metrics && requiredEarningsFlowMetrics.every((key) => {
+        const metric = metrics[key] as Record<string, unknown> | undefined;
+        return metric
+          && "companyValue" in metric
+          && "industryMedian" in metric
+          && "industryObservations" in metric
+          && "companyMarginPercent" in metric
+          && "industryMedianMarginPercent" in metric;
+      });
+    });
+  const cashFlowIsCurrent = Array.isArray(shelf?.cashFlow?.yearly)
+    && shelf.cashFlow.yearly.every((point) => {
+      const workingCapital = point?.workingCapital as unknown as Record<string, unknown> | undefined;
+      const workingCapitalPeriods = workingCapital
+        ? [workingCapital.previousYear, workingCapital.currentYear] as Array<Record<string, unknown> | undefined>
+        : [];
+      const groups = [
+        [point?.fcff as Record<string, unknown> | undefined, requiredFcffBridgeMetrics],
+        [point?.fcfe as Record<string, unknown> | undefined, requiredFcfeBridgeMetrics],
+      ] as const;
+      return "effectiveTaxRatePercent" in point
+        && "industryMedianEffectiveTaxRatePercent" in point
+        && workingCapital
+        && "netChangeInWorkingCapital" in workingCapital
+        && "cashImpact" in workingCapital
+        && "cashEffect" in workingCapital
+        && workingCapitalPeriods.length === 2
+        && workingCapitalPeriods.every((period) => period
+          && "currentAssets" in period
+          && "cashAndCashEquivalents" in period
+          && "netCurrentAssets" in period
+          && "currentLiabilities" in period
+          && "shortTermBorrowings" in period
+          && "currentPortionLongTermDebt" in period
+          && "otherInterestBearingCurrentDebt" in period
+          && "netCurrentLiabilities" in period
+          && "netOperatingWorkingCapital" in period)
+        && groups.every(([metrics, required]) => metrics && required.every((key) => {
+          const metric = metrics[key] as Record<string, unknown> | undefined;
+          return metric
+            && "companyValue" in metric
+            && "industryMedian" in metric
+            && "industryObservations" in metric
+            && "companyPercent" in metric
+            && "industryMedianPercent" in metric;
+        }));
+    });
+  if (
+    !shelf
+    || !shelf.growthComparisons
+    || !Array.isArray(shelf.companyDeltas)
+    || shelf.companyDeltas.some((item) => !("revenueChangePercent" in item) || !("grossProfitChangePercent" in item) || !("operatingIncomeChangePercent" in item))
+    || !shelf.industryDeltas
+    || !Array.isArray(shelf.industryDeltas.revenue)
+    || !Array.isArray(shelf.industryDeltas.grossProfit)
+    || !Array.isArray(shelf.industryDeltas.operatingIncome)
+    || [...shelf.industryDeltas.revenue, ...shelf.industryDeltas.grossProfit, ...shelf.industryDeltas.operatingIncome].some((item) => !("companyChangePercent" in item) || !("industryMedianChangePercent" in item))
+    || !Array.isArray(shelf.rawIncome)
+    || !shelf.profitability
+    || !shelf.profitability.statistics
+    || !shelf.profitability.industryStatistics
+    || !Array.isArray(shelf.profitability.yearly)
+    || shelf.profitability.yearly.some((item) => !("grossProfit" in item) || !("operatingIncome" in item) || !("cogs" in item) || !("sga" in item) || !("da" in item) || !("rd" in item))
+    || !shelf.profitability.industryComparisons
+    || !shelf.profitability.performanceBands
+    || !shelf.earningsAndValuation
+    || !Array.isArray(shelf.earningsAndValuation.earningsFlow)
+    || !earningsFlowIsCurrent
+    || !shelf.earningsAndValuation.valuation
+    || !shelf.earningsAndValuation.valuation.comparisons
+    || !cashFlowIsCurrent
+  ) {
+    throw new Error("TaRaSha Discover received an incompatible TaRaShaData.ai response. Refresh the page after deployment finishes, then pull the company again.");
+  }
+  if (!Array.isArray(shelf.industryConstituents)) shelf.industryConstituents = [];
+  if (typeof shelf.industryConstituentsCustomized !== "boolean") shelf.industryConstituentsCustomized = false;
+  backfillResearchDistributions(shelf);
+  return company;
+}
+
+export async function searchCompanyCatalog(query: string, country: "USA" | "India"): Promise<CatalogCompany[]> {
+  if (query.trim().length < 2) return [];
+  if (!liveDataEnabled) {
+    if (country === "India") return [];
+    const normalized = query.toLowerCase();
+    return demoCatalog.filter((company) => company.name.toLowerCase().includes(normalized) || company.ticker.toLowerCase().includes(normalized));
+  }
+  const result = await requestJson<{ companies: CatalogCompany[] }>(`/api/companies?query=${encodeURIComponent(query)}&country=${country}`);
+  return result.companies;
+}
+
+export async function pullCompanyResearch(catalog: CatalogCompany, fromYear: number, toYear: number): Promise<Company> {
+  if (toYear - fromYear + 1 > MAX_YEAR_RANGE) throw new Error(`Choose no more than ${MAX_YEAR_RANGE} years.`);
+  if (!liveDataEnabled) {
+    const demo = demoCompanies.find((company) => company.id === catalog.id);
+    if (!demo) throw new Error("Live TaRaShaData.ai coverage is not available in the preview.");
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    return { ...demo, dataMode: "illustrative", limitations: ["This is fictional preview data. Enable the TaRaShaData.ai API configuration for live filing-derived data."] };
+  }
+  if (catalog.country !== "USA" || !catalog.data_available) throw new Error("TaRaShaData.ai does not currently publish normalized coverage for this company.");
+  const params = new URLSearchParams({ companyId: catalog.id, fromYear: String(fromYear), toYear: String(toYear) });
+  return normalizeResearchShelfContract(await requestJson<Company>(`/api/data/company?${params}`));
+}
+
+export async function recalculateIndustryConstituents(company: Company, constituentIds?: string[]): Promise<Company> {
+  const shelf = company.researchShelf;
+  if (!liveDataEnabled || company.dataMode !== "tarasha-data" || !shelf) throw new Error("Industry constituent editing is available for live TaRaShaData.ai companies only.");
+  const updated = await requestJson<Company>("/api/data/company", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      companyId: company.id,
+      fromYear: shelf.fromYear,
+      toYear: shelf.toYear,
+      constituentIds: constituentIds ?? null,
+    }),
+  });
+  return normalizeResearchShelfContract(updated);
+}

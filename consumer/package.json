@@ -1,0 +1,33 @@
+{
+  "name": "tarasha-consumer",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "start": "node server.mjs",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "check": "npm run audit:data-source && npm run audit:market-data-cost && npm run test && npm run typecheck:worker && npm run build",
+    "audit:data-source": "node scripts/audit-data-source.mjs",
+    "audit:market-data-cost": "node scripts/audit-market-data-cost.mjs",
+    "typecheck:worker": "tsc -p tsconfig.worker.json",
+    "users:summary:local": "node scripts/local-user-summary.mjs",
+    "users:summary": "node scripts/user-summary.mjs"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "6.0.3",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "vite": "8.1.4"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260711.1",
+    "@types/node": "22.20.1",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}
