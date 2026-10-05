@@ -1,0 +1,276 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "TaRaSha latency regression",
+    "description": "Evidence-backed diagnosis of dashboard and bulk-upload latency observed in July 2026.",
+    "generatedAt": "2026-07-16T17:16:21Z",
+    "charts": [
+      {
+        "id": "dashboard_global_refresh_latency",
+        "title": "Combined-dashboard global refresh time",
+        "subtitle": "Mean PostgreSQL server execution per refresh statement; milliseconds, lower is better",
+        "showDescription": true,
+        "intent": "comparison",
+        "question": "How much server time does each whole-database refresh add to a combined-dashboard computation?",
+        "rationale": "A simple bar chart makes the four discrete refresh costs easy to compare in one report row.",
+        "comparisonContext": {
+          "baseline": "Each statement measured independently in pg_stat_statements",
+          "grain": "One whole-database refresh statement",
+          "unit": "milliseconds"
+        },
+        "type": "bar",
+        "dataset": "global_refresh_latency",
+        "sourceId": "postgres_runtime_stats",
+        "encodings": {
+          "x": {
+            "field": "refresh_operation",
+            "type": "nominal",
+            "label": "Operation"
+          },
+          "y": {
+            "field": "mean_server_ms",
+            "type": "quantitative",
+            "format": "number",
+            "label": "Mean server execution",
+            "unit": "ms"
+          },
+          "tooltip": [
+            {
+              "field": "mean_server_ms",
+              "type": "quantitative",
+              "label": "Mean server execution",
+              "unit": "ms"
+            },
+            {
+              "field": "calls",
+              "type": "quantitative",
+              "label": "Observed calls"
+            }
+          ]
+        },
+        "valueFormat": "number",
+        "unit": "ms",
+        "layout": "full",
+        "palette": {
+          "kind": "sequential"
+        },
+        "surface": {
+          "surface": "card"
+        }
+      }
+    ],
+    "sources": [
+      {
+        "id": "runtime_benchmark",
+        "label": "Workstation database latency benchmark — July 16, 2026",
+        "query": {
+          "engine": "Python 3 / SQLAlchemy",
+          "language": "python",
+          "executed_at": "2026-07-16T17:16:21Z",
+          "description": "Timed the configured database and a forced local SQLite connection with identical SELECT statements; also timed the 12 read functions used by the combined dashboard and SQLAlchemy metadata checks.",
+          "query": "For each database URL: time connection establishment; 12 repetitions of SELECT 1; five repetitions of SELECT 1 followed by COMMIT; five company-list reads; then call the 12 combined-dashboard annual-series readers for one company. Verify all 130 PostgreSQL metadata tables exist before timing metadata.create_all().",
+          "filters": [
+            "Owner workstation",
+            "Configured database selected by db_config.get_db_url()",
+            "Forced local comparison uses repository app.db",
+            "Median reported for repeated primitive operations"
+          ],
+          "metric_definitions": [
+            "Operation latency is wall-clock elapsed time measured with time.perf_counter().",
+            "The 12 dashboard reads are the annual-series retrieval calls used for one company before derived-metric write work."
+          ]
+        }
+      },
+      {
+        "id": "repository_history",
+        "label": "TaRaShaResearch Git history and source inspection",
+        "query": {
+          "engine": "Git and Python AST",
+          "language": "shell/python",
+          "executed_at": "2026-07-16T17:16:21Z",
+          "description": "Inspected commit history, current source, and AST call sites at HEAD ec05e8c while preserving the user's existing uncommitted changes.",
+          "query": "git log --since 2026-06-20; git show ec05e8c; inspect db_config.py, core_shared.py, db_session.py, core_backend.py, combined_dashboard.py, and data_upload.py; count persistence calls inside ingest_financials_bytes with Python ast.",
+          "filters": [
+            "Regression comparison window: approximately two weeks before July 16, 2026",
+            "Committed changes analyzed separately from current uncommitted changes"
+          ],
+          "metric_definitions": [
+            "Persistence call site means a direct upsert_* or compute_and_store_* invocation in ingest_financials_bytes.",
+            "Whole-database refresh means an INSERT ... SELECT ... ON CONFLICT statement without a selected-company predicate."
+          ]
+        }
+      },
+      {
+        "id": "postgres_runtime_stats",
+        "label": "Shared PostgreSQL runtime statistics — July 16, 2026",
+        "query": {
+          "engine": "PostgreSQL 17",
+          "language": "sql",
+          "executed_at": "2026-07-16T17:16:21Z",
+          "description": "Read-only database health and statement statistics from the configured shared PostgreSQL database.",
+          "sql": "SELECT calls, mean_exec_time AS mean_server_ms, total_exec_time AS total_server_ms, CASE WHEN query ILIKE 'INSERT INTO cost_of_equity_annual%' THEN 'Cost of equity' WHEN query ILIKE 'INSERT INTO pre_tax_cost_of_debt_annual%' THEN 'Pre-tax debt cost' WHEN query ILIKE 'WITH tax_source%' THEN 'WACC' WHEN query ILIKE 'INSERT INTO roic_wacc_spread_annual%' THEN 'ROIC-WACC spread' END AS refresh_operation FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) AND calls = 3 AND (query ILIKE 'INSERT INTO cost_of_equity_annual%' OR query ILIKE 'INSERT INTO pre_tax_cost_of_debt_annual%' OR query ILIKE 'WITH tax_source%' OR query ILIKE 'INSERT INTO roic_wacc_spread_annual%') ORDER BY mean_exec_time;",
+          "tables_used": [
+            "pg_catalog.pg_stat_activity",
+            "pg_catalog.pg_stat_database",
+            "public.pg_stat_statements"
+          ],
+          "filters": [
+            "Current database only",
+            "Statement samples restricted to TaRaSha dashboard and upload tables"
+          ],
+          "metric_definitions": [
+            "Cache hit rate = blks_hit / (blks_hit + blks_read).",
+            "Mean server time excludes client/network round-trip time."
+          ]
+        }
+      }
+    ],
+    "blocks": [
+      {
+        "id": "report_title",
+        "type": "markdown",
+        "body": "# TaRaSha latency regression",
+        "layout": "full"
+      },
+      {
+        "id": "executive_summary",
+        "type": "markdown",
+        "body": "## Executive Summary\n\n- **The primary cause is the July 12 database-route change, not a suddenly slow database server.** The owner workstation now defaults to shared PostgreSQL in Canada Central instead of the local SQLite file. The application was written around local-database latency and still makes many small serial calls.\n\n- **Bulk upload multiplies the network penalty.** One financial file has 93 direct persistence/derived call sites: 54 annual upserts, 35 TTM upserts, one quarterly wrapper that expands to six metric upserts, one company upsert, and two derived calculations. With populated data, this can approach roughly 98 separate commits plus hundreds of per-year existence checks for one company.\n\n- **The combined dashboard performs expensive write work while loading scores.** It runs four whole-database refreshes on every score computation and then repeats read/derive/write work per selected company. The four global refresh statements currently total about 3.67 seconds of server execution before network and per-company work.\n\n- **Confidence is high for the owner-workstation symptom.** Live timings, source paths, commit timing, and database statistics all align. Azure remains configured to fall back to SQLite unless `TARASHA_DB_URL` is explicitly set, so an Azure-only symptom would need separate runtime confirmation.",
+        "layout": "full"
+      },
+      {
+        "id": "cutover_finding",
+        "type": "markdown",
+        "body": "## The shared-database cutover exposed a local-first access pattern\n\n**Commit `ec05e8c` changed the default database on the owner's Mac on July 12, squarely inside the reported regression window.** Before that commit, `get_db_url()` fell back directly to the repository SQLite file. It now reads a PostgreSQL URL from macOS Keychain and routes normal local launches to the shared Canada Central database.\n\nThe code still assumes that each database interaction is nearly free. In the live benchmark, `SELECT 1` took 38.7 ms on configured PostgreSQL versus 0.03 ms on forced local SQLite; a select plus commit took 109.7 ms versus 0.03 ms. The same 12 dashboard read calls took 1.97 seconds remotely versus 11.2 ms locally. This is the mechanism that converts formerly imperceptible call volume into visible latency.",
+        "layout": "full",
+        "sourceId": "repository_history"
+      },
+      {
+        "id": "latency_chart_context",
+        "type": "markdown",
+        "body": "**The combined dashboard spends about 3.67 seconds in four whole-database refresh statements before network commit overhead and per-company work.** Each bar is the mean PostgreSQL server execution time recorded across three observed calls. These are not estimates: they are the normalized statements executed by the dashboard's refresh functions.",
+        "layout": "full",
+        "sourceId": "postgres_runtime_stats"
+      },
+      {
+        "id": "latency_chart_block",
+        "type": "chart",
+        "chartId": "dashboard_global_refresh_latency",
+        "layout": "full"
+      },
+      {
+        "id": "upload_finding",
+        "type": "markdown",
+        "body": "## Bulk upload is dominated by chatty transactions\n\n**The bulk path processes companies serially and commits metric families independently.** `ingest_financials_bytes()` contains 93 direct persistence or derived call sites. The 54 annual upserts use an ORM `SELECT ... WHERE company_id AND fiscal_year` for each historical year, then commit that metric family. The quarterly wrapper adds six more metric upserts, each checking quarters individually and committing separately. Bulk batches contain up to 20 companies, but batching is only a UI stop point; it is not one set-based database transaction.\n\nFor a fully populated 16-year file, the 54 annual call sites alone can imply up to 864 year-level existence checks. At the measured 38.7 ms primitive round trip, that is about 33 seconds of network wait before TTM writes, quarterly checks, commits, derivations, Excel parsing, and bucket-dependent calculations. The exact count varies with missing fields and history length, so this is a workload model rather than a measured end-to-end upload SLA.\n\n**The July 7 quarterly feature is a secondary amplifier, not the root cause.** It added only one direct upload call site, but that wrapper expands to six per-quarter upserts. Those calls were cheap on SQLite and became material only after the remote route took effect.",
+        "layout": "full",
+        "sourceId": "repository_history"
+      },
+      {
+        "id": "dashboard_finding",
+        "type": "markdown",
+        "body": "## Dashboard requests recompute data they should only read\n\n**The combined dashboard's `Compute Overall Scores` action starts with four whole-database upserts** for cost of equity, pre-tax debt cost, WACC, and ROIC–WACC spread. Live `pg_stat_statements` shows mean server times of approximately 0.95 s, 0.87 s, 1.11 s, and 0.74 s respectively. These refresh every company's derived rows even if the user selected one company.\n\nThe dashboard then loops over each selected company, performs at least 12 annual-series reads, and calls additional derived-metric functions that write and commit again. Because `read_sql_df()` hands pandas the Engine rather than the active Session connection, each read can also incur connection checkout and `pool_pre_ping` overhead. This explains why the 12-read sequence measured 1.97 seconds even though a warmed trivial query measured 38.7 ms.\n\n**Cold loading has a separate 5.7-second tax.** The first `get_db()` call creates one shared Session and runs `metadata.create_all()` against all 130 tables. All 130 tables already existed, yet SQLAlchemy still issued 130 catalog checks across the network.",
+        "layout": "full"
+      },
+      {
+        "id": "rejected_causes",
+        "type": "markdown",
+        "body": "## The database server itself is not the primary bottleneck\n\n**The live database looked healthy during investigation.** There were no idle-in-transaction sessions, no waiting active query, no conflicts, and no deadlocks; the database cache-hit rate was 99.97%. High-volume individual inserts into representative annual and quarterly tables averaged about 0.03 ms of server execution. That gap between sub-millisecond server work and tens of milliseconds of client wall time is consistent with round-trip latency, not CPU, storage, or lock saturation.\n\nDatabase growth is an amplifier but not the timing trigger. The shared database contains 3,398 companies and more than 535k rows across just ten dashboard-related annual tables, so whole-database refreshes are inherently wasteful. However, the abrupt onset aligns more closely with the July 12 route change than with gradual row growth.",
+        "layout": "full",
+        "sourceId": "postgres_runtime_stats"
+      },
+      {
+        "id": "next_steps",
+        "type": "markdown",
+        "body": "## Recommended next steps\n\n1. **Remove writes from dashboard request paths.** Run the four global refreshes only after their source inputs change, or in a controlled background/admin job. Dashboard actions should read already-materialized values.\n\n2. **Rewrite one upload as one transaction per company.** Parse the workbook first, then use set-based `INSERT ... ON CONFLICT DO UPDATE` batches for all annual, TTM, and quarterly rows. Avoid ORM existence checks per year and avoid committing every metric family.\n\n3. **Batch dashboard reads by selected company IDs.** Fetch each needed metric family for all selected companies in a small number of queries, or expose one consolidated read model/materialized view. Cache stable reference data and score inputs.\n\n4. **Cache the Engine, not a global Session.** Create a short-lived Session per Streamlit run or operation. A single process-wide Session is not thread-safe and lets a long upload interfere with concurrent dashboard work.\n\n5. **Stop running schema creation in the user request path.** Use Alembic during deployment and replace `metadata.create_all()` with a cheap migration-version check.\n\n6. **Co-locate compute and data where practical.** If the local desktop must remain the writer, the batching changes are essential. If the Research app can run near Canada Central, network round trips shrink further.\n\nThe highest-impact implementation order is 1 → 2 → 5 → 3 → 4; co-location is complementary, not a substitute for fixing call volume.",
+        "layout": "full"
+      },
+      {
+        "id": "further_questions",
+        "type": "markdown",
+        "body": "## Further questions\n\n- Is the reported dashboard delay specifically the Combined Dashboard score computation, the first page load, or both? The code supports both mechanisms, but their fixes differ.\n- Does the same regression occur in Azure, and is `TARASHA_DB_URL` set there? The documented Azure fallback remains SQLite.\n- What is the typical workbook history length and end-to-end upload duration per company? Adding phase timers would convert the current workload model into an exact before/after SLA.\n- Are dashboard users active while bulk upload runs? If so, the global shared Session raises the priority of session isolation.",
+        "layout": "full"
+      },
+      {
+        "id": "caveats",
+        "type": "markdown",
+        "body": "## Caveats and assumptions\n\n- The diagnosis used the current owner-workstation database route and read-only runtime statistics. It did not mutate production data or run an end-to-end upload.\n- The modeled upload duration assumes a well-populated 16-year file; missing fields, shorter histories, connection reuse, and driver batching will change the total. The call structure and round-trip mechanism are verified.\n- Current uncommitted workspace changes were preserved and reviewed separately. They do not alter the database-routing logic; the uncommitted `data_upload.py` change only normalizes CapEx sign.\n- `pg_stat_statements` is cumulative and includes migration and consumer activity. It is used here for server execution time and call-shape evidence, not to claim a precise per-user workload share.",
+        "layout": "full"
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-07-16T17:16:21Z",
+    "status": "ready",
+    "datasets": {
+      "global_refresh_latency": [
+        {
+          "refresh_operation": "ROIC–WACC spread",
+          "mean_server_ms": 743.6,
+          "calls": 3,
+          "total_server_ms": 2231
+        },
+        {
+          "refresh_operation": "Pre-tax debt cost",
+          "mean_server_ms": 872.3,
+          "calls": 3,
+          "total_server_ms": 2617
+        },
+        {
+          "refresh_operation": "Cost of equity",
+          "mean_server_ms": 945.0,
+          "calls": 3,
+          "total_server_ms": 2835
+        },
+        {
+          "refresh_operation": "WACC",
+          "mean_server_ms": 1109.0,
+          "calls": 3,
+          "total_server_ms": 3327
+        }
+      ]
+    }
+  },
+  "sources": [
+    {
+      "id": "runtime_benchmark",
+      "label": "Workstation database latency benchmark — July 16, 2026",
+      "query": {
+        "engine": "Python 3 / SQLAlchemy",
+        "language": "python",
+        "executed_at": "2026-07-16T17:16:21Z",
+        "description": "Timed the configured database and a forced local SQLite connection with identical SELECT statements; also timed the 12 read functions used by the combined dashboard and SQLAlchemy metadata checks.",
+        "query": "For each database URL: time connection establishment; 12 repetitions of SELECT 1; five repetitions of SELECT 1 followed by COMMIT; five company-list reads; then call the 12 combined-dashboard annual-series readers for one company. Verify all 130 PostgreSQL metadata tables exist before timing metadata.create_all()."
+      }
+    },
+    {
+      "id": "repository_history",
+      "label": "TaRaShaResearch Git history and source inspection",
+      "query": {
+        "engine": "Git and Python AST",
+        "language": "shell/python",
+        "executed_at": "2026-07-16T17:16:21Z",
+        "description": "Inspected commit history, current source, and AST call sites at HEAD ec05e8c while preserving the user's existing uncommitted changes.",
+        "query": "git log --since 2026-06-20; git show ec05e8c; inspect db_config.py, core_shared.py, db_session.py, core_backend.py, combined_dashboard.py, and data_upload.py; count persistence calls inside ingest_financials_bytes with Python ast."
+      }
+    },
+    {
+      "id": "postgres_runtime_stats",
+      "label": "Shared PostgreSQL runtime statistics — July 16, 2026",
+      "query": {
+        "engine": "PostgreSQL 17",
+        "language": "sql",
+        "executed_at": "2026-07-16T17:16:21Z",
+        "description": "Read-only database health and statement statistics from the configured shared PostgreSQL database.",
+        "sql": "SELECT calls, mean_exec_time AS mean_server_ms, total_exec_time AS total_server_ms, CASE WHEN query ILIKE 'INSERT INTO cost_of_equity_annual%' THEN 'Cost of equity' WHEN query ILIKE 'INSERT INTO pre_tax_cost_of_debt_annual%' THEN 'Pre-tax debt cost' WHEN query ILIKE 'WITH tax_source%' THEN 'WACC' WHEN query ILIKE 'INSERT INTO roic_wacc_spread_annual%' THEN 'ROIC-WACC spread' END AS refresh_operation FROM pg_stat_statements WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) AND calls = 3 AND (query ILIKE 'INSERT INTO cost_of_equity_annual%' OR query ILIKE 'INSERT INTO pre_tax_cost_of_debt_annual%' OR query ILIKE 'WITH tax_source%' OR query ILIKE 'INSERT INTO roic_wacc_spread_annual%') ORDER BY mean_exec_time;",
+        "tables_used": [
+          "pg_catalog.pg_stat_activity",
+          "pg_catalog.pg_stat_database",
+          "public.pg_stat_statements"
+        ]
+      }
+    }
+  ]
+}

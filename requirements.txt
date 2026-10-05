@@ -1,0 +1,10 @@
+streamlit==1.50.0
+pandas
+numpy
+openpyxl
+pymupdf
+SQLAlchemy
+alembic
+psycopg[binary]
+watchdog
+yfinance

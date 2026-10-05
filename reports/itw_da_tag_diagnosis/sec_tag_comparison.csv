@@ -1,0 +1,5 @@
+year,component,value_m,value_usd,total_m,taxonomy,concept,native_source,mapped
+2015,Depreciation,244,244000000,475,us-gaap,Depreciation,SEC Company Facts JSON,true
+2015,Amortization,231,231000000,475,us-gaap,AmortizationOfIntangibleAssets,SEC Company Facts JSON,true
+2016,Depreciation,246,246000000,470,us-gaap,Depreciation,SEC Company Facts JSON,true
+2016,Amortization and impairment,224,224000000,470,itw,AmortizationandImpairmentofIntangibleAssets,10-K XBRL instance only,false

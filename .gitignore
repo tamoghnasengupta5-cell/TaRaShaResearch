@@ -33,3 +33,11 @@ consumer/.wrangler/
 
 # Supabase CLI machine-specific link state
 consumer/supabase/.temp/
+
+
+# Research local workspaces and machine-specific links
+Thumbs.db
+/Bulk_Upload_Financials/
+/supabase/.temp/
+/.agents/
+app.py.bak

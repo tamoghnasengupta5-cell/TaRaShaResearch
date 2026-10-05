@@ -1,0 +1,1154 @@
+{
+  "source": "Read-only TaRaShaResearch PostgreSQL snapshot used in the Issue #2 workbook",
+  "captured_at": "2026-10-05 02:32:06.614525+00:00",
+  "weights": {
+    "growth_weight_factors": [
+      {
+        "factor": "Accumulated Equity Growth",
+        "weight": 12.0
+      },
+      {
+        "factor": "ROCE",
+        "weight": 15.0
+      },
+      {
+        "factor": "Net Income Growth",
+        "weight": 20.0
+      },
+      {
+        "factor": "ROE",
+        "weight": 20.0
+      },
+      {
+        "factor": "Revenue Growth",
+        "weight": 15.0
+      },
+      {
+        "factor": "Operating Margin",
+        "weight": 20.0
+      },
+      {
+        "factor": "YoY Operating Margin Growth",
+        "weight": 20.0
+      },
+      {
+        "factor": "NOPAT Growth",
+        "weight": 15.0
+      },
+      {
+        "factor": "FCFF Growth",
+        "weight": 15.0
+      },
+      {
+        "factor": "Earnings Power Change %",
+        "weight": 20.0
+      },
+      {
+        "factor": "Change in EP Delta",
+        "weight": 20.0
+      },
+      {
+        "factor": "Spread",
+        "weight": 20.0
+      },
+      {
+        "factor": "Pretax Income Growth",
+        "weight": 12.0
+      }
+    ],
+    "stddev_weight_factors": [
+      {
+        "factor": "Revenue Growth",
+        "weight": 20.0
+      },
+      {
+        "factor": "Net Income  Growth",
+        "weight": 20.0
+      },
+      {
+        "factor": "Operating Margin",
+        "weight": 20.0
+      },
+      {
+        "factor": "ROE",
+        "weight": 20.0
+      },
+      {
+        "factor": "ROCE",
+        "weight": 20.0
+      },
+      {
+        "factor": "Pretax Income Growth",
+        "weight": 15.0
+      },
+      {
+        "factor": "Accumulated Equity Growth",
+        "weight": 15.0
+      },
+      {
+        "factor": "NOPAT Growth",
+        "weight": 15.0
+      },
+      {
+        "factor": "YoY Operating Margin Growth",
+        "weight": 12.0
+      },
+      {
+        "factor": "Earnings Power Change %",
+        "weight": 10.0
+      },
+      {
+        "factor": "Change in EP Delta",
+        "weight": 10.0
+      },
+      {
+        "factor": "Spread",
+        "weight": 10.0
+      },
+      {
+        "factor": "FCFF Growth",
+        "weight": 10.0
+      }
+    ]
+  },
+  "companies": [
+    {
+      "name": "Vodafone Idea Ltd",
+      "ticker": "IDEA",
+      "category": "India AI Stack - Digital Infrastructure & AI Services",
+      "series": {
+        "accumulated_profit": [
+          {
+            "year": 2020,
+            "accumulated_profit": -1604738.0
+          },
+          {
+            "year": 2021,
+            "accumulated_profit": -1265888.0
+          },
+          {
+            "year": 2022,
+            "accumulated_profit": -1548253.0
+          },
+          {
+            "year": 2023,
+            "accumulated_profit": -2327854.0
+          },
+          {
+            "year": 2024,
+            "accumulated_profit": -2144370.0
+          },
+          {
+            "year": 2025,
+            "accumulated_profit": -2543302.0
+          },
+          {
+            "year": 2026,
+            "accumulated_profit": -357580.0
+          }
+        ],
+        "roe": [
+          {
+            "year": 2020,
+            "roe": -2.25187648499498
+          },
+          {
+            "year": 2021,
+            "roe": 2.74329960524806
+          },
+          {
+            "year": 2022,
+            "roe": 0.563820953202226
+          },
+          {
+            "year": 2023,
+            "roe": 0.429874732163619
+          },
+          {
+            "year": 2024,
+            "roe": 0.349959305624562
+          },
+          {
+            "year": 2025,
+            "roe": 0.313873239840217
+          },
+          {
+            "year": 2026,
+            "roe": -0.705249523464765
+          }
+        ],
+        "roce": [
+          {
+            "year": 2020,
+            "roce": 0.107561047443638
+          },
+          {
+            "year": 2021,
+            "roce": 0.134465643148669
+          },
+          {
+            "year": 2022,
+            "roce": 0.122955121858347
+          },
+          {
+            "year": 2023,
+            "roce": 0.124075380414915
+          },
+          {
+            "year": 2024,
+            "roce": 0.127230502121
+          },
+          {
+            "year": 2025,
+            "roce": 0.136107511613491
+          },
+          {
+            "year": 2026,
+            "roce": -0.0376428707504322
+          }
+        ],
+        "interest_load_pct": [
+          {
+            "year": 2020,
+            "interest_load_pct": 84.751231108847
+          },
+          {
+            "year": 2021,
+            "interest_load_pct": 99.5020268284433
+          },
+          {
+            "year": 2022,
+            "interest_load_pct": 121.636049236924
+          },
+          {
+            "year": 2023,
+            "interest_load_pct": 127.003573545406
+          },
+          {
+            "year": 2024,
+            "interest_load_pct": 145.406135704555
+          },
+          {
+            "year": 2025,
+            "interest_load_pct": 126.831879738084
+          },
+          {
+            "year": 2026,
+            "interest_load_pct": -773.974751624711
+          }
+        ],
+        "operating_income": [
+          {
+            "year": 2020,
+            "operating_income": 164892.0
+          },
+          {
+            "year": 2021,
+            "operating_income": 180331.0
+          },
+          {
+            "year": 2022,
+            "operating_income": 165973.0
+          },
+          {
+            "year": 2023,
+            "operating_income": 173777.0
+          },
+          {
+            "year": 2024,
+            "operating_income": 176899.0
+          },
+          {
+            "year": 2025,
+            "operating_income": 185861.0
+          },
+          {
+            "year": 2026,
+            "operating_income": -26774.0
+          }
+        ],
+        "interest_expense": [
+          {
+            "year": 2020,
+            "interest_expense": 139748.0
+          },
+          {
+            "year": 2021,
+            "interest_expense": 179433.0
+          },
+          {
+            "year": 2022,
+            "interest_expense": 201883.0
+          },
+          {
+            "year": 2023,
+            "interest_expense": 220703.0
+          },
+          {
+            "year": 2024,
+            "interest_expense": 257222.0
+          },
+          {
+            "year": 2025,
+            "interest_expense": 235731.0
+          },
+          {
+            "year": 2026,
+            "interest_expense": 207224.0
+          }
+        ],
+        "revenue": [
+          {
+            "year": 2020,
+            "revenue": 449167.0
+          },
+          {
+            "year": 2021,
+            "revenue": 419382.0
+          },
+          {
+            "year": 2022,
+            "revenue": 384984.0
+          },
+          {
+            "year": 2023,
+            "revenue": 421426.0
+          },
+          {
+            "year": 2024,
+            "revenue": 425727.0
+          },
+          {
+            "year": 2025,
+            "revenue": 434557.0
+          },
+          {
+            "year": 2026,
+            "revenue": 455136.0
+          }
+        ],
+        "pretax_income": [
+          {
+            "year": 2020,
+            "pretax_income": -617970.0
+          },
+          {
+            "year": 2021,
+            "pretax_income": -442534.0
+          },
+          {
+            "year": 2022,
+            "pretax_income": -282341.0
+          },
+          {
+            "year": 2023,
+            "pretax_income": -292976.0
+          },
+          {
+            "year": 2024,
+            "pretax_income": -304098.0
+          },
+          {
+            "year": 2025,
+            "pretax_income": -273676.0
+          },
+          {
+            "year": 2026,
+            "pretax_income": 374117.0
+          }
+        ],
+        "net_income": [
+          {
+            "year": 2020,
+            "net_income": -738781.0
+          },
+          {
+            "year": 2021,
+            "net_income": -442331.0
+          },
+          {
+            "year": 2022,
+            "net_income": -282454.0
+          },
+          {
+            "year": 2023,
+            "net_income": -293011.0
+          },
+          {
+            "year": 2024,
+            "net_income": -312384.0
+          },
+          {
+            "year": 2025,
+            "net_income": -273834.0
+          },
+          {
+            "year": 2026,
+            "net_income": 374058.0
+          }
+        ],
+        "nopat": [
+          {
+            "year": 2020,
+            "nopat": 197127.816321181
+          },
+          {
+            "year": 2021,
+            "nopat": 180248.278236249
+          },
+          {
+            "year": 2022,
+            "nopat": 166039.426586999
+          },
+          {
+            "year": 2023,
+            "nopat": 173797.760045191
+          },
+          {
+            "year": 2024,
+            "nopat": 181719.107708699
+          },
+          {
+            "year": 2025,
+            "nopat": 185968.302204066
+          },
+          {
+            "year": 2026,
+            "nopat": -26769.71616
+          }
+        ],
+        "margin": [
+          {
+            "year": 2020,
+            "margin": 0.36711
+          },
+          {
+            "year": 2021,
+            "margin": 0.42999
+          },
+          {
+            "year": 2022,
+            "margin": 0.43112
+          },
+          {
+            "year": 2023,
+            "margin": 0.41235
+          },
+          {
+            "year": 2024,
+            "margin": 0.41552
+          },
+          {
+            "year": 2025,
+            "margin": 0.4277
+          },
+          {
+            "year": 2026,
+            "margin": -0.05883
+          }
+        ],
+        "fcff": [
+          {
+            "year": 2020,
+            "fcff": 766871.816321181
+          },
+          {
+            "year": 2021,
+            "fcff": 32863.278236249
+          },
+          {
+            "year": 2022,
+            "fcff": 351050.426586999
+          },
+          {
+            "year": 2023,
+            "fcff": 387355.760045191
+          },
+          {
+            "year": 2024,
+            "fcff": 411391.107708699
+          },
+          {
+            "year": 2025,
+            "fcff": 112550.302204066
+          },
+          {
+            "year": 2026,
+            "fcff": -121295.71616
+          }
+        ],
+        "spread_pct": [
+          {
+            "year": 2020,
+            "spread_pct": -5.32212206448852
+          },
+          {
+            "year": 2021,
+            "spread_pct": -2.44807339700044
+          },
+          {
+            "year": 2022,
+            "spread_pct": -3.72062343630851
+          },
+          {
+            "year": 2023,
+            "spread_pct": -8.00861893667039
+          },
+          {
+            "year": 2024,
+            "spread_pct": -5.81021404069175
+          },
+          {
+            "year": 2025,
+            "spread_pct": -4.54776417429681
+          },
+          {
+            "year": 2026,
+            "spread_pct": -11.0835716455894
+          }
+        ]
+      },
+      "audit": {
+        "BS": {
+          "G": 17.483025186868193,
+          "V": 69.74827939662924,
+          "growth_pairs": [
+            [
+              -5.360791507390953,
+              12.0
+            ],
+            [
+              34.9959305624562,
+              20.0
+            ],
+            [
+              12.4075380414915,
+              15.0
+            ]
+          ],
+          "sd_pairs": [
+            [
+              47.28518296553605,
+              15.0
+            ],
+            [
+              150.11072596783401,
+              20.0
+            ],
+            [
+              6.233155148744374,
+              20.0
+            ]
+          ],
+          "start": 2026,
+          "end": 2020
+        },
+        "PL": {
+          "G": 15.08027025938944,
+          "V": 49.1253243139034,
+          "growth_pairs": [
+            [
+              1.5473408138618379,
+              15.0
+            ],
+            [
+              19.196546120333156,
+              12.0
+            ],
+            [
+              24.242390264626007,
+              20.0
+            ],
+            [
+              -2.7723011047172297,
+              15.0
+            ],
+            [
+              41.552,
+              20.0
+            ],
+            [
+              0.5157806042017927,
+              20.0
+            ]
+          ],
+          "sd_pairs": [
+            [
+              6.7469576317355076,
+              20.0
+            ],
+            [
+              92.6249454587145,
+              15.0
+            ],
+            [
+              92.28559296230755,
+              20.0
+            ],
+            [
+              46.68777572831686,
+              15.0
+            ],
+            [
+              18.006558376642342,
+              20.0
+            ],
+            [
+              48.359173566580665,
+              12.0
+            ]
+          ],
+          "start": 2026,
+          "end": 2020
+        },
+        "FS": {
+          "G": -17.27761671847241,
+          "V": 217.4837843513385,
+          "growth_pairs": [
+            [
+              -33.21827625711759,
+              15.0
+            ],
+            [
+              -5.32212206448852,
+              20.0
+            ]
+          ],
+          "sd_pairs": [
+            [
+              432.076971831629,
+              10.0
+            ],
+            [
+              2.890596871048012,
+              10.0
+            ]
+          ],
+          "start": 2026,
+          "end": 2020
+        }
+      },
+      "interest_penalty": 0.5591448604337843,
+      "original_debt_adjusted_total": -0.0902572581009023
+    },
+    {
+      "name": "Sterlite Technologies Ltd",
+      "ticker": "STLTECH",
+      "category": "India AI Stack - Digital Infrastructure & AI Services",
+      "series": {
+        "accumulated_profit": [
+          {
+            "year": 2020,
+            "accumulated_profit": 17876.3
+          },
+          {
+            "year": 2021,
+            "accumulated_profit": 18932.3
+          },
+          {
+            "year": 2022,
+            "accumulated_profit": 18517.4
+          },
+          {
+            "year": 2023,
+            "accumulated_profit": 19770.0
+          },
+          {
+            "year": 2024,
+            "accumulated_profit": 19010.0
+          },
+          {
+            "year": 2025,
+            "accumulated_profit": 8890.0
+          },
+          {
+            "year": 2026,
+            "accumulated_profit": 22680.0
+          }
+        ],
+        "roe": [
+          {
+            "year": 2020,
+            "roe": 0.238466865251657
+          },
+          {
+            "year": 2021,
+            "roe": 0.141007429930103
+          },
+          {
+            "year": 2022,
+            "roe": 0.0304253463418592
+          },
+          {
+            "year": 2023,
+            "roe": 0.0696693669722731
+          },
+          {
+            "year": 2024,
+            "roe": -0.0247933884297521
+          },
+          {
+            "year": 2025,
+            "roe": -0.0613007724894094
+          },
+          {
+            "year": 2026,
+            "roe": 0.114138093001409
+          }
+        ],
+        "roce": [
+          {
+            "year": 2020,
+            "roce": 0.266171197645054
+          },
+          {
+            "year": 2021,
+            "roce": 0.158725659019696
+          },
+          {
+            "year": 2022,
+            "roce": 0.0983096506849409
+          },
+          {
+            "year": 2023,
+            "roce": 0.191261326256664
+          },
+          {
+            "year": 2024,
+            "roce": 0.0592318371124479
+          },
+          {
+            "year": 2025,
+            "roce": 0.0447470817120623
+          },
+          {
+            "year": 2026,
+            "roce": 0.348027842227378
+          }
+        ],
+        "interest_load_pct": [
+          {
+            "year": 2020,
+            "interest_load_pct": 24.7683771126044
+          },
+          {
+            "year": 2021,
+            "interest_load_pct": 34.0762273901809
+          },
+          {
+            "year": 2022,
+            "interest_load_pct": 65.3631284916201
+          },
+          {
+            "year": 2023,
+            "interest_load_pct": 44.5588235294118
+          },
+          {
+            "year": 2024,
+            "interest_load_pct": 147.916666666667
+          },
+          {
+            "year": 2025,
+            "interest_load_pct": 169.565217391304
+          },
+          {
+            "year": 2026,
+            "interest_load_pct": 43.6190476190476
+          }
+        ],
+        "operating_income": [
+          {
+            "year": 2020,
+            "operating_income": 7857.6
+          },
+          {
+            "year": 2021,
+            "operating_income": 5263.2
+          },
+          {
+            "year": 2022,
+            "operating_income": 3580.0
+          },
+          {
+            "year": 2023,
+            "operating_income": 6800.0
+          },
+          {
+            "year": 2024,
+            "operating_income": 1920.0
+          },
+          {
+            "year": 2025,
+            "operating_income": 1380.0
+          },
+          {
+            "year": 2026,
+            "operating_income": 5250.0
+          }
+        ],
+        "interest_expense": [
+          {
+            "year": 2020,
+            "interest_expense": 1946.2
+          },
+          {
+            "year": 2021,
+            "interest_expense": 1793.5
+          },
+          {
+            "year": 2022,
+            "interest_expense": 2340.0
+          },
+          {
+            "year": 2023,
+            "interest_expense": 3030.0
+          },
+          {
+            "year": 2024,
+            "interest_expense": 2840.0
+          },
+          {
+            "year": 2025,
+            "interest_expense": 2340.0
+          },
+          {
+            "year": 2026,
+            "interest_expense": 2290.0
+          }
+        ],
+        "revenue": [
+          {
+            "year": 2020,
+            "revenue": 50769.5
+          },
+          {
+            "year": 2021,
+            "revenue": 47750.8
+          },
+          {
+            "year": 2022,
+            "revenue": 53460.0
+          },
+          {
+            "year": 2023,
+            "revenue": 67900.0
+          },
+          {
+            "year": 2024,
+            "revenue": 40000.0
+          },
+          {
+            "year": 2025,
+            "revenue": 38710.0
+          },
+          {
+            "year": 2026,
+            "revenue": 56420.0
+          }
+        ],
+        "pretax_income": [
+          {
+            "year": 2020,
+            "pretax_income": 5416.0
+          },
+          {
+            "year": 2021,
+            "pretax_income": 3802.2
+          },
+          {
+            "year": 2022,
+            "pretax_income": 1990.0
+          },
+          {
+            "year": 2023,
+            "pretax_income": 3150.0
+          },
+          {
+            "year": 2024,
+            "pretax_income": -760.0
+          },
+          {
+            "year": 2025,
+            "pretax_income": -1050.0
+          },
+          {
+            "year": 2026,
+            "pretax_income": 3510.0
+          }
+        ],
+        "net_income": [
+          {
+            "year": 2020,
+            "net_income": 4339.0
+          },
+          {
+            "year": 2021,
+            "net_income": 2754.7
+          },
+          {
+            "year": 2022,
+            "net_income": 600.0
+          },
+          {
+            "year": 2023,
+            "net_income": 1410.0
+          },
+          {
+            "year": 2024,
+            "net_income": -510.0
+          },
+          {
+            "year": 2025,
+            "net_income": -1230.0
+          },
+          {
+            "year": 2026,
+            "net_income": 2430.0
+          }
+        ],
+        "nopat": [
+          {
+            "year": 2020,
+            "nopat": 6277.986672
+          },
+          {
+            "year": 2021,
+            "nopat": 3722.92452
+          },
+          {
+            "year": 2022,
+            "nopat": 2644.5102
+          },
+          {
+            "year": 2023,
+            "nopat": 4986.644
+          },
+          {
+            "year": 2024,
+            "nopat": 1793.68421052632
+          },
+          {
+            "year": 2025,
+            "nopat": 946.285714285714
+          },
+          {
+            "year": 2026,
+            "nopat": 3634.6275
+          }
+        ],
+        "margin": [
+          {
+            "year": 2020,
+            "margin": 0.15477
+          },
+          {
+            "year": 2021,
+            "margin": 0.11022
+          },
+          {
+            "year": 2022,
+            "margin": 0.06697
+          },
+          {
+            "year": 2023,
+            "margin": 0.10015
+          },
+          {
+            "year": 2024,
+            "margin": 0.048
+          },
+          {
+            "year": 2025,
+            "margin": 0.03565
+          },
+          {
+            "year": 2026,
+            "margin": 0.09305
+          }
+        ],
+        "fcff": [
+          {
+            "year": 2020,
+            "fcff": 3168.68667199999
+          },
+          {
+            "year": 2021,
+            "fcff": -1622.87547999999
+          },
+          {
+            "year": 2022,
+            "fcff": -2318.8898
+          },
+          {
+            "year": 2023,
+            "fcff": 1573.944
+          },
+          {
+            "year": 2024,
+            "fcff": 6783.68421052632
+          },
+          {
+            "year": 2025,
+            "fcff": 12196.2857142857
+          },
+          {
+            "year": 2026,
+            "fcff": 10694.6275
+          }
+        ],
+        "spread_pct": [
+          {
+            "year": 2020,
+            "spread_pct": 6.7376319056247
+          },
+          {
+            "year": 2021,
+            "spread_pct": -2.58546181695555
+          },
+          {
+            "year": 2022,
+            "spread_pct": -7.93722471634449
+          },
+          {
+            "year": 2023,
+            "spread_pct": -3.63998416197342
+          },
+          {
+            "year": 2024,
+            "spread_pct": -13.1675256864533
+          },
+          {
+            "year": 2025,
+            "spread_pct": -12.2592899388411
+          },
+          {
+            "year": 2026,
+            "spread_pct": -1.6697088547038
+          }
+        ]
+      },
+      "audit": {
+        "BS": {
+          "G": 8.50472003260117,
+          "V": 27.08027666560546,
+          "growth_pairs": [
+            [
+              1.857884921513731,
+              12.0
+            ],
+            [
+              6.966936697227311,
+              20.0
+            ],
+            [
+              15.872565901969601,
+              15.0
+            ]
+          ],
+          "sd_pairs": [
+            [
+              70.75749301001252,
+              15.0
+            ],
+            [
+              10.25661870845311,
+              20.0
+            ],
+            [
+              11.146022364452516,
+              20.0
+            ]
+          ],
+          "start": 2026,
+          "end": 2020
+        },
+        "PL": {
+          "G": -23.246032747576493,
+          "V": 99.91269746315508,
+          "growth_pairs": [
+            [
+              4.3656197383080455,
+              15.0
+            ],
+            [
+              -33.97739640830289,
+              12.0
+            ],
+            [
+              -57.36603262476678,
+              20.0
+            ],
+            [
+              -34.832805225963526,
+              15.0
+            ],
+            [
+              9.305,
+              20.0
+            ],
+            [
+              -27.25690742714996,
+              20.0
+            ]
+          ],
+          "sd_pairs": [
+            [
+              30.00630576771801,
+              20.0
+            ],
+            [
+              200.68427325449235,
+              15.0
+            ],
+            [
+              174.5960717374683,
+              20.0
+            ],
+            [
+              135.09590242301974,
+              15.0
+            ],
+            [
+              4.06211860627291,
+              20.0
+            ],
+            [
+              81.75854865416258,
+              12.0
+            ]
+          ],
+          "start": 2026,
+          "end": 2020
+        },
+        "FS": {
+          "G": 12.379173676792503,
+          "V": 88.84560864840337,
+          "growth_pairs": [
+            [
+              33.73805079514707,
+              15.0
+            ],
+            [
+              -3.63998416197342,
+              20.0
+            ]
+          ],
+          "sd_pairs": [
+            [
+              170.80472284961502,
+              10.0
+            ],
+            [
+              6.886494447191722,
+              10.0
+            ]
+          ],
+          "start": 2026,
+          "end": 2020
+        }
+      },
+      "interest_penalty": 0.3082400813835199,
+      "original_debt_adjusted_total": -0.09794354274522815
+    }
+  ]
+}

@@ -1,0 +1,313 @@
+{
+  "surface": "report",
+  "manifest": {
+    "version": 1,
+    "surface": "report",
+    "title": "ITW depreciation and amortization tag coverage diagnosis",
+    "description": "Technical trace of the SEC source facts and TaRaShaData.ai mappings behind ITW's missing cash-flow D&A values.",
+    "generatedAt": "2026-08-01T15:07:37Z",
+    "filters": [],
+    "cards": [],
+    "charts": [
+      {
+        "id": "da_component_chart",
+        "title": "ITW depreciation and amortization components at the source cutover",
+        "subtitle": "2015 Company Facts components versus 2016 filing-XBRL components, USD millions.",
+        "intent": "composition",
+        "question": "Did ITW stop reporting the economic component, or did its source taxonomy change?",
+        "rationale": "A stacked bar preserves the disclosed total while showing which component moved from a standard US-GAAP concept to an issuer extension.",
+        "comparisonContext": {
+          "grain": "fiscal year",
+          "unit": "USD millions",
+          "semanticFamily": "cash-flow non-cash add-back"
+        },
+        "type": "stackedBar",
+        "dataset": "da_components",
+        "sourceId": "sec_tag_comparison",
+        "encodings": {
+          "x": { "field": "year", "type": "nominal", "label": "Fiscal year" },
+          "y": { "field": "value_m", "type": "quantitative", "aggregate": "sum", "label": "USD millions", "unit": "USD millions" },
+          "color": { "field": "component", "type": "nominal", "label": "Component" },
+          "tooltip": [
+            { "field": "concept", "type": "text", "label": "SEC concept" },
+            { "field": "native_source", "type": "text", "label": "Native source" },
+            { "field": "total_m", "type": "quantitative", "label": "D&A total", "unit": "USD millions" }
+          ]
+        },
+        "valueFormat": "number",
+        "unit": "USD millions",
+        "layout": "full",
+        "labels": { "values": "all" },
+        "legend": { "position": "bottom", "sort": "spec", "title": "Component" },
+        "palette": { "kind": "categorical", "name": "blue-gold" },
+        "settings": { "groupMode": "stacked", "orientation": "vertical", "showValues": true, "sort": "none" },
+        "surface": { "surface": "card", "interactiveLegend": true, "showControls": false, "viewMode": "both" }
+      }
+    ],
+    "tables": [
+      {
+        "id": "tag_comparison_table",
+        "title": "SEC fact representation at the 2015–2016 cutover",
+        "subtitle": "Values in USD; the 2016 ITW extension is present in filing XBRL but absent from Company Facts JSON.",
+        "dataset": "tag_comparison",
+        "sourceId": "sec_tag_comparison",
+        "defaultSort": { "field": "year", "direction": "asc" },
+        "density": "spacious",
+        "columns": [
+          { "field": "year", "label": "Year", "type": "number" },
+          { "field": "taxonomy", "label": "Taxonomy", "type": "text" },
+          { "field": "concept", "label": "Concept", "type": "text" },
+          { "field": "native_source", "label": "Native SEC source", "type": "text" },
+          { "field": "value_usd", "label": "Value (USD)", "format": "number" },
+          { "field": "tarashada_outcome", "label": "TaRaShaData outcome", "type": "text" }
+        ]
+      },
+      {
+        "id": "mapping_catalog_table",
+        "title": "Active mappings for the canonical depreciation_amortization metric",
+        "subtitle": "Version v1, seeded from catalog.py into metric_mappings.",
+        "dataset": "mapping_catalog",
+        "sourceId": "mapping_catalog",
+        "defaultSort": { "field": "priority", "direction": "asc" },
+        "density": "dense",
+        "columns": [
+          { "field": "taxonomy", "label": "Taxonomy", "type": "text" },
+          { "field": "concept", "label": "Recognized concept", "type": "text" },
+          { "field": "priority", "label": "Priority", "type": "number" },
+          { "field": "cash_flow_role", "label": "Cash-flow role", "type": "text" }
+        ]
+      }
+    ],
+    "sources": [
+      {
+        "id": "sec_tag_comparison",
+        "label": "SEC Company Concept JSON and ITW 2016 filing XBRL",
+        "path": "reports/itw_da_tag_diagnosis/sec_tag_comparison.csv",
+        "query": {
+          "engine": "SQLite",
+          "sql": "WITH evidence(year, component, value_m, value_usd, total_m, taxonomy, concept, native_source, mapped) AS (VALUES (2015, 'Depreciation', 244, 244000000, 475, 'us-gaap', 'Depreciation', 'SEC Company Facts JSON', 1), (2015, 'Amortization', 231, 231000000, 475, 'us-gaap', 'AmortizationOfIntangibleAssets', 'SEC Company Facts JSON', 1), (2016, 'Depreciation', 246, 246000000, 470, 'us-gaap', 'Depreciation', 'SEC Company Facts JSON', 1), (2016, 'Amortization and impairment', 224, 224000000, 470, 'itw', 'AmortizationandImpairmentofIntangibleAssets', '10-K XBRL instance only', 0)) SELECT * FROM evidence ORDER BY year, component DESC;",
+          "description": "Materializes the four reviewed SEC-derived component rows used by the comparison chart.",
+          "executed_at": "2026-08-01T15:07:37Z",
+          "language": "sql"
+        }
+      },
+      {
+        "id": "mapping_catalog",
+        "label": "TaRaShaData.ai mapping catalog and SQLite metric_mappings table",
+        "path": "backend/tarasha_data/catalog.py",
+        "query": {
+          "engine": "SQLite and Python source",
+          "sql": "SELECT cm.key AS canonical_metric, mm.taxonomy, mm.concept, mm.priority, mm.active, mm.mapping_version FROM metric_mappings mm JOIN canonical_metrics cm ON cm.id = mm.canonical_metric_id WHERE cm.key = 'depreciation_amortization' ORDER BY mm.taxonomy, mm.priority;",
+          "description": "Active version-v1 mappings for the canonical depreciation_amortization metric, verified against the seeded metric_mappings table.",
+          "executed_at": "2026-08-01T15:07:37Z",
+          "tables_used": ["metric_mappings", "canonical_metrics"]
+        }
+      },
+      {
+        "id": "cash_flow_code",
+        "label": "TaRaShaData.ai cash-flow composition logic",
+        "path": "backend/tarasha_data/cash_flow.py"
+      },
+      {
+        "id": "ingestion_code",
+        "label": "TaRaShaData.ai ingestion and standardization logic",
+        "path": "backend/tarasha_data/ingestion.py"
+      }
+    ],
+    "blocks": [
+      {
+        "id": "title",
+        "type": "markdown",
+        "body": "# ITW depreciation and amortization tag coverage diagnosis"
+      },
+      {
+        "id": "technical_summary",
+        "type": "markdown",
+        "body": "## Technical summary\n\n**Yes, at the standardized-observation layer.** TaRaShaData.ai maps the standard `us-gaap:AmortizationOfIntangibleAssets` concept but does not map ITW's issuer-extension concept `itw:AmortizationandImpairmentofIntangibleAssets`. The more fundamental constraint is that the latter fact is absent from the SEC Company Facts JSON currently ingested; it exists in ITW's filing XBRL instance. From 2016 onward the pipeline therefore receives depreciation but not the matching amortization-and-impairment component, and its all-required-input rule emits no combined D&A observation."
+      },
+      {
+        "id": "key_findings",
+        "type": "markdown",
+        "body": "## The source transition occurs exactly at 2016\n\nThe standard SEC Company Concept endpoint supplies `AmortizationOfIntangibleAssets = 231,000,000` for 2015. ITW's 2016 filing instead supplies `AmortizationandImpairmentofIntangibleAssets = 224,000,000` under the issuer namespace. SEC Company Facts still supplies `Depreciation = 246,000,000` for 2016, so the complete disclosed D&A is `246,000,000 + 224,000,000 = 470,000,000`."
+      },
+      {
+        "id": "da_component_visual",
+        "type": "chart",
+        "chartId": "da_component_chart"
+      },
+      {
+        "id": "tag_comparison",
+        "type": "table",
+        "tableId": "tag_comparison_table"
+      },
+      {
+        "id": "native_examples",
+        "type": "markdown",
+        "body": "## Native SEC examples show why this is not merely a spelling mismatch\n\nRecognized Company Concept JSON excerpt:\n\n```json\n{\n  \"taxonomy\": \"us-gaap\",\n  \"tag\": \"AmortizationOfIntangibleAssets\",\n  \"units\": {\n    \"USD\": [{\n      \"start\": \"2015-01-01\",\n      \"end\": \"2015-12-31\",\n      \"val\": 231000000,\n      \"accn\": \"0000049826-16-000151\",\n      \"fy\": 2015,\n      \"fp\": \"FY\",\n      \"form\": \"10-K\"\n    }]\n  }\n}\n```\n\nThe unhandled 2016 fact is not present as a Company Facts JSON object. Its native SEC representation is in the filing XBRL instance:\n\n```xml\n<itw:AmortizationandImpairmentofIntangibleAssets\n    contextRef=\"FD2016Q4YTD\" decimals=\"-6\" unitRef=\"usd\">\n  224000000\n</itw:AmortizationandImpairmentofIntangibleAssets>\n```\n\nThe SEC Company Concept URL for taxonomy `itw` and this concept returns 404. Direct filing/iXBRL ingestion is therefore required before a mapping alone can make this value available."
+      },
+      {
+        "id": "scope_definitions",
+        "type": "markdown",
+        "body": "## Recognition has three distinct layers\n\n1. **Raw ingestion:** every concept actually present in Company Facts JSON is stored as a reported fact.\n2. **Canonical mapping:** only active `(taxonomy, concept)` pairs in `MAPPINGS` become standardized observations.\n3. **Statement composition:** `cash_flow.py` classifies standardized observations as combined D&A, depreciation, or amortization and then assembles the cash-flow row.\n\nConsequently, TaRaShaData can store some raw impairment facts without treating them as D&A. There is currently no standalone canonical impairment metric and no impairment concept in the D&A mapping set."
+      },
+      {
+        "id": "mapping_catalog_intro",
+        "type": "markdown",
+        "body": "## The maintained master dictionary contains ten active D&A mappings\n\n`catalog.py` is the source-of-truth list and seeds the versioned `metric_mappings` database table. The cash-flow role is then determined by the concept sets in `cash_flow.py`."
+      },
+      {
+        "id": "mapping_catalog_block",
+        "type": "table",
+        "tableId": "mapping_catalog_table"
+      },
+      {
+        "id": "methodology",
+        "type": "markdown",
+        "body": "## Code tracing confirms the missing-output behavior\n\nThe standardizer looks up each reported fact by the exact `(taxonomy, concept)` tuple and skips a fact when no active mapping exists. The cash-flow assembler first searches for a directly reported combined D&A concept; otherwise it selects one depreciation and one amortization component. `_sum_items()` returns `None` whenever either component is missing. This is why the behavior is correct under the current missing-data contract but incomplete relative to ITW's filing."
+      },
+      {
+        "id": "limitations",
+        "type": "markdown",
+        "body": "## Limitation and robustness checks\n\nThe attached StockAnalysis totals are a comparison surface; the SEC filing controls the diagnosis. The 2016 result reconciles exactly to `246M depreciation + 224M amortization and impairment = 470M`. The diagnosis does not assume that every issuer extension with similar wording should automatically map to D&A; issuer concepts require period, context, unit, definition, and double-count checks."
+      },
+      {
+        "id": "next_steps",
+        "type": "markdown",
+        "body": "## Recommended implementation sequence\n\n1. Ingest filing/iXBRL facts, including issuer-defined taxonomies and complete contexts.\n2. Add a controlled versioned mapping for ITW's amortization-and-impairment concept.\n3. Decide and document whether impairment is included in the canonical D&A presentation when the issuer reports it in that combined line.\n4. Preserve precedence for directly reported combined D&A and prevent double counting when components also exist.\n5. Backfill ITW and add 2016–2025 plus TTM regression coverage."
+      },
+      {
+        "id": "further_questions",
+        "type": "markdown",
+        "body": "## Policy question before implementation\n\nShould the canonical row reproduce an issuer's disclosed `depreciation + amortization + impairment` cash-flow add-back, or should impairment be exposed separately when separable? For ITW, reproducing the reported cash-flow line yields the spreadsheet values, but the semantic policy should be explicit and versioned."
+      }
+    ]
+  },
+  "snapshot": {
+    "version": 1,
+    "generatedAt": "2026-08-01T15:07:37Z",
+    "status": "ready",
+    "datasets": {
+      "tag_comparison": [
+        {
+          "year": 2015,
+          "taxonomy": "us-gaap",
+          "concept": "AmortizationOfIntangibleAssets",
+          "native_source": "SEC Company Facts JSON",
+          "value_usd": 231000000,
+          "tarashada_outcome": "Mapped as amortization"
+        },
+        {
+          "year": 2016,
+          "taxonomy": "itw",
+          "concept": "AmortizationandImpairmentofIntangibleAssets",
+          "native_source": "10-K XBRL instance only",
+          "value_usd": 224000000,
+          "tarashada_outcome": "Not ingested or mapped"
+        },
+        {
+          "year": 2016,
+          "taxonomy": "us-gaap",
+          "concept": "Depreciation",
+          "native_source": "SEC Company Facts JSON",
+          "value_usd": 246000000,
+          "tarashada_outcome": "Mapped, but cannot form D&A alone"
+        }
+      ],
+      "da_components": [
+        {
+          "year": "2015",
+          "component": "Depreciation",
+          "value_m": 244,
+          "value_usd": 244000000,
+          "total_m": 475,
+          "taxonomy": "us-gaap",
+          "concept": "Depreciation",
+          "native_source": "SEC Company Facts JSON",
+          "mapped": true
+        },
+        {
+          "year": "2015",
+          "component": "Amortization",
+          "value_m": 231,
+          "value_usd": 231000000,
+          "total_m": 475,
+          "taxonomy": "us-gaap",
+          "concept": "AmortizationOfIntangibleAssets",
+          "native_source": "SEC Company Facts JSON",
+          "mapped": true
+        },
+        {
+          "year": "2016",
+          "component": "Depreciation",
+          "value_m": 246,
+          "value_usd": 246000000,
+          "total_m": 470,
+          "taxonomy": "us-gaap",
+          "concept": "Depreciation",
+          "native_source": "SEC Company Facts JSON",
+          "mapped": true
+        },
+        {
+          "year": "2016",
+          "component": "Amortization and impairment",
+          "value_m": 224,
+          "value_usd": 224000000,
+          "total_m": 470,
+          "taxonomy": "itw",
+          "concept": "AmortizationandImpairmentofIntangibleAssets",
+          "native_source": "10-K XBRL instance only",
+          "mapped": false
+        }
+      ],
+      "mapping_catalog": [
+        { "sort_order": 1, "taxonomy": "us-gaap", "concept": "DepreciationDepletionAndAmortization", "priority": 10, "cash_flow_role": "Combined D&A" },
+        { "sort_order": 2, "taxonomy": "us-gaap", "concept": "DepreciationAndAmortization", "priority": 20, "cash_flow_role": "Combined D&A" },
+        { "sort_order": 3, "taxonomy": "us-gaap", "concept": "DepreciationAmortizationAndAccretionNet", "priority": 25, "cash_flow_role": "Combined D&A" },
+        { "sort_order": 4, "taxonomy": "us-gaap", "concept": "Depreciation", "priority": 30, "cash_flow_role": "Depreciation component" },
+        { "sort_order": 5, "taxonomy": "us-gaap", "concept": "AmortizationOfIntangibleAssets", "priority": 40, "cash_flow_role": "Amortization component" },
+        { "sort_order": 6, "taxonomy": "us-gaap", "concept": "FiniteLivedIntangibleAssetsAmortizationExpense", "priority": 50, "cash_flow_role": "Amortization component" },
+        { "sort_order": 7, "taxonomy": "ifrs-full", "concept": "AdjustmentsForDepreciationAndAmortisationExpense", "priority": 10, "cash_flow_role": "Combined D&A" },
+        { "sort_order": 8, "taxonomy": "ifrs-full", "concept": "AdjustmentsForDepreciationExpense", "priority": 20, "cash_flow_role": "Depreciation component" },
+        { "sort_order": 9, "taxonomy": "ifrs-full", "concept": "AdjustmentsForAmortisationExpense", "priority": 30, "cash_flow_role": "Amortization component" },
+        { "sort_order": 10, "taxonomy": "sec-earnings-release", "concept": "DepreciationDepletionAndAmortization", "priority": 50, "cash_flow_role": "Combined D&A" }
+      ]
+    },
+    "accessIssues": []
+  },
+  "sources": [
+    {
+      "id": "sec_tag_comparison",
+      "label": "SEC Company Concept JSON and ITW 2016 filing XBRL",
+      "path": "reports/itw_da_tag_diagnosis/sec_tag_comparison.csv",
+      "query": {
+        "engine": "SQLite",
+        "sql": "WITH evidence(year, component, value_m, value_usd, total_m, taxonomy, concept, native_source, mapped) AS (VALUES (2015, 'Depreciation', 244, 244000000, 475, 'us-gaap', 'Depreciation', 'SEC Company Facts JSON', 1), (2015, 'Amortization', 231, 231000000, 475, 'us-gaap', 'AmortizationOfIntangibleAssets', 'SEC Company Facts JSON', 1), (2016, 'Depreciation', 246, 246000000, 470, 'us-gaap', 'Depreciation', 'SEC Company Facts JSON', 1), (2016, 'Amortization and impairment', 224, 224000000, 470, 'itw', 'AmortizationandImpairmentofIntangibleAssets', '10-K XBRL instance only', 0)) SELECT * FROM evidence ORDER BY year, component DESC;",
+        "description": "Materializes the four reviewed SEC-derived component rows used by the comparison chart.",
+        "executed_at": "2026-08-01T15:07:37Z",
+        "language": "sql"
+      }
+    },
+    {
+      "id": "mapping_catalog",
+      "label": "TaRaShaData.ai mapping catalog and metric_mappings table",
+      "path": "backend/tarasha_data/catalog.py",
+      "query": {
+        "engine": "SQLite and Python source",
+        "sql": "SELECT cm.key AS canonical_metric, mm.taxonomy, mm.concept, mm.priority, mm.active, mm.mapping_version FROM metric_mappings mm JOIN canonical_metrics cm ON cm.id = mm.canonical_metric_id WHERE cm.key = 'depreciation_amortization' ORDER BY mm.taxonomy, mm.priority;",
+        "description": "Read catalog.py and queried active version-v1 mappings joined to canonical_metrics.",
+        "executed_at": "2026-08-01T15:07:37Z",
+        "tables_used": ["metric_mappings", "canonical_metrics"]
+      }
+    },
+    {
+      "id": "cash_flow_code",
+      "label": "TaRaShaData.ai cash-flow composition logic",
+      "path": "backend/tarasha_data/cash_flow.py"
+    },
+    {
+      "id": "ingestion_code",
+      "label": "TaRaShaData.ai ingestion and standardization logic",
+      "path": "backend/tarasha_data/ingestion.py"
+    }
+  ]
+}
