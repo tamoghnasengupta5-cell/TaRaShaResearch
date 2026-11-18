@@ -1,6 +1,7 @@
 import {
   fetchDataCompanyLogo,
   pullDataCompany,
+  pullDataCompanyMarketContext,
   searchDataCompanies,
   type DataProviderEnv,
 } from "../dataProvider";
@@ -24,7 +25,7 @@ interface Env extends DataProviderEnv {
   TARASHA_DATA_ADMIN_KEY?: string;
 }
 
-const MAX_YEAR_RANGE = 7;
+const MAX_YEAR_RANGE = 30;
 
 function json(data: unknown, status = 200): Response {
   return Response.json(data, {
@@ -75,12 +76,23 @@ async function dataCompany(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   try {
     const years = validYearRange(url.searchParams.get("fromYear"), url.searchParams.get("toYear"));
-    return json(await pullDataCompany(env, cleanText(url.searchParams.get("companyId"), 100), years.fromYear, years.toYear));
+    const saved = url.searchParams.get("preparedDefaultRequest");
+    return json(await pullDataCompany(env, cleanText(url.searchParams.get("companyId"), 100), years.fromYear, years.toYear, undefined, { signal: request.signal, deferMarketContext: url.searchParams.get("deferMarket") === "true",
+      ...(saved === null ? {} : { preparedDefaultRequest: JSON.parse(saved) }) }));
   } catch (cause) {
     return cause instanceof AuthError
       ? error(cause.message, cause.status)
       : error(cause instanceof Error ? cause.message : "TaRaShaData.ai company pull failed.", 502);
   }
+}
+
+async function dataCompanyMarket(request: Request, env: Env): Promise<Response> {
+  type Body = { companyId?: string; snapshot?: Parameters<typeof pullDataCompanyMarketContext>[2] };
+  const body = await request.json<Body>().catch(() => ({} as Body));
+  if (!body.snapshot || typeof body.snapshot !== "object") return error("Prepared financial snapshot is required.");
+  try {
+    return json(await pullDataCompanyMarketContext(env, cleanText(body.companyId, 100), body.snapshot, request.signal));
+  } catch (cause) { return error(cause instanceof Error ? cause.message : "Market context could not be loaded.", 502); }
 }
 
 async function dataCompanyLogo(request: Request, env: Env): Promise<Response> {
@@ -98,6 +110,7 @@ async function recalculateDataCompany(request: Request, env: Env): Promise<Respo
     fromYear?: number;
     toYear?: number;
     constituentIds?: string[] | null;
+    deferMarket?: boolean;
   };
   const body = await request.json<Body>().catch(() => ({} as Body));
   try {
@@ -118,6 +131,7 @@ async function recalculateDataCompany(request: Request, env: Env): Promise<Respo
       years.fromYear,
       years.toYear,
       constituentIds,
+      { signal: request.signal, deferMarketContext: body.deferMarket === true },
     ));
   } catch (cause) {
     return cause instanceof AuthError
@@ -253,6 +267,7 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   if (request.method === "GET" && first === "companies") return searchCompanies(request, env);
   if (request.method === "GET" && first === "data" && second === "company-logo") return dataCompanyLogo(request, env);
   if (request.method === "GET" && first === "data" && second === "company") return dataCompany(request, env);
+  if (request.method === "POST" && first === "data" && second === "company-market") return dataCompanyMarket(request, env);
   if (request.method === "POST" && first === "data" && second === "company") return recalculateDataCompany(request, env);
   if (request.method === "POST" && first === "auth" && second === "register") return registerUser(request, env);
   if (request.method === "POST" && first === "auth" && second === "login") return loginUser(request, env);

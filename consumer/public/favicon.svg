@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+<title id="title">TaRaSha Discover T icon</title>
+<defs>
+  <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+    <stop stop-color="#b58a3d"/><stop offset="1" stop-color="#936217"/>
+  </linearGradient>
+</defs>
+<rect x="1" y="1" width="126" height="126" rx="2.5" fill="url(#tile)"/>
+<path fill="#fff" d="M39 32H89V43H70V96H58V43H39Z"/>
+</svg>

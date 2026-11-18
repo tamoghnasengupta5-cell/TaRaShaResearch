@@ -21,7 +21,9 @@ DEFAULT_YEAR_RANGE = "Recent - 2020"
 
 # --- Branding assets (kept local to the repo) ---
 _ASSETS_DIR = Path(__file__).parent / "assets"
-_LOGO_PATH = _ASSETS_DIR / "tarasha_logo_bright.png"
+_LOGO_PATH = _ASSETS_DIR / "tarasha-research-logo.png"
+_HEADER_LOGO_PATH = _ASSETS_DIR / "tarasha-research-logo.svg"
+_ICON_PATH = _ASSETS_DIR / "tarasha-research-icon.png"
 _HERO_BANNER_PATH = _ASSETS_DIR / "Hero_Banner.png"
 _HERO_BANNER_2_PATH = _ASSETS_DIR / "Hero_Banner_2_Semiconductors.png"
 _HERO_BANNER_3_PATH = _ASSETS_DIR / "Hero_Banner_3_YoY_Growth.png"
@@ -31,7 +33,8 @@ _ARTICLES_DIR = _ASSETS_DIR / "articles"
 
 # Streamlit requires set_page_config to be the first Streamlit command in the app.
 st.set_page_config(
-    page_title="TaRaSha Equity Research Tool",
+    page_title="TaRaSha Research",
+    page_icon=str(_ICON_PATH),
     layout="wide",
     initial_sidebar_state="collapsed",
 )
@@ -460,6 +463,18 @@ def _inject_shell_css() -> None:
             display: none !important;
           }
 
+          .st-key-research_brand {
+            width: fit-content;
+            max-width: 100%;
+            padding: 4px 6px;
+            border-radius: 3px;
+            background: #fff;
+          }
+          .st-key-research_brand img {
+            max-width: 100% !important;
+            height: auto !important;
+          }
+
           /* Header logo: reduce vertical real estate */
           div[data-testid="stImage"] {
             margin-top: 0.0rem !important;
@@ -555,10 +570,14 @@ def _inject_shell_css() -> None:
               min-height: 2.75rem !important;
             }
 
-            /* Keep the logo from dominating the top on narrow screens */
+            /* Keep article imagery compact while preserving the full brand row. */
             div[data-testid="stImage"] img {
               max-width: 150px;
               height: auto;
+            }
+            .st-key-research_brand img {
+              width: 200px !important;
+              max-width: 100% !important;
             }
           }
         </style>
@@ -647,10 +666,11 @@ def _render_header() -> tuple:
         st.session_state[SEARCH_YEAR_RANGE_KEY] = current_year_range
 
     with st.container():
-        logo_col, controls_col = st.columns([1.1, 5.2], vertical_alignment="center")
+        logo_col, controls_col = st.columns([1.35, 4.95], vertical_alignment="center")
         with logo_col:
-            if _LOGO_PATH.exists():
-                st.image(str(_LOGO_PATH), width=200)
+            if _HEADER_LOGO_PATH.exists():
+                with st.container(key="research_brand"):
+                    st.image(str(_HEADER_LOGO_PATH), width=220)
         with controls_col:
             header_company_label_map = company_label_map(companies_df)
             if SEARCH_SELECTED_IDS_KEY not in st.session_state:

@@ -1,8 +1,8 @@
 import { companies as demoCompanies } from "./data/demo";
-import type { CatalogCompany, Company, DistributionObservation, GrowthStatistics, ProfitabilityMetricKey, ResearchShelfAnalysis } from "./types";
+import type { CatalogCompany, Company, CompanyMarketContext, DistributionObservation, GrowthStatistics, ProfitabilityMetricKey, ResearchShelfAnalysis } from "./types";
 
 export const MAX_SESSION_COMPANIES = 50;
-export const MAX_YEAR_RANGE = 7;
+export const MAX_YEAR_RANGE = 30;
 export const liveDataEnabled = import.meta.env.VITE_DATA_MODE === "live";
 const apiBase = String(import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
 
@@ -235,7 +235,22 @@ export async function searchCompanyCatalog(query: string, country: "USA" | "Indi
   return result.companies;
 }
 
-export async function pullCompanyResearch(catalog: CatalogCompany, fromYear: number, toYear: number): Promise<Company> {
+/** Header search spans every supported market; scoped catalogue searches stay unchanged. */
+export async function searchGlobalCompanyCatalog(query: string): Promise<CatalogCompany[]> {
+  if (query.trim().length < 2) return [];
+  const matches = await Promise.all([
+    searchCompanyCatalog(query, "USA"),
+    searchCompanyCatalog(query, "India"),
+  ]);
+  const unique = [...new Map(matches.flat().map((company) => [company.id, company])).values()];
+  const symbol = query.trim().toUpperCase().split(":").at(-1);
+  return unique.sort((left, right) =>
+    Number(right.ticker.toUpperCase() === symbol) - Number(left.ticker.toUpperCase() === symbol)
+    || left.name.localeCompare(right.name)
+  );
+}
+
+export async function pullCompanyResearch(catalog: CatalogCompany, fromYear: number, toYear: number, signal?: AbortSignal): Promise<Company> {
   if (toYear - fromYear + 1 > MAX_YEAR_RANGE) throw new Error(`Choose no more than ${MAX_YEAR_RANGE} years.`);
   if (!liveDataEnabled) {
     const demo = demoCompanies.find((company) => company.id === catalog.id);
@@ -243,15 +258,29 @@ export async function pullCompanyResearch(catalog: CatalogCompany, fromYear: num
     await new Promise((resolve) => setTimeout(resolve, 350));
     return { ...demo, dataMode: "illustrative", limitations: ["This is fictional preview data. Enable the TaRaShaData.ai API configuration for live filing-derived data."] };
   }
-  if (catalog.country !== "USA" || !catalog.data_available) throw new Error("TaRaShaData.ai does not currently publish normalized coverage for this company.");
-  const params = new URLSearchParams({ companyId: catalog.id, fromYear: String(fromYear), toYear: String(toYear) });
-  return normalizeResearchShelfContract(await requestJson<Company>(`/api/data/company?${params}`));
+  if (!catalog.data_available) throw new Error("TaRaShaData.ai does not currently publish normalized coverage for this company.");
+  const params = new URLSearchParams({ companyId: catalog.id, fromYear: String(fromYear), toYear: String(toYear), deferMarket: "true" });
+  return normalizeResearchShelfContract(await requestJson<Company>(`/api/data/company?${params}`, { signal }));
 }
 
-export async function recalculateIndustryConstituents(company: Company, constituentIds?: string[]): Promise<Company> {
+/** Only ordinary Home search selects the backend's last successful default. */
+export async function pullHomeCompanyResearch(catalog: CatalogCompany, signal?: AbortSignal): Promise<Company> {
+  const saved = catalog.preparedDefaultRequest;
+  if (!saved || !liveDataEnabled) {
+    const toYear = catalog.latestFiscalYear ?? new Date().getFullYear();
+    const fromYear = Math.max(catalog.firstFiscalYear ?? toYear - (MAX_YEAR_RANGE - 1), toYear - (MAX_YEAR_RANGE - 1));
+    return pullCompanyResearch(catalog, fromYear, toYear, signal);
+  }
+  const params = new URLSearchParams({ companyId: catalog.id, fromYear: String(saved.from_year),
+    toYear: String(saved.to_year), deferMarket: "true", preparedDefaultRequest: JSON.stringify(saved) });
+  return normalizeResearchShelfContract(await requestJson<Company>(`/api/data/company?${params}`, { signal }));
+}
+
+export async function recalculateIndustryConstituents(company: Company, constituentIds?: string[], signal?: AbortSignal): Promise<Company> {
   const shelf = company.researchShelf;
   if (!liveDataEnabled || company.dataMode !== "tarasha-data" || !shelf) throw new Error("Industry constituent editing is available for live TaRaShaData.ai companies only.");
   const updated = await requestJson<Company>("/api/data/company", {
+    signal,
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -259,7 +288,18 @@ export async function recalculateIndustryConstituents(company: Company, constitu
       fromYear: shelf.fromYear,
       toYear: shelf.toYear,
       constituentIds: constituentIds ?? null,
+      deferMarket: true,
     }),
   });
   return normalizeResearchShelfContract(updated);
+}
+
+
+export async function pullCompanyMarketContext(company: Company, signal: AbortSignal): Promise<CompanyMarketContext> {
+  const snapshot = company.preparedFinancialSnapshot;
+  if (!snapshot) throw new Error("Prepared financial snapshot is unavailable for market context.");
+  return requestJson<CompanyMarketContext>("/api/data/company-market", {
+    method: "POST", headers: { "content-type": "application/json" }, signal,
+    body: JSON.stringify({ companyId: company.id, snapshot }),
+  });
 }

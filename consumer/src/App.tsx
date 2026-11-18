@@ -1,18 +1,23 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { learningCards, metricMeta } from "./data/demo";
 import { authenticateUser, getSecurityQuestion, registerUser, resetPassword, SECURITY_QUESTIONS } from "./authStore";
 import type { AuthenticatedUser } from "./authStore";
 import { formatMetric, latest, percentChange } from "./domain";
 import { comparisonProfitabilityYears, comparisonYoYIntervals, MAX_COMPARISON_COMPANIES, researchShelfCompanies, toggleComparisonCompany } from "./comparison";
 import type { ComparisonYoYMetric } from "./comparison";
-import { liveDataEnabled, MAX_SESSION_COMPANIES, MAX_YEAR_RANGE, pullCompanyResearch, recalculateIndustryConstituents, searchCompanyCatalog } from "./liveData";
+import { liveDataEnabled, MAX_SESSION_COMPANIES, MAX_YEAR_RANGE, pullCompanyResearch, pullHomeCompanyResearch, pullCompanyMarketContext, recalculateIndustryConstituents, searchCompanyCatalog, searchGlobalCompanyCatalog } from "./liveData";
 import { arithmeticMean, extremeOutlierBounds, isExtremeOutlier, percentile, sampleStandardDeviation } from "./statistics";
-import type { CashFlowBridgeMetricValue, CashFlowYear, CatalogCompany, Company, DistributionObservation, EarningsFlowMetricKey, EarningsFlowYear, FcffBridgeMetricKey, FcfeBridgeMetricKey, GrowthComparison, IndustryConstituent, IndustryDeltaPoint, IndustryLevelPoint, MetricKey, Page, PerformanceThresholds, ProfitabilityMetricBands, ProfitabilityMetricKey, ProfitabilityYearPoint, RawIncomePoint, ResearchShelfAnalysis, StatementFact, StatementGroup, ValuationMetricKey, WorkingCapitalPeriodBreakdown, YearValue } from "./types";
+import type { CashFlowBridgeMetricValue, CashFlowYear, CatalogCompany, Company, DistributionObservation, EarningsFlowMetricKey, EarningsFlowYear, FcffBridgeMetricKey, FcfeBridgeMetricKey, GrowthComparison, IndustryConstituent, IndustryDeltaPoint, IndustryLevelPoint, MetricKey, Page, PerformanceThresholds, ProfitabilityMetricBands, ProfitabilityMetricKey, ProfitabilityYearPoint, RawIncomePoint, ResearchShelfAnalysis, ValuationMetricKey, WorkingCapitalPeriodBreakdown, YearValue } from "./types";
 import researchJourneyHero from "./assets/research-journey-hero-mockup.jpg";
-import tarashaLogo from "./assets/tarasha-logo.png";
+import tarashaLogo from "./assets/tarasha-discover-logo.svg";
+import sharedTarashaLogo from "./assets/tarasha-logo.svg";
 import { CompanyStoryHome } from "./CompanyStoryHome";
 import { GlobalMarketOverview } from "./GlobalMarketOverview";
 import { DataReconciliationAdmin } from "./DataReconciliationAdmin";
+import { createCompanyOpeningCoordinator, createMarketContextCoordinator, mergeCompanyMarketContext } from "./companyMarketContext";
+import { createSavedSelectionRequest } from "./savedSelectionRequests";
+import { createCompanyStoryPaintTiming } from "./companyStoryPaint";
+import type { CompanyStoryPaint } from "./companyStoryPaint";
 
 const navItems: { page: Page; label: string; icon: string }[] = [
   { page: "home", label: "Home", icon: "⌂" },
@@ -50,6 +55,17 @@ function App() {
   const [activeCompanyId, setActiveCompanyId] = useState<string | null>(null);
   const [companyStoryVersion, setCompanyStoryVersion] = useState(0);
   const [sessionCompanies, setSessionCompanies] = useState<Company[]>([]);
+  const marketContext = useRef(createMarketContextCoordinator());
+  const companyOpening = useRef(createCompanyOpeningCoordinator());
+  const paintTiming = useRef(createCompanyStoryPaintTiming());
+  const [companyOpenTiming, setCompanyOpenTiming] = useState<CompanyStoryPaint | null>(null);
+  const appShell = useRef<HTMLDivElement>(null);
+  const cancelCompanyOpening = () => {
+    companyOpening.current.cancel();
+    paintTiming.current.cancel();
+    setCompanyOpenTiming(null);
+  };
+  useEffect(() => () => { marketContext.current.cancel(); companyOpening.current.cancel(); paintTiming.current.cancel(); }, []);
   const [watchlist, setWatchlist] = useState<string[]>(() => {
     try {
       return JSON.parse(localStorage.getItem("tarasha-watchlist") ?? "[]");
@@ -61,6 +77,8 @@ function App() {
   useEffect(() => localStorage.setItem("tarasha-watchlist", JSON.stringify(watchlist)), [watchlist]);
   useEffect(() => {
     const onHashChange = () => {
+      marketContext.current.cancel();
+      cancelCompanyOpening();
       const requestedPage = pageFromHash();
       if (!authUser && protectedPages.has(requestedPage)) {
         setPage("login");
@@ -78,6 +96,8 @@ function App() {
   }, [authUser]);
 
   const navigate = (next: Page) => {
+    marketContext.current.cancel();
+    cancelCompanyOpening();
     const destination = !authUser && protectedPages.has(next)
       ? "login"
       : next === "reconciliation" && authUser?.role !== "admin" ? "home" : next;
@@ -96,6 +116,8 @@ function App() {
   };
 
   const logout = () => {
+    marketContext.current.cancel();
+    cancelCompanyOpening();
     sessionStorage.removeItem(SESSION_USER_KEY);
     setAuthUser(null);
     setSessionCompanies([]);
@@ -105,12 +127,20 @@ function App() {
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
-  const openCompany = (id: string) => {
+  const openCompany = (id: string, selected?: Company, measurement?: CompanyStoryPaint) => {
+    marketContext.current.cancel();
+    companyOpening.current.cancel();
+    if (!measurement || !paintTiming.current.owns(measurement)) {
+      paintTiming.current.cancel();
+      setCompanyOpenTiming(null);
+    }
     setActiveCompanyId(id);
     setCompanyStoryVersion((current) => current + 1);
     setPage("home");
     if (window.location.hash !== "#/home") window.history.pushState(null, "", "#/home");
     window.scrollTo({ top: 0, behavior: "smooth" });
+    const company = selected ?? sessionCompanies.find(item => item.id === id);
+    if (company && company.marketContextStatus?.status !== "ready") loadMarketContext(company);
   };
 
   const toggleWatch = (id: string) => {
@@ -122,32 +152,72 @@ function App() {
   };
 
   const updateSessionCompany = (company: Company) => {
+    if (company.id === activeCompanyId) marketContext.current.cancel();
     setSessionCompanies((current) => current.map((item) => item.id === company.id ? company : item));
+    if (company.id === activeCompanyId) loadMarketContext(company);
   };
 
   const removeSessionCompany = (id: string) => {
+    if (id === activeCompanyId) marketContext.current.cancel();
     setSessionCompanies((current) => current.filter((item) => item.id !== id));
     setActiveCompanyId((current) => current === id ? null : current);
+  };
+
+  const loadMarketContext = (company: Company) => {
+    const snapshot = company.preparedFinancialSnapshot;
+    if (!snapshot || company.supportedStoryChapters && !company.supportedStoryChapters.some(chapter => chapter >= 5)) return;
+    const updateStatus = (status: NonNullable<Company["marketContextStatus"]>) => setSessionCompanies(current => current.map(item =>
+      item.id === company.id && item.preparedFinancialSnapshot?.snapshotId === snapshot.snapshotId
+        && item.preparedFinancialSnapshot?.key === snapshot.key ? { ...item, marketContextStatus: status } : item));
+    marketContext.current.start(company, signal => pullCompanyMarketContext(company, signal),
+      () => updateStatus({ status: "loading" }),
+      context => setSessionCompanies(current => current.map(item => item.id === company.id
+        ? mergeCompanyMarketContext(item, context) ?? item : item)),
+      error => updateStatus({ status: "error", error }));
   };
 
   const activeCompany = sessionCompanies.find((item) => item.id === activeCompanyId);
   const visiblePage = !authUser && protectedPages.has(page) ? "login" : page;
 
-  const openCompanyFromSearch = async (catalog: CatalogCompany) => {
-    const existing = sessionCompanies.find((item) => item.id === catalog.id);
-    if (existing) {
-      openCompany(existing.id);
+  useLayoutEffect(() => {
+    if (companyOpenTiming?.state === "painted" && (visiblePage !== "home"
+      || activeCompany?.id !== companyOpenTiming.companyId
+      || activeCompany?.preparedFinancialSnapshot?.snapshotId !== companyOpenTiming.snapshotId)) {
+      paintTiming.current.cancel();
+      setCompanyOpenTiming(null);
       return;
     }
-    if (sessionCompanies.length >= MAX_SESSION_COMPANIES) {
-      throw new Error(`This session already contains ${MAX_SESSION_COMPANIES} companies—the maximum allowed.`);
+    if (!authUser || visiblePage !== "home" || !activeCompany || !companyOpenTiming
+      || companyOpenTiming.state !== "selected"
+      || !appShell.current?.querySelector(".company-story-page .story-headline-metrics")) return;
+    return paintTiming.current.afterCommit(companyOpenTiming, activeCompany, setCompanyOpenTiming);
+  }, [authUser, visiblePage, activeCompany, companyStoryVersion, companyOpenTiming]);
+
+  const openCompanyFromSearch = async (catalog: CatalogCompany, startedAt = performance.now()) => {
+    const measurement = paintTiming.current.begin(catalog.id, startedAt);
+    setCompanyOpenTiming(measurement);
+    marketContext.current.cancel();
+    try {
+      const existing = sessionCompanies.find((item) => item.id === catalog.id);
+      if (existing) {
+        openCompany(existing.id, existing, measurement);
+        return;
+      }
+      if (sessionCompanies.length >= MAX_SESSION_COMPANIES) {
+        throw new Error(`This session already contains ${MAX_SESSION_COMPANIES} companies—the maximum allowed.`);
+      }
+      const company = await companyOpening.current.load(signal => pullHomeCompanyResearch(catalog, signal));
+      if (!company || !paintTiming.current.owns(measurement)) return;
+      if (company.id !== catalog.id) throw new Error("Company financial data does not match the selected company.");
+      addSessionCompany(company);
+      openCompany(company.id, company, measurement);
+    } catch (error) {
+      if (paintTiming.current.owns(measurement)) {
+        paintTiming.current.cancel();
+        setCompanyOpenTiming(null);
+      }
+      throw error;
     }
-    const currentYear = new Date().getFullYear();
-    const toYear = catalog.latestFiscalYear ?? currentYear;
-    const fromYear = Math.max(catalog.firstFiscalYear ?? toYear - (MAX_YEAR_RANGE - 1), toYear - (MAX_YEAR_RANGE - 1));
-    const company = await pullCompanyResearch(catalog, fromYear, toYear);
-    addSessionCompany(company);
-    openCompany(company.id);
   };
 
   const navigateFromHeader = (destination: Page) => {
@@ -158,12 +228,18 @@ function App() {
   };
 
   return (
-    <div className="app-shell">
+    <div className="app-shell" ref={appShell}
+      data-company-open-token={companyOpenTiming?.token}
+      data-company-open-company={companyOpenTiming?.companyId}
+      data-company-open-state={companyOpenTiming?.state}
+      data-company-open-snapshot={companyOpenTiming?.snapshotId}
+      data-company-open-request={companyOpenTiming?.requestKey}
+      data-company-open-ms={companyOpenTiming?.elapsedMs?.toFixed(3)}>
       {!authUser && <BetaStrip />}
       <Header page={visiblePage} navigate={navigateFromHeader} user={authUser} logout={logout} onSelectCompany={openCompanyFromSearch} />
       <main>
         {visiblePage === "home" && !authUser && <Home navigate={navigate} />}
-        {authUser && visiblePage === "home" && activeCompany && <CompanyDetail key={`${activeCompany.id}-${companyStoryVersion}`} company={activeCompany} watched={watchlist.includes(activeCompany.id)} toggleWatch={toggleWatch} navigate={navigate} />}
+        {authUser && visiblePage === "home" && activeCompany && <CompanyDetail key={`${activeCompany.id}-${companyStoryVersion}`} company={activeCompany} watched={watchlist.includes(activeCompany.id)} toggleWatch={toggleWatch} navigate={navigate} retryMarket={() => loadMarketContext(activeCompany)} />}
         {authUser && visiblePage === "home" && !activeCompany && <GlobalMarketOverview />}
         {visiblePage === "login" && <LoginPage onAuthenticated={completeAuthentication} navigate={navigate} />}
         {authUser && visiblePage === "discover" && <Discover sessionCompanies={sessionCompanies} onResearchPulled={addSessionCompany} onCompanyUpdated={updateSessionCompany} onCompanyRemoved={removeSessionCompany} openCompany={openCompany} watchlist={watchlist} toggleWatch={toggleWatch} />}
@@ -182,66 +258,77 @@ function BetaStrip() {
   return <div className="beta-strip"><span>Private non-commercial preview</span><span>{liveDataEnabled ? "Live research provider · Browser-session data" : "Preview mode · Illustrative data"}</span></div>;
 }
 
-function Brand() {
+function Brand({ shared = false }: { shared?: boolean }) {
   return (
-    <div className="brand" aria-label="TaRaSha home">
-      <span className="brand-logo-window"><img src={tarashaLogo} alt="TaRaSha" /></span>
-      <span className="brand-edition">Discover</span>
+    <div className={`brand${shared ? " brand-shared" : ""}`} aria-label={shared ? "TaRaSha home" : "TaRaSha Discover home"}>
+      <span className="brand-logo-window"><img src={shared ? sharedTarashaLogo : tarashaLogo} alt={shared ? "TaRaSha" : "TaRaSha Discover"} /></span>
     </div>
   );
 }
 
-function HeaderSearch({ onSelectCompany }: { onSelectCompany: (company: CatalogCompany) => Promise<void> }) {
+function HeaderSearch({ onSelectCompany }: { onSelectCompany: (company: CatalogCompany, startedAt?: number) => Promise<void> }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<CatalogCompany[]>([]);
   const [searching, setSearching] = useState(false);
   const [opening, setOpening] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [searchOpen, setSearchOpen] = useState(false);
   const searchRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (query.trim().length < 2) { setResults([]); setMessage(null); return; }
+    if (!searchOpen || query.trim().length < 2) {
+      setResults([]); setMessage(null); setSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setSearching(true); setResults([]); setMessage(null);
     const timer = window.setTimeout(async () => {
-      setSearching(true); setMessage(null);
-      try { setResults(await searchCompanyCatalog(query, "USA")); }
-      catch (error) { setResults([]); setMessage(error instanceof Error ? error.message : "Company search failed."); }
-      finally { setSearching(false); }
+      try {
+        const matches = await searchGlobalCompanyCatalog(query);
+        if (!cancelled) setResults(matches);
+      } catch (error) {
+        if (!cancelled) setMessage(error instanceof Error ? error.message : "Company search failed.");
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
     }, 220);
-    return () => window.clearTimeout(timer);
-  }, [query]);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [query, searchOpen]);
 
   useEffect(() => {
     const close = (event: PointerEvent) => {
-      if (!searchRef.current?.contains(event.target as Node)) setResults([]);
+      if (!searchRef.current?.contains(event.target as Node)) setSearchOpen(false);
     };
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
   }, []);
 
   const open = async (company: CatalogCompany) => {
+    const startedAt = performance.now();
     setOpening(true); setMessage(null);
     try {
-      await onSelectCompany(company);
-      setQuery(""); setResults([]);
+      await onSelectCompany(company, startedAt);
+      setQuery(""); setResults([]); setSearchOpen(false);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Company research could not be opened.");
     } finally { setOpening(false); }
   };
 
   return <div className="header-company-search" ref={searchRef}>
-    <label><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg><input value={query} onChange={(event) => setQuery(event.target.value)} onFocus={() => query.trim().length >= 2 && searchCompanyCatalog(query, "USA").then(setResults).catch(() => undefined)} placeholder="Search company or ticker" aria-label="Search company or ticker" /><kbd>⌘ K</kbd></label>
-    {(results.length > 0 || searching || message) && <div className="header-search-results">
+    <label><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></svg><input value={query} onChange={(event) => { setQuery(event.target.value); setSearchOpen(true); }} onFocus={() => setSearchOpen(true)} placeholder="Search company or ticker" aria-label="Search company or ticker" /><kbd>⌘ K</kbd></label>
+    {(searchOpen && query.trim().length >= 2) && <div className="header-search-results">
       {searching && <p>Searching TaRaShaData…</p>}
+      {!searching && !results.length && !message && <p>No ingested company matches this search.</p>}
       {!searching && results.map((company) => <button key={company.id} disabled={opening} onClick={() => open(company)}><span>{company.name[0]}</span><div><strong>{company.name}</strong><small>{company.ticker} · {company.exchange || "Exchange not reported"}</small></div><b>{opening ? "Opening…" : "Open"}</b></button>)}
       {message && <p className="error">{message}</p>}
     </div>}
   </div>;
 }
 
-function Header({ page, navigate, user, logout, onSelectCompany }: { page: Page; navigate: (page: Page) => void; user: AuthenticatedUser | null; logout: () => void; onSelectCompany: (company: CatalogCompany) => Promise<void> }) {
+export function Header({ page, navigate, user, logout, onSelectCompany }: { page: Page; navigate: (page: Page) => void; user: AuthenticatedUser | null; logout: () => void; onSelectCompany: (company: CatalogCompany, startedAt?: number) => Promise<void> }) {
   return (
     <header className="site-header">
-      <button className="brand-button" onClick={() => navigate("home")}><Brand /></button>
+      <button className="brand-button" onClick={() => navigate("home")}><Brand shared={!user && page === "home"} /></button>
       {user && <HeaderSearch onSelectCompany={onSelectCompany} />}
       {user && <nav className="desktop-nav" aria-label="Main navigation">
         {navItems.map((item) => (
@@ -267,15 +354,17 @@ function MobileNav({ page, navigate, user }: { page: Page; navigate: (page: Page
   );
 }
 
-function Home({ navigate }: {
+export function Home({ navigate }: {
   navigate: (page: Page) => void;
 }) {
+  const compassUrl = String(import.meta.env.VITE_COMPASS_URL || "").trim() || "http://localhost:5174/#/compass/login";
   return (
     <section className="home-hero">
       <img className="home-hero-image" src={researchJourneyHero} alt="A path of research notes leading through a landscape toward the horizon" />
       <div className="home-hero-shade" />
-      <div className="home-hero-copy">
-        <button className="button primary hero-login-button" onClick={() => navigate("login")}>Log in to Discover<span>→</span></button>
+      <div className="home-hero-copy shared-entry-actions">
+        <a className="button hero-login-button shared-entry-compass" href={compassUrl}>Login to Compass<span aria-hidden="true">→</span></a>
+        <button className="button primary hero-login-button" onClick={() => navigate("login")}>Log in to Discover<span aria-hidden="true">→</span></button>
       </div>
     </section>
   );
@@ -435,7 +524,7 @@ function ForgotPasswordForm({ returnToLogin }: { returnToLogin: () => void }) {
   </form>;
 }
 
-function Discover({ sessionCompanies, onResearchPulled, onCompanyUpdated, onCompanyRemoved, openCompany, watchlist, toggleWatch }: { sessionCompanies: Company[]; onResearchPulled: (company: Company) => void; onCompanyUpdated: (company: Company) => void; onCompanyRemoved: (id: string) => void; openCompany: (id: string) => void; watchlist: string[]; toggleWatch: (id: string) => void }) {
+function Discover({ sessionCompanies, onResearchPulled, onCompanyUpdated, onCompanyRemoved, openCompany, watchlist, toggleWatch }: { sessionCompanies: Company[]; onResearchPulled: (company: Company) => void; onCompanyUpdated: (company: Company) => void; onCompanyRemoved: (id: string) => void; openCompany: (id: string, company?: Company) => void; watchlist: string[]; toggleWatch: (id: string) => void }) {
   const [query, setQuery] = useState("");
   const [country, setCountry] = useState<"USA" | "India">("USA");
   const currentYear = new Date().getFullYear();
@@ -445,6 +534,12 @@ function Discover({ sessionCompanies, onResearchPulled, onCompanyUpdated, onComp
   const [searching, setSearching] = useState(false);
   const [pullingId, setPullingId] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const selectionRequest = useRef(createSavedSelectionRequest<Company>());
+  const selectionScope = `${query}|${country}|${fromYear}|${toYear}`;
+  const currentSelectionScope = useRef(selectionScope);
+  currentSelectionScope.current = selectionScope;
+  const cancelPull = () => { selectionRequest.current.cancel(); setPullingId(null); };
+  useEffect(() => () => selectionRequest.current.cancel(), []);
 
   useEffect(() => {
     setMessage(null);
@@ -462,10 +557,17 @@ function Discover({ sessionCompanies, onResearchPulled, onCompanyUpdated, onComp
     if (!sessionCompanies.some((item) => item.id === catalog.id) && sessionCompanies.length >= MAX_SESSION_COMPANIES) {
       setMessage(`This session already contains ${MAX_SESSION_COMPANIES} companies—the maximum allowed.`); return;
     }
+    const scope = selectionScope;
     setPullingId(catalog.id); setMessage(null);
-    try { const company = await pullCompanyResearch(catalog, fromYear, toYear); onResearchPulled(company); openCompany(company.id); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "Research pull failed."); }
-    finally { setPullingId(null); }
+    await selectionRequest.current.run(
+      signal => pullCompanyResearch(catalog, fromYear, toYear, signal),
+      {
+        ready: company => { onResearchPulled(company); openCompany(company.id, company); },
+        failed: error => setMessage(error instanceof Error ? error.message : "Research pull failed."),
+        settled: () => setPullingId(null),
+      },
+      () => currentSelectionScope.current === scope,
+    );
   };
 
   return (
@@ -474,10 +576,10 @@ function Discover({ sessionCompanies, onResearchPulled, onCompanyUpdated, onComp
       <div className="session-limit-banner"><span>{sessionCompanies.length} / {MAX_SESSION_COMPANIES}</span><div><strong>Session research capacity</strong><small>Closing or refreshing this browser session clears the pulled financial data.</small></div></div>
       <div className="market-notice"><strong>TaRaShaData.ai source</strong><p>Live companies use source-linked, normalized financial facts from the TaRaShaData.ai API. The current coverage is derived from issuer filings and SEC XBRL, with browser-session-only persistence in Discover.</p></div>
       <div className="search-panel">
-        <label className="search-box"><span>⌕</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search company or symbol" /></label>
-        <select value={country} onChange={(event) => setCountry(event.target.value as "USA" | "India")} aria-label="Choose market"><option>USA</option><option>India</option></select>
+        <label className="search-box"><span>⌕</span><input value={query} onChange={(event) => { cancelPull(); setQuery(event.target.value); }} placeholder="Search company or symbol" /></label>
+        <select value={country} onChange={(event) => { cancelPull(); setCountry(event.target.value as "USA" | "India"); }} aria-label="Choose market"><option>USA</option><option>India</option></select>
       </div>
-      <div className="year-range-panel"><div><strong>Reporting-year range</strong><small>Maximum {MAX_YEAR_RANGE} years</small></div><label>From<input type="number" min="1995" max={toYear} value={fromYear} onChange={(event) => setFromYear(Number(event.target.value))} /></label><span>—</span><label>To<input type="number" min={fromYear} max={currentYear} value={toYear} onChange={(event) => setToYear(Number(event.target.value))} /></label></div>
+      <div className="year-range-panel"><div><strong>Reporting-year range</strong><small>Maximum {MAX_YEAR_RANGE} years</small></div><label>From<input type="number" min="1995" max={toYear} value={fromYear} onChange={(event) => { cancelPull(); setFromYear(Number(event.target.value)); }} /></label><span>—</span><label>To<input type="number" min={fromYear} max={currentYear} value={toYear} onChange={(event) => { cancelPull(); setToYear(Number(event.target.value)); }} /></label></div>
       {message && <div className="data-message">{message}</div>}
       {query.trim().length >= 2 && <section className="catalog-results"><div className="result-meta"><strong>{searching ? "Searching catalogue…" : `${results.length} matches`}</strong><span>Search results are not company cards</span></div>{results.map((company) => <article key={company.id}><div className="company-monogram">{company.name[0]}</div><div><h3>{company.name}</h3><p>{company.ticker} · {company.exchange} · {company.provider}</p></div><button className="button secondary" disabled={pullingId === company.id} onClick={() => pull(company)}>{pullingId === company.id ? "Pulling research…" : sessionCompanies.some((item) => item.id === company.id) ? "Refresh research" : "Pull research"}</button></article>)}</section>}
       <section className="session-research-section"><div className="section-heading-row"><div><p className="eyebrow">Pulled in this browser session</p><h2>Research shelf</h2></div><span>{sessionCompanies.length} companies</span></div>{sessionCompanies.length ? <div className="research-shelf-stack">{sessionCompanies.map((company) => <CompanyCard key={company.id} company={company} openCompany={openCompany} watched={watchlist.includes(company.id)} toggleWatch={toggleWatch} onRemove={() => onCompanyRemoved(company.id)} onCompanyUpdated={onCompanyUpdated} />)}</div> : <Empty title="Your research shelf is empty" text="Search the catalogue above and pull a company to create its session card." />}</section>
@@ -486,6 +588,15 @@ function Discover({ sessionCompanies, onResearchPulled, onCompanyUpdated, onComp
 }
 
 function CompanyCard({ company, openCompany, watched, toggleWatch, onRemove, onCompanyUpdated }: { company: Company; openCompany: (id: string) => void; watched: boolean; toggleWatch: (id: string) => void; onRemove?: () => void; onCompanyUpdated?: (company: Company) => void }) {
+  if (company.supportedStoryChapters?.join(",") === "1,2,3,4") return <article className="company-card">
+    <button className={`watch-button ${watched ? "watched" : ""}`} onClick={() => toggleWatch(company.id)} aria-label={watched ? "Remove from watchlist" : "Add to watchlist"}>{watched ? "♥" : "♡"}</button>
+    {onRemove && <button className="remove-shelf-button compact" onClick={onRemove} aria-label={`Remove ${company.name} from the research shelf`}>×</button>}
+    <button className="card-main" onClick={() => openCompany(company.id)}>
+      <div className="company-heading"><span className="company-monogram">{company.name[0]}</span><div><h3>{company.name}</h3><span>{company.symbol}</span></div></div>
+      <p>Company Story Pages 1–4 · Revenue, operating costs, cash flow and the balance sheet.</p>
+      <div className="card-footer"><span>TaRaShaData.ai source</span><strong>Open company story →</strong></div>
+    </button>
+  </article>;
   if (company.researchShelf) return <ResearchStoryCard company={company} shelf={company.researchShelf} openCompany={openCompany} watched={watched} toggleWatch={toggleWatch} onRemove={onRemove} onCompanyUpdated={onCompanyUpdated} />;
   const revenue = company.metrics.revenue;
   const change = revenue.length ? percentChange(revenue) : null;
@@ -522,6 +633,17 @@ function ResearchStoryCard({ company, shelf, openCompany, watched, toggleWatch, 
   const [recalculatingConstituents, setRecalculatingConstituents] = useState(false);
   const [constituentMessage, setConstituentMessage] = useState<string | null>(null);
   const swipeStartX = useRef<number | null>(null);
+  const constituentRequest = useRef(createSavedSelectionRequest<Company>());
+  const constituentScope = JSON.stringify([company.id, shelf.fromYear, shelf.toYear,
+    company.preparedFinancialSnapshot?.snapshotId, shelf.industryConstituents.map(item => item.id)]);
+  const currentConstituentScope = useRef(constituentScope);
+  currentConstituentScope.current = constituentScope;
+  useEffect(() => {
+    constituentRequest.current.cancel();
+    setRecalculatingConstituents(false);
+    setConstituentMessage(null);
+    return () => constituentRequest.current.cancel();
+  }, [constituentScope]);
   const chartUnit = company.currency.startsWith("US$") ? "USD millions" : "INR crores";
   const companyDeltaData = shelf.companyDeltas.map((item) => ({
     interval: yearInterval(item.fromYear, item.toYear),
@@ -544,15 +666,19 @@ function ResearchStoryCard({ company, shelf, openCompany, watched, toggleWatch, 
     if (!onCompanyUpdated) return;
     setRecalculatingConstituents(true);
     setConstituentMessage(null);
-    try {
-      const updated = await recalculateIndustryConstituents(company, constituentIds);
-      onCompanyUpdated(updated);
-      setConstituentMessage(constituentIds ? `Industry comparison recalculated using ${updated.researchShelf?.industryCompanyCount ?? constituentIds.length} selected companies.` : "The default industry bucket has been restored.");
-    } catch (error) {
-      setConstituentMessage(error instanceof Error ? error.message : "Industry comparison recalculation failed.");
-    } finally {
-      setRecalculatingConstituents(false);
-    }
+    const scope = constituentScope;
+    await constituentRequest.current.run(
+      signal => recalculateIndustryConstituents(company, constituentIds, signal),
+      {
+        ready: updated => {
+          onCompanyUpdated(updated);
+          setConstituentMessage(constituentIds ? `Industry comparison recalculated using ${updated.researchShelf?.industryCompanyCount ?? constituentIds.length} selected companies.` : "The default industry bucket has been restored.");
+        },
+        failed: error => setConstituentMessage(error instanceof Error ? error.message : "Industry comparison recalculation failed."),
+        settled: () => setRecalculatingConstituents(false),
+      },
+      () => currentConstituentScope.current === scope,
+    );
   };
 
   return (
@@ -1610,8 +1736,8 @@ function compactNumber(value: number): string {
   return Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(value);
 }
 
-function CompanyDetail({ company, watched, toggleWatch, navigate }: { company: Company; watched: boolean; toggleWatch: (id: string) => void; navigate: (page: Page) => void }) {
-  return <CompanyStoryHome company={company} watched={watched} toggleWatch={toggleWatch} backToDiscover={() => navigate("discover")} />;
+function CompanyDetail({ company, watched, toggleWatch, navigate, retryMarket }: { company: Company; watched: boolean; toggleWatch: (id: string) => void; navigate: (page: Page) => void; retryMarket: () => void }) {
+  return <CompanyStoryHome company={company} watched={watched} toggleWatch={toggleWatch} backToDiscover={() => navigate("discover")} retryMarketContext={retryMarket} />;
 }
 
 function formatCompanyMetric(company: Company, key: MetricKey, value: number): string {
@@ -1620,33 +1746,7 @@ function formatCompanyMetric(company: Company, key: MetricKey, value: number): s
   return formatMetric(key, value);
 }
 
-function formatStatementValue(company: Company, fact: StatementFact, value: number): string {
-  if (fact.unit === "%") return `${(Math.abs(value) <= 1 ? value * 100 : value).toFixed(1)}%`;
-  if (fact.unit === "USD per share" || fact.unit === "US$ per share") return `$${value.toFixed(2)}`;
-  if (fact.unit.endsWith(" per share")) return `${value.toFixed(2)} ${fact.unit.replace(" per share", "")}`;
-  if (fact.unit === "million shares") return `${value.toLocaleString("en-US", { maximumFractionDigits: 1 })}m`;
-  if (fact.unit === "₹ crore") return `${value < 0 ? "−" : ""}₹${Math.abs(value).toLocaleString("en-IN", { maximumFractionDigits: 1 })} cr`;
-  if (!company.currency.startsWith("US$")) return `${value.toLocaleString("en-IN", { maximumFractionDigits: 1 })}`;
-  return `${value < 0 ? "−" : ""}$${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 1 })}m`;
-}
-
-function StatementExplorer({ company }: { company: Company }) {
-  const groups = (company.statements ?? []).filter((group) => group.facts.length);
-  const [activeKey, setActiveKey] = useState<StatementGroup["key"]>(groups[0]?.key ?? "income");
-  const active = groups.find((group) => group.key === activeKey) ?? groups[0];
-  const years = [...new Set(active?.facts.flatMap((fact) => fact.values.map((value) => value.year)) ?? [])].sort((a, b) => a - b);
-  return (
-    <section className="statement-explorer">
-      <div className="statement-heading"><div><p className="eyebrow">{company.dataMode === "tarasha-data" ? "Normalized, source-linked financial facts" : "Illustrative financial facts"}</p><h2>Open the statements</h2></div><span>{company.dataMode === "tarasha-data" ? "Transient · TaRaShaData.ai API" : "Local preview"}</span></div>
-      <div className="statement-tabs">{groups.map((group) => <button className={group.key === active?.key ? "active" : ""} onClick={() => setActiveKey(group.key)} key={group.key}>{group.label}<small>{group.facts.length} facts</small></button>)}</div>
-      {active && <div className="statement-table-wrap"><table><thead><tr><th>Reported fact</th>{years.map((year) => <th key={year}>FY {year}</th>)}</tr></thead><tbody>{active.facts.map((fact) => { const values = new Map(fact.values.map((value) => [value.year, value.value])); return <tr key={fact.key}><td><strong>{fact.label}</strong><small>{fact.description}<br />{fact.unit}</small></td>{years.map((year) => <td key={year}>{values.has(year) ? formatStatementValue(company, fact, values.get(year)!) : "—"}</td>)}</tr>; })}</tbody></table></div>}
-      <div className="filing-and-limits">
-        <div><h3>Source filings</h3>{company.filings?.length ? <div className="filing-list">{company.filings.slice(0, 12).map((filing) => <a href={filing.url} target="_blank" rel="noreferrer" key={filing.accession}><span>{filing.form}</span><div><strong>{filing.title}</strong><small>Filed {filing.filed} · Period {filing.period || "not stated"}</small></div><b>↗</b></a>)}</div> : <p>No matching financial filing links were returned by TaRaShaData.ai for this range.</p>}</div>
-        <aside><h3>Read with these limits</h3><ul>{company.limitations?.map((item) => <li key={item}>{item}</li>)}</ul></aside>
-      </div>
-    </section>
-  );
-}
+export { StatementExplorer, formatStatementValue } from "./FinancialStatements";
 
 function ResearchDepthMap() {
   const layers = ["Enterprise", "Revenue engine", "Profit structure", "Cash conversion", "Financial resilience", "Capital allocation"];
@@ -2054,7 +2154,7 @@ function ComparisonFolio({ companies }: { companies: Company[] }) {
 
 function Compare({ companies }: { companies: Company[] }) {
   const [selected, setSelected] = useState<string[]>([]);
-  const availableCompanies = researchShelfCompanies(companies);
+  const availableCompanies = researchShelfCompanies(companies).filter((company) => company.supportedStoryChapters?.join(",") !== "1,2,3,4");
   const availableIds = availableCompanies.map((company) => company.id);
   const activeSelected = selected.filter((id) => availableIds.includes(id));
   const selectedCompanies = availableCompanies.filter((company) => activeSelected.includes(company.id));

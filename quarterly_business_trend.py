@@ -6,6 +6,7 @@ import streamlit as st
 
 from core import *  # noqa: F401,F403
 from dashboard_category_filter import select_category_company_ids
+from dashboard_spreadsheet_filter import select_spreadsheet_company_ids
 from ui_lazy_tabs import lazy_tab_bar
 from ui_theme import add_taxonomy_pictures, company_label_map, render_dashboard_table
 
@@ -22,7 +23,7 @@ _PERCENT_DETAIL_COLUMNS = [
 def _get_selected_company_ids(conn, companies_df: pd.DataFrame) -> List[int]:
     mode = st.radio(
         "Analyze by",
-        ["Company", "Industry Bucket", "Category / Sub-Category"],
+        ["Company", "Industry Bucket", "Category / Sub-Category", "Spreadsheet"],
         horizontal=True,
         key="quarterly_business_trend_mode",
     )
@@ -36,6 +37,12 @@ def _get_selected_company_ids(conn, companies_df: pd.DataFrame) -> List[int]:
             key="quarterly_business_trend_companies",
         )
         return sorted({int(company_id) for company_id in selected})
+
+    if mode == "Spreadsheet":
+        return select_spreadsheet_company_ids(
+            conn, key="quarterly_business_trend_spreadsheet",
+            result_state_key="quarterly_business_trend_has_run",
+        )
 
     if mode == "Category / Sub-Category":
         return select_category_company_ids(
@@ -222,7 +229,8 @@ def render_quarterly_business_trend_dashboard_tab() -> None:
     quarter_range = _quarter_range_input()
     company_ids = _get_selected_company_ids(conn, companies_df)
     if not company_ids:
-        st.info("Select at least one company or industry bucket to compute scores.")
+        if st.session_state.get("quarterly_business_trend_mode") != "Spreadsheet":
+            st.info("Select at least one company or industry bucket to compute scores.")
         return
 
     compute = st.button("Compute Score", type="primary", key="quarterly_business_trend_compute")

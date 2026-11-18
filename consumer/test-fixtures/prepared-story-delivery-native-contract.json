@@ -1,0 +1,37 @@
+{
+  "schema": "actual-native-frozen-r2-unit-response-contract",
+  "fixture_only": true,
+  "backend_manifest_sha256": "c399596612bcf043fea2e3022a4cd5a15777f4def952d4764db079fad28764ec",
+  "headers": {
+    "cache-control": "no-store",
+    "x-tarashadata-projection": "prepared",
+    "x-tarashadata-snapshot": "3f6454fa3fa0e88985a85001dd39734ebe9b6c4bb3bf561d382e651b0428419c",
+    "x-tarashadata-source-run": "1",
+    "x-tarashadata-source-generation": "1",
+    "x-tarashadata-source-quality": "succeeded",
+    "x-tarashadata-prepared-at": "2026-10-13T19:32:10.400915+00:00",
+    "x-tarashadata-is-latest": "false",
+    "x-tarashadata-latest-status": "preparing",
+    "x-tarashadata-replacement": "none",
+    "content-length": "705",
+    "content-type": "application/json"
+  },
+  "prepared_financial_snapshot": {
+    "key": "19fa2222bb82c79ef247595146b637ee3929f4871b0abf76fcf1d5f7deb16626",
+    "market_inputs_sha256": "f305bc3084bb778b588c4a365c072f12f95a68d8745ec61510c9e449a2fe5ab0",
+    "snapshot_id": "3f6454fa3fa0e88985a85001dd39734ebe9b6c4bb3bf561d382e651b0428419c"
+  },
+  "prepared_default_request": {
+    "constituent_identifiers": null,
+    "defer_market_context": true,
+    "from_year": 2020,
+    "identifier": "ONE",
+    "include_industry_context": true,
+    "include_market_context": true,
+    "provenance": "references",
+    "to_year": 2026
+  },
+  "body_byte_identity_unchanged": true,
+  "body_sha256": "cbb61738ef54f21a65aa86e097a2cdd33234f82ff1504e1f0d5119f8b3be30e1",
+  "latest_operation_not_ready": true
+}

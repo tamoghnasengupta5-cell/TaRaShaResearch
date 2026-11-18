@@ -1,9 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { MaximizableStorySection } from "./MaximizableStorySection";
+import { PreparedStoryStatus } from "./PreparedStoryStatus";
+import { NonCashWorkingCapital } from "./NonCashWorkingCapital";
+import { StatementExplorer } from "./FinancialStatements";
 import { StockHistoryChapter } from "./StockHistoryChapter";
 import { AdjustedRevenueComparison, RevenueOfferingHistory, RevenueSourcesDisclosure } from "./RevenueOfferingHistory";
-import { hasNewerRevenueTtm, latestAnnualRevenueEnd, revenueGrowth, revenuePeriods, threePeriodRevenueCagr } from "./revenueOfferingMath";
+import { categoryPeriodsAreComparable, revenueBreakdownCategories, revenueBreakdownPoint } from "./revenueBreakdown";
+import { annualRevenueYears, companyForPeriod, hasNewerRevenueTtm, isIndiaListedCompany, latestAnnualRevenueEnd, periodReportingCurrency, periodReportingLabel, periodOperationsScopeLabel, periodsHaveComparableOperationsScope, periodsHaveComparableCurrency, revenueGrowth } from "./revenueOfferingMath";
 import type {
   BusinessSegmentRevenue,
   Company,
@@ -14,6 +18,7 @@ import type {
   CompanyCashConversionStory,
   CompanyCashConversionTrendPoint,
   CompanyCostStructureLine,
+  CompanyCostStructureStory,
   CompanyMarketPricingHistoryMetric,
   CompanyMarketPricingMetric,
   CompanyMarketPricingStory,
@@ -34,6 +39,7 @@ const storyItems = [
   { id: "stock-behaves", number: "05", title: "How the stock behaves", subtitle: "Risk and volatility profile" },
   { id: "market-pricing", number: "06", title: "What the market is pricing", subtitle: "Valuation and multiples" },
   { id: "stock-got-here", number: "07", title: "How the stock got here", subtitle: "Price history and key milestones" },
+  { id: "financials", number: "08", title: "Financials", subtitle: "Statements, ratios and KPIs" },
   { id: "tarasha-view", number: "☆", title: "TaRaSha view", subtitle: "Our synthesis of the investment picture" },
 ] as const;
 
@@ -51,10 +57,13 @@ function pointForYear(series: YearValue[], year: number | null): YearValue | nul
   return year === null ? null : series.find(point => point.year === year) ?? null;
 }
 
-function percentGrowth(series: YearValue[]): number | null {
+function percentGrowth(series: YearValue[], company?: Company): number | null {
   const current = latestPoint(series);
   const prior = previousPoint(series);
-  return current && prior && prior.value !== 0 ? ((current.value - prior.value) / Math.abs(prior.value)) * 100 : null;
+  return current && prior && prior.year === current.year - 1 && prior.value !== 0
+    && (!company || periodsHaveComparableCurrency(company, [prior.year, current.year]))
+    && (!company || periodsHaveComparableOperationsScope(company, [prior.year, current.year]))
+    ? ((current.value - prior.value) / Math.abs(prior.value)) * 100 : null;
 }
 
 function currencyCode(company: Company): string {
@@ -67,7 +76,11 @@ function currencySymbol(company: Company): string {
   return code === "USD" ? "$" : code === "INR" || company.currency.startsWith("₹") ? "₹" : `${code} `;
 }
 
-function formatAmount(company: Company, value: number | null): string {
+function formatAmount(company: Company, value: number | null, period?: string | number | null): string {
+  if (period !== undefined && period !== null) {
+    if (isIndiaListedCompany(company) && !periodReportingCurrency(company, period)) return "Not available";
+    company = companyForPeriod(company, period);
+  }
   if (value === null || !Number.isFinite(value)) return "Not available";
   const sign = value < 0 ? "−" : "";
   const absolute = Math.abs(value);
@@ -115,7 +128,7 @@ function CompanyStoryHeader({ company, watched, toggleWatch }: { company: Compan
   const revenueGrowth = recentTtm
     ? recentTtm.priorYearRevenue && recentTtm.priorYearRevenue > 0
       ? (recentTtm.revenue / recentTtm.priorYearRevenue - 1) * 100 : null
-    : percentGrowth(company.metrics.revenue);
+    : percentGrowth(company.metrics.revenue, company);
   const operatingMargin = pointForYear(company.metrics.operatingMargin, reportingYear);
   const freeCashFlow = pointForYear(company.metrics.freeCashFlow, reportingYear);
   const netDebt = pointForYear(company.metrics.netDebt, reportingYear);
@@ -130,21 +143,22 @@ function CompanyStoryHeader({ company, watched, toggleWatch }: { company: Compan
     </div>
     <button className={`story-watch-button ${watched ? "watched" : ""}`} onClick={() => toggleWatch(company.id)}><span>{watched ? "✓" : "+"}</span>{watched ? "In watchlist" : "Add to watchlist"}</button>
     <div className="story-headline-metrics">
-      <HeaderMetric label={recentTtm ? `Revenue (TTM to ${recentTtm.periodEnd})` : `Revenue${revenue ? ` (FY${revenue.year})` : ""}`} value={formatAmount(company, recentTtm?.revenue ?? revenue?.value ?? null)} />
+      <HeaderMetric label={recentTtm ? `Revenue (TTM to ${recentTtm.periodEnd})` : `Revenue${revenue ? ` (FY${revenue.year})` : ""}`} value={formatAmount(company, recentTtm?.revenue ?? revenue?.value ?? null, recentTtm ? "TTM" : reportingYear)} />
       <HeaderMetric label={`Revenue Growth (YoY)${recentTtm ? " (TTM)" : yearSuffix}`} value={formatPercent(revenueGrowth)} change={revenueGrowth === null ? undefined : revenueGrowth >= 0 ? "Growing" : "Declining"} tone={revenueGrowth !== null && revenueGrowth < 0 ? "negative" : "positive"} />
       <HeaderMetric label={`Operating Margin${yearSuffix}`} value={formatPercent(operatingMargin?.value ?? null)} />
-      <HeaderMetric label={`Free Cash Flow${yearSuffix}`} value={formatAmount(company, freeCashFlow?.value ?? null)} />
-      <HeaderMetric label={`Net Debt${yearSuffix}`} value={formatAmount(company, netDebt?.value ?? null)} change={netDebt && netDebt.value < 0 ? "Net cash" : undefined} tone="positive" />
+      <HeaderMetric label={`Free Cash Flow${yearSuffix}`} value={formatAmount(company, freeCashFlow?.value ?? null, reportingYear)} />
+      <HeaderMetric label={`Net Debt${yearSuffix}`} value={formatAmount(company, netDebt?.value ?? null, reportingYear)} change={netDebt && netDebt.value < 0 ? "Net cash" : undefined} tone="positive" />
     </div>
-    <div className="story-data-date"><span>Latest reported period</span><strong>{company.reportingPeriod}</strong><small>Updated {company.updatedAt}</small></div>
+    <div className="story-data-date"><span>Latest reported period</span><strong>{company.reportingPeriod}</strong>{isIndiaListedCompany(company) && company.reportingBasis && <span className="story-reporting-basis">{company.reportingBasis === "consolidated" ? "Consolidated" : "Standalone"}</span>}<small>Updated {company.updatedAt}</small></div>
+    <PreparedStoryStatus delivery={company.preparedStoryDelivery} />
   </section>;
 }
 
-function StoryNavigation({ activeStory, onChange }: { activeStory: string; onChange: (story: string) => void }) {
+function StoryNavigation({ activeStory, onChange, supported }: { activeStory: string; onChange: (story: string) => void; supported?: number[] }) {
   return <aside className="company-story-navigation">
     <h2>The company story</h2>
     <nav aria-label="The company story">
-      {storyItems.map((item) => <button key={item.id} className={activeStory === item.id ? "active" : ""} onClick={() => onChange(item.id)} aria-current={activeStory === item.id ? "page" : undefined}>
+      {storyItems.filter((item) => item.id === "financials" || !supported || supported.includes(Number(item.number))).map((item) => <button key={item.id} className={activeStory === item.id ? "active" : ""} onClick={() => onChange(item.id)} aria-current={activeStory === item.id ? "page" : undefined}>
         <span>{item.number}</span><div><strong>{item.title}</strong><small>{item.subtitle}</small></div>
       </button>)}
     </nav>
@@ -152,30 +166,37 @@ function StoryNavigation({ activeStory, onChange }: { activeStory: string; onCha
 }
 
 function SegmentDonut({ company, segments, total, period }: { company: Company; segments: BusinessSegmentRevenue[]; total: number; period: string }) {
+  const hasDeductions = segments.some(segment => segment.latestRevenue < 0);
+  const positiveTotal = segments.reduce((sum, segment) => sum + Math.max(0, segment.latestRevenue), 0);
+  const chartSegments = segments.filter(segment => segment.latestRevenue > 0).map(segment => ({
+    ...segment,
+    percentageOfTotal: hasDeductions ? segment.latestRevenue / positiveTotal * 100 : segment.percentageOfTotal,
+    color: segment.member === "__undetermined__" ? "#c7ced2" : segmentColors[segments.indexOf(segment) % segmentColors.length],
+  }));
   let cumulative = 0;
   return <div className="segment-donut-wrap">
-    <svg viewBox="0 0 120 120" role="img" aria-label={`Revenue share by category for ${period}`}>
+    <svg viewBox="0 0 120 120" role="img" aria-label={`Revenue share by category for ${period}${hasDeductions ? " before deductions, as a share of positive disclosures" : ""}`}>
       <circle className="segment-donut-track" cx="60" cy="60" r="43" pathLength="100" />
-      {segments.map((segment, index) => {
+      {chartSegments.map((segment) => {
         const percentage = segment.percentageOfTotal ?? (total ? (segment.latestRevenue / total) * 100 : 0);
         const offset = -cumulative;
         cumulative += percentage;
-        const color = segment.member === "__undetermined__" ? "#c7ced2" : segmentColors[index % segmentColors.length];
-        return <circle key={segment.member} className="segment-donut-slice" cx="60" cy="60" r="43" pathLength="100" stroke={color} strokeDasharray={`${Math.max(0, percentage)} ${Math.max(0, 100 - percentage)}`} strokeDashoffset={offset}><title>{`${segment.name}: ${formatPercent(percentage)}`}</title></circle>;
+        const color = segment.color;
+        return <circle key={segment.member} className="segment-donut-slice" cx="60" cy="60" r="43" pathLength="100" stroke={color} strokeDasharray={`${Math.max(0, percentage)} ${Math.max(0, 100 - percentage)}`} strokeDashoffset={offset}><title>{`${segment.name}: ${formatPercent(percentage)}${hasDeductions ? " of positive disclosures" : ""}`}</title></circle>;
       })}
     </svg>
-    <div><strong>{formatAmount(company, total)}</strong><span>{period} Revenue</span></div>
-    {segments.map((segment, index) => {
+    <div><strong>{formatAmount(company, hasDeductions ? positiveTotal : total)}</strong><span>{hasDeductions ? `${period} Positive disclosures` : `${period} Revenue`}</span></div>
+    {chartSegments.map((segment, index) => {
       const percentage = segment.percentageOfTotal ?? (total ? (segment.latestRevenue / total) * 100 : 0);
-      const midpoint = segments.slice(0, index).reduce((sum, item) => sum + (item.percentageOfTotal ?? (item.latestRevenue / total) * 100), 0) + percentage / 2;
+      const midpoint = chartSegments.slice(0, index).reduce((sum, item) => sum + (item.percentageOfTotal ?? (item.latestRevenue / total) * 100), 0) + percentage / 2;
       const angle = ((midpoint / 100) * Math.PI * 2) - Math.PI / 2;
       return <b key={segment.member} style={{ left: `${50 + Math.cos(angle) * 35}%`, top: `${50 + Math.sin(angle) * 35}%` }}>{Math.round(percentage)}%</b>;
     })}
   </div>;
 }
 
-function MetricTone({ value }: { value: number | null }) {
-  return <span className={value === null ? "neutral" : value >= 0 ? "positive" : "negative"}>{formatPercent(value)}</span>;
+function MetricTone({ value, reason }: { value: number | null; reason?: string | null }) {
+  return <span title={value === null && reason ? reason : undefined} className={value === null ? "neutral" : value >= 0 ? "positive" : "negative"}>{formatPercent(value)}</span>;
 }
 
 export function HowItMakesMoney({ company }: { company: Company }) {
@@ -184,40 +205,64 @@ export function HowItMakesMoney({ company }: { company: Company }) {
   const story = company.companyStory?.revenueSegments;
   const offeringStory = company.companyStory?.revenueOfferings;
   const latestRevenue = latestPoint(company.metrics.revenue);
-  const fiscalYear = story?.latestFiscalYear ?? latestRevenue?.year ?? null;
+  const indiaListed = isIndiaListedCompany(company);
+  const fiscalYear = indiaListed ? annualRevenueYears(company).at(-1) ?? null : story?.latestFiscalYear ?? latestRevenue?.year ?? null;
   const trailing = offeringStory?.ttm;
   const annualEnd = latestAnnualRevenueEnd(company) ?? "";
   const productAxis = offeringStory?.offeringAxis;
-  const offeringLeaves = (offeringStory?.offerings ?? []).flatMap(item => item.children?.length ? item.children : [item]);
+  const offeringLeaves = revenueBreakdownCategories(company);
+  const categoryById = new Map(offeringLeaves.map(item => [item.id, item]));
   const trailingOfferings = trailing && trailing.periodEnd > annualEnd
-    ? offeringLeaves.filter(item => (item.revenueByPeriod.TTM ?? 0) > 0)
+    ? offeringLeaves.filter(item => offeringStory?.segmentReconciliation
+      ? Number.isFinite(item.revenueByPeriod.TTM)
+      : (item.revenueByPeriod.TTM ?? 0) > 0)
     : [];
-  const [priorComparablePeriod, priorToPriorComparablePeriod] = revenuePeriods(company, true, false);
-  const reconciledOfferings = trailing && trailingOfferings.length >= 1 && Math.abs(trailingOfferings.reduce((sum, item) => sum + (item.revenueByPeriod.TTM ?? 0), 0) - trailing.revenue) <= Math.max(.01, trailing.revenue * .000001);
-  const isOfferingView = Boolean(reconciledOfferings);
-  const isProductServiceView = Boolean(isOfferingView && productAxis && /product|service/i.test(productAxis) && trailingOfferings.every(item => item.id.startsWith(`${productAxis}/`)));
-  const totalRevenue = isOfferingView ? trailing!.revenue : story?.totalRevenue ?? latestRevenue?.value ?? null;
-  const period = isOfferingView ? "TTM" : fiscalYear === null ? "" : `FY${fiscalYear}`;
-  const determined = isOfferingView || (story?.status === "available" && story.segments.length > 0);
+  const reconciledTtmOfferings = Boolean(trailing && trailingOfferings.length >= 1 && Math.abs(trailingOfferings.reduce((sum, item) => sum + (item.revenueByPeriod.TTM ?? 0), 0) - trailing.revenue) <= Math.max(.01, trailing.revenue * .000001));
+  const annualPeriod = fiscalYear === null ? null : String(fiscalYear);
+  const annualTotal = annualPeriod === null || indiaListed && !periodReportingCurrency(company, annualPeriod) ? null : offeringStory?.annualTotals?.[annualPeriod] ?? pointForYear(company.metrics.revenue, fiscalYear)?.value ?? null;
+  const annualOfferings = annualPeriod === null ? [] : offeringLeaves.filter(item => Number.isFinite(item.revenueByPeriod[annualPeriod]));
+  const reconciledAnnualOfferings = Boolean(annualTotal !== null && annualOfferings.length >= 1 && Math.abs(annualOfferings.reduce((sum, item) => sum + (item.revenueByPeriod[annualPeriod!] ?? 0), 0) - annualTotal) <= Math.max(.01, Math.abs(annualTotal) * .000001));
+  const useAnnualBreakdown = indiaListed && !reconciledTtmOfferings && reconciledAnnualOfferings;
+  const breakdownPeriod = useAnnualBreakdown ? annualPeriod! : "TTM";
+  const displayOfferings = useAnnualBreakdown ? annualOfferings : trailingOfferings;
+  const [priorComparablePeriod, priorToPriorComparablePeriod] = useAnnualBreakdown
+    ? [String(fiscalYear! - 1), String(fiscalYear! - 2)]
+    : ["TTM", "TTM"];
+  const isOfferingView = reconciledTtmOfferings || useAnnualBreakdown;
+  const hasNewerTtm = Boolean(trailing && trailing.periodEnd > annualEnd && !useAnnualBreakdown);
+  const isSegmentReconciliationView = Boolean(isOfferingView && offeringStory?.segmentReconciliation);
+  const breakdownPoint = revenueBreakdownPoint(company, breakdownPeriod);
+  const isRevenueNoteView = indiaListed && isSegmentReconciliationView && breakdownPoint?.sourceType === "disclosed_revenue_note";
+  const isProductServiceView = Boolean(isOfferingView && productAxis && /product|service/i.test(productAxis) && displayOfferings.every(item => item.id.startsWith(`${productAxis}/`)));
+  const annualStoryMatches = !indiaListed || story?.latestFiscalYear === fiscalYear;
+  const totalRevenue = hasNewerTtm ? trailing!.revenue : indiaListed ? annualTotal : story?.totalRevenue ?? latestRevenue?.value ?? null;
+  const period = hasNewerTtm ? "TTM" : fiscalYear === null ? "" : `FY${fiscalYear}`;
+  const determined = isOfferingView || (!hasNewerTtm && annualStoryMatches && story?.status === "available" && story.segments.length > 0);
   const segments: BusinessSegmentRevenue[] = isOfferingView
-    ? trailingOfferings.map(item => {
-        const currentRevenue = item.revenueByPeriod.TTM!;
-        const priorComparableRevenue = item.revenueByPeriod[priorComparablePeriod] ?? null;
-        const priorToPriorComparableRevenue = item.revenueByPeriod[priorToPriorComparablePeriod] ?? null;
+    ? displayOfferings.map(item => {
+        const currentRevenue = item.revenueByPeriod[breakdownPeriod]!;
         return {
           member: item.id,
           name: item.label,
           latestRevenue: currentRevenue,
-          percentageOfTotal: currentRevenue / trailing!.revenue * 100,
-          yoyGrowthPercent: revenueGrowth(currentRevenue, priorComparableRevenue),
-          threeYearCagrPercent: threePeriodRevenueCagr(currentRevenue, priorToPriorComparableRevenue),
+          percentageOfTotal: totalRevenue && totalRevenue !== 0 ? currentRevenue / totalRevenue * 100 : null,
+          yoyGrowthPercent: !periodsHaveComparableCurrency(company, [breakdownPeriod, priorComparablePeriod])
+            || !periodsHaveComparableOperationsScope(company, [breakdownPeriod, priorComparablePeriod])
+            || indiaListed && !categoryPeriodsAreComparable(item, [breakdownPeriod, priorComparablePeriod]) ? null : useAnnualBreakdown ? item.yoyGrowthPercentByPeriod?.[breakdownPeriod] ?? null
+            : item.ttmYoyGrowthPercent ?? null,
+          threeYearCagrPercent: !periodsHaveComparableCurrency(company, [breakdownPeriod, priorComparablePeriod, priorToPriorComparablePeriod])
+            || !periodsHaveComparableOperationsScope(company, [breakdownPeriod, priorComparablePeriod, priorToPriorComparablePeriod])
+            || indiaListed && !categoryPeriodsAreComparable(item, [breakdownPeriod, priorComparablePeriod, priorToPriorComparablePeriod]) ? null : useAnnualBreakdown ? item.threePeriodCagrPercentByPeriod?.[breakdownPeriod] ?? null
+            : indiaListed ? item.ttmThreePeriodCagrPercent ?? null : item.ttmThreeYearCagrPercent ?? null,
+          yoyGrowthReason: item.ttmYoyGrowthReason,
+          threeYearCagrReason: item.ttmThreeYearCagrReason,
           history: [],
           accession: null,
           filedDate: null,
-          sourceUrl: item.sourceByPeriod?.TTM ?? null,
+          sourceUrl: item.sourceByPeriod?.[breakdownPeriod] ?? null,
         };
       })
-    : story?.segments.length
+    : !hasNewerTtm && annualStoryMatches && story?.segments.length
     ? story.segments
     : totalRevenue !== null && fiscalYear !== null
       ? [{
@@ -225,7 +270,7 @@ export function HowItMakesMoney({ company }: { company: Company }) {
         name: "Undetermined business segment",
         latestRevenue: totalRevenue,
         percentageOfTotal: 100,
-        yoyGrowthPercent: percentGrowth(company.metrics.revenue),
+        yoyGrowthPercent: hasNewerTtm ? revenueGrowth(trailing!.revenue, trailing!.priorYearRevenue) : percentGrowth(company.metrics.revenue, company),
         threeYearCagrPercent: null,
         history: [],
         accession: null,
@@ -233,9 +278,13 @@ export function HowItMakesMoney({ company }: { company: Company }) {
         sourceUrl: company.companyStory?.revenueOfferings?.totalSourceByPeriod?.[String(fiscalYear)] ?? null,
       }]
       : [];
-  const hasRevenueView = totalRevenue !== null && (fiscalYear !== null || isOfferingView) && segments.length > 0;
+  const hasRevenueView = totalRevenue !== null && (fiscalYear !== null || hasNewerTtm) && segments.length > 0;
+  const deductions = segments.filter(segment => segment.latestRevenue < 0);
+  const positiveDisclosureTotal = segments.reduce((sum, segment) => sum + Math.max(0, segment.latestRevenue), 0);
+  const reconciliationCompany = companyForPeriod(company, hasNewerTtm ? "TTM" : fiscalYear ?? "");
+  const reconciliationAmount = (value: number) => `${value < 0 ? "−" : ""}${currencySymbol(reconciliationCompany)}${Math.abs(value).toLocaleString("en-US", { maximumFractionDigits: 1 })}M`;
   const offeringComparisonSourceUrls = isOfferingView
-    ? trailingOfferings.flatMap(item => ["TTM", priorComparablePeriod, priorToPriorComparablePeriod].flatMap(comparisonPeriod => (
+    ? displayOfferings.flatMap(item => [breakdownPeriod, priorComparablePeriod, priorToPriorComparablePeriod].flatMap(comparisonPeriod => (
         item.sourcesByPeriod?.[comparisonPeriod]
         ?? (item.sourceByPeriod?.[comparisonPeriod] ? [item.sourceByPeriod[comparisonPeriod]] : [])
       )))
@@ -243,11 +292,12 @@ export function HowItMakesMoney({ company }: { company: Company }) {
   const sourceUrls = [...new Set([
     ...segments.flatMap(segment => segment.sourceUrl ? [segment.sourceUrl] : []),
     ...offeringComparisonSourceUrls,
+    ...(hasNewerTtm ? displayOfferings.flatMap(item => item.ttmGrowthSourceUrls ?? []) : []),
     ...(fiscalYear === null ? [] : company.companyStory?.revenueOfferings?.totalSourcesByPeriod?.[String(fiscalYear)] ?? []),
-    ...(isOfferingView ? offeringStory?.totalSourcesByPeriod?.TTM ?? [] : []),
+    ...(hasNewerTtm ? offeringStory?.totalSourcesByPeriod?.TTM ?? [] : []),
   ])];
   const subtitles = [
-    period ? `Revenue breakdown for ${period}` : "Revenue breakdown and growth",
+    period ? `Revenue breakdown for ${period}${periodOperationsScopeLabel(company, hasNewerTtm ? "TTM" : fiscalYear!) ? ` · ${periodOperationsScopeLabel(company, hasNewerTtm ? "TTM" : fiscalYear!)}` : ""}` : "Revenue breakdown and growth",
     "Revenue by products, services & offerings",
     "Reported vs adjusted revenue",
   ];
@@ -267,21 +317,22 @@ export function HowItMakesMoney({ company }: { company: Company }) {
     <div className="story-internal-page" key={storyPage} data-story-page={storyPage}>
     {storyPage === 1 && (hasRevenueView ? <>
       <div className={`revenue-story-grid ${determined ? "" : "undetermined"}`}>
-        <SegmentDonut company={company} segments={segments} total={totalRevenue!} period={period} />
+        <SegmentDonut company={companyForPeriod(company, hasNewerTtm ? "TTM" : fiscalYear!)} segments={segments} total={totalRevenue!} period={period} />
         <div className="segment-table-wrap"><table className="segment-table">
-          <thead><tr><th>{isOfferingView ? isProductServiceView ? "Product / Service" : "Reported Revenue Category" : "Business Segment"}</th><th>Revenue ({period})</th><th>% of Total</th><th>YoY Growth</th><th>3Y CAGR</th></tr></thead>
+          <thead><tr><th>{isRevenueNoteView ? "Reported Revenue Category" : isSegmentReconciliationView ? "Business Segment" : isOfferingView ? isProductServiceView ? "Product / Service" : "Reported Revenue Category" : "Business Segment"}</th><th>Revenue ({period})</th><th>% of Total</th><th>YoY Growth</th><th>3Y CAGR</th></tr></thead>
           <tbody>{segments.map((segment, index) => <tr key={segment.member}>
-            <td><i style={{ background: segment.member === "__undetermined__" ? "#a9b1b6" : segmentColors[index % segmentColors.length] }} /><div><strong>{segment.name}</strong><small>{segment.member === "__undetermined__" ? "Revenue detail not separately disclosed" : isOfferingView ? isProductServiceView ? "Issuer-disclosed product/service category" : "Issuer-disclosed revenue category" : "Issuer-reported revenue segment"}</small></div></td>
-            <td>{formatAmount(company, segment.latestRevenue)}</td>
+            <td><i style={{ background: segment.member === "__undetermined__" ? "#a9b1b6" : segmentColors[index % segmentColors.length] }} /><div><strong>{segment.name}</strong><small>{segment.member === "__undetermined__" ? "Comparable segment partition unavailable" : isRevenueNoteView ? "Issuer-disclosed revenue-note category" : isSegmentReconciliationView ? categoryById.get(segment.member)?.role === "elimination" ? "Removes intersegment sales" : categoryById.get(segment.member)?.role === "reconciliation" ? "Unallocated revenue reconciliation" : "Issuer-reported revenue segment" : isOfferingView ? isProductServiceView ? "Issuer-disclosed product/service category" : "Issuer-disclosed revenue category" : "Issuer-reported revenue segment"}</small></div></td>
+            <td>{formatAmount(company, segment.latestRevenue, hasNewerTtm ? "TTM" : fiscalYear)}</td>
             <td>{formatPercent(segment.percentageOfTotal)}</td>
-            <td><MetricTone value={segment.yoyGrowthPercent} /></td>
-            <td><MetricTone value={segment.threeYearCagrPercent} /></td>
+            <td><MetricTone value={segment.yoyGrowthPercent} reason={segment.yoyGrowthReason} /></td>
+            <td><MetricTone value={segment.threeYearCagrPercent} reason={segment.threeYearCagrReason} /></td>
           </tr>)}</tbody>
         </table>
-        <div className="story-insight"><span aria-hidden="true">{determined ? "↗" : "ⓘ"}</span><p>{isOfferingView ? `The TTM ${isProductServiceView ? "product/service" : "issuer-reported revenue"} categories reconcile to consolidated revenue through ${trailing!.periodEnd}. Growth uses TTM, the prior comparable, and the prior-to-prior comparable values; unavailable comparisons are not estimated. These categories are not necessarily reportable operating segments.` : determined ? story?.summary : "Revenue segment detail is not separately disclosed in the available issuer facts. The chart and row therefore classify 100% of consolidated revenue as undetermined; no segment split is estimated."}</p></div>
+        {deductions.length > 0 && <p className="revenue-signed-reconciliation"><strong>Revenue reconciliation:</strong> Positive disclosures {reconciliationAmount(positiveDisclosureTotal)} {deductions.map(segment => <span key={segment.member}>+ {segment.name} ({reconciliationAmount(segment.latestRevenue)}) </span>)}= company revenue {reconciliationAmount(totalRevenue!)} ({formatAmount(reconciliationCompany, totalRevenue!)}). Donut percentages use positive disclosures; table percentages use company revenue.</p>}
+        <div className="story-insight"><span aria-hidden="true">{determined ? "↗" : "ⓘ"}</span><p>{isRevenueNoteView ? `The ${useAnnualBreakdown ? `FY${fiscalYear}` : "TTM"} issuer-disclosed revenue-note categories reconcile to net operating revenue, including separately disclosed other operating revenue. These categories are not necessarily reportable operating segments. Growth uses comparable disclosure types and reporting bases; unavailable comparisons are not estimated.` : isSegmentReconciliationView ? `${breakdownPoint?.sourceType === "reported_revenue_hierarchy" ? "The complete issuer-filed hierarchy retains signed Other and elimination scopes." : "Reported segments include intersegment sales."} ${deductions.length ? "The donut shows positive disclosures before deductions; its centre and percentages use that positive subtotal." : "The donut shows reported revenue categories."} Table shares use total company revenue. ${useAnnualBreakdown ? `FY${fiscalYear} annual breakdown; growth uses consecutive fiscal years where the categories are comparable.` : `TTM through ${trailing!.periodEnd}; category growth uses source-verified comparable TTM periods. YoY compares one year earlier; 3Y CAGR compares three years earlier using a cube root.`}` : isOfferingView ? useAnnualBreakdown ? `The FY${fiscalYear} ${isProductServiceView ? "product/service" : "issuer-reported revenue"} categories reconcile to annual company revenue. Growth uses consecutive fiscal years; unavailable comparisons are not estimated. These categories are not necessarily reportable operating segments.` : `The TTM ${isProductServiceView ? "product/service" : "issuer-reported revenue"} categories reconcile to ${indiaListed ? "company" : "consolidated"} revenue through ${trailing!.periodEnd}. ${indiaListed ? "Growth uses TTM, the prior comparable, and the prior-to-prior comparable values" : "YoY compares with TTM one year earlier; 3Y CAGR compares with TTM three years earlier using a cube root"}; unavailable comparisons are not estimated. These categories are not necessarily reportable operating segments.` : hasNewerTtm ? indiaListed ? "TTM revenue is available, but a comparable TTM breakdown is unavailable from the verified source data. No annual split is substituted or estimated." : "TTM revenue is available, but a comparable TTM breakdown is not disclosed in the stored filings. No annual split is substituted or estimated." : story?.summary ?? (indiaListed ? "The verified source data does not support a comparable segment breakdown. The chart and row therefore classify 100% of company revenue as undetermined; no segment split is estimated." : "Revenue segment detail is not separately disclosed in the available issuer facts. The chart and row therefore classify 100% of consolidated revenue as undetermined; no segment split is estimated.")}</p></div>
         </div>
       </div>
-      <RevenueSourcesDisclosure methodology={isOfferingView ? offeringStory?.methodology : story?.methodology ?? "Consolidated revenue comes from TaRaShaData normalized issuer filings. No unavailable segment is estimated."} sourceUrls={sourceUrls} note={!determined ? story?.reason : isOfferingView ? story?.reason : null} />
+      <RevenueSourcesDisclosure methodology={isSegmentReconciliationView ? breakdownPoint?.methodology ?? offeringStory?.segmentReconciliation?.methodology : isOfferingView ? offeringStory?.methodology : story?.methodology ?? (indiaListed ? "Company revenue comes from TaRaShaData normalized issuer filings. No unavailable segment is estimated." : "Consolidated revenue comes from TaRaShaData normalized issuer filings. No unavailable segment is estimated.")} sourceUrls={sourceUrls} note={isSegmentReconciliationView ? breakdownPoint?.basis ?? offeringStory?.segmentReconciliation?.basis : !determined ? story?.reason : isOfferingView ? story?.reason : null} />
     </> : <div className="revenue-availability"><div><strong>{formatAmount(company, null)}</strong><span>Total company revenue</span></div><div><h3>Revenue is not available</h3><p>TaRaShaData did not return a source-backed annual revenue fact for this company.</p></div></div>)}
     {storyPage === 2 && <RevenueOfferingHistory company={company} />}
     {storyPage === 3 && <AdjustedRevenueComparison company={company} />}
@@ -289,11 +340,11 @@ export function HowItMakesMoney({ company }: { company: Company }) {
   </section>;
 }
 
-function formatPerHundred(value: number | null, expense = false): string {
+function formatPerHundred(value: number | null, expense = false, symbol = "$"): string {
   if (value === null || !Number.isFinite(value)) return "—";
-  if (expense && value < 0) return `($${Math.abs(value).toFixed(2)})`;
-  if (expense && value > 0) return `+$${value.toFixed(2)}`;
-  return value < 0 ? `−$${Math.abs(value).toFixed(2)}` : `$${value.toFixed(2)}`;
+  if (expense && value < 0) return `(${symbol}${Math.abs(value).toFixed(2)})`;
+  if (expense && value > 0) return `+${symbol}${value.toFixed(2)}`;
+  return value < 0 ? `−${symbol}${Math.abs(value).toFixed(2)}` : `${symbol}${value.toFixed(2)}`;
 }
 
 function compactCostLabel(line: CompanyCostStructureLine): string {
@@ -311,7 +362,7 @@ function compactCostLabel(line: CompanyCostStructureLine): string {
   return labels[line.key] ?? line.label;
 }
 
-export function WaterfallChart({ lines, fiscalYear }: { lines: CompanyCostStructureLine[]; fiscalYear: number }) {
+export function WaterfallChart({ lines, fiscalYear, symbol = "$", periodLabel }: { lines: CompanyCostStructureLine[]; fiscalYear: number; symbol?: string; periodLabel?: string }) {
   const visible = lines.filter((line) => line.latestValuePerHundred !== null && (line.role !== "expense" || Math.abs(line.latestValuePerHundred) >= .005));
   let running = 0;
   const bars = visible.map((line) => {
@@ -321,7 +372,7 @@ export function WaterfallChart({ lines, fiscalYear }: { lines: CompanyCostStruct
     running = end;
     return { line, value, start, end };
   });
-  const chartWidth = Math.max(570, bars.length * 78);
+  const chartWidth = periodLabel ? Math.max(1120, bars.length * 100) : Math.max(570, bars.length * 78);
   const chartHeight = 310;
   const plotTop = 38;
   const plotBottom = 235;
@@ -335,8 +386,8 @@ export function WaterfallChart({ lines, fiscalYear }: { lines: CompanyCostStruct
   const barWidth = Math.min(56, slot * .58);
   return <div className="cost-waterfall-scroll" data-horizontal-scroll>
     <svg className="cost-waterfall" viewBox={`0 0 ${chartWidth} ${chartHeight}`} role="img" aria-labelledby="cost-waterfall-title cost-waterfall-description">
-      <title id="cost-waterfall-title">For every $100 of revenue in fiscal year {fiscalYear}</title>
-      <desc id="cost-waterfall-description">Revenue less the company&apos;s reported operating cost lines reconciles to operating profit.</desc>
+      <title id="cost-waterfall-title">{`For every ${symbol}100 of revenue in ${periodLabel ?? `fiscal year ${fiscalYear}`}`}</title>
+      <desc id="cost-waterfall-description">{periodLabel ? "Each line shows its independent median per 100 dollars of revenue. Subtotal bars reset to their median and may not equal the sum of median expenses." : "Revenue less the company’s reported operating cost lines reconciles to operating profit."}</desc>
       <defs>
         <linearGradient id="waterfall-gold" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#e8bd70" /><stop offset="1" stopColor="#f6dfb4" /></linearGradient>
         <linearGradient id="waterfall-red" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#dc4440" /><stop offset="1" stopColor="#ef7972" /></linearGradient>
@@ -346,6 +397,12 @@ export function WaterfallChart({ lines, fiscalYear }: { lines: CompanyCostStruct
         <linearGradient id="waterfall-underwater" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stopColor="#f2f7fb" /><stop offset="1" stopColor="#eaf2f8" /></linearGradient>
       </defs>
       <rect className="waterfall-negative-zone" x="18" y={zeroY} width={chartWidth - 36} height={plotBottom + 22 - zeroY} fill="url(#waterfall-underwater)" />
+      {periodLabel && <>
+        {Array.from({ length: Math.floor((maximum - Math.ceil(minimum / 20) * 20) / 20) + 1 }, (_, index) => Math.ceil(minimum / 20) * 20 + index * 20).map(tick => <g key={tick}>
+          <text className="cost-median-axis" x="24" y={y(tick) + 4} textAnchor="end">{tick}</text>
+        </g>)}
+        <text className="cost-median-axis" transform={`translate(10 ${(plotTop + plotBottom) / 2}) rotate(-90)`} textAnchor="middle">Dollars per $100 of revenue</text>
+      </>}
       {bars.map((bar, index) => {
         const x = 27 + index * slot + (slot - barWidth) / 2;
         const low = Math.min(bar.start, bar.end);
@@ -356,11 +413,17 @@ export function WaterfallChart({ lines, fiscalYear }: { lines: CompanyCostStruct
         if (!segments.length) segments.push({ region: "positive", low: 0, high: 0 });
         const top = y(high);
         const nextX = 27 + (index + 1) * slot + (slot - barWidth) / 2;
+        const nextBar = bars[index + 1];
+        // Independent medians can reset a subtotal to a different level. Connect
+        // both levels without changing either median or adding a balancing value.
+        const connectorEnd = periodLabel && nextBar && nextBar.line.role !== "expense" ? nextBar.end : bar.end;
+        const connectorMidX = (x + barWidth + nextX) / 2;
         const labelWords = compactCostLabel(bar.line).split(" ");
         const midpoint = Math.ceil(labelWords.length / 2);
         const labelLines = labelWords.length > 2 ? [labelWords.slice(0, midpoint).join(" "), labelWords.slice(midpoint).join(" ")] : [labelWords.join(" ")];
         return <g key={bar.line.key}>
-          {index < bars.length - 1 && <line className="waterfall-connector" x1={x + barWidth} x2={nextX} y1={y(bar.end)} y2={y(bar.end)} />}
+          {nextBar && <polyline className="waterfall-connector" data-from-line={bar.line.key} data-to-line={nextBar.line.key}
+            points={`${x + barWidth},${y(bar.end)} ${connectorMidX},${y(bar.end)} ${connectorMidX},${y(connectorEnd)} ${nextX},${y(connectorEnd)}`} />}
           {segments.map((segment) => {
             const fill = segment.region === "negative"
               ? bar.line.role === "expense" ? "url(#waterfall-slate)" : "url(#waterfall-bronze)"
@@ -378,43 +441,191 @@ export function WaterfallChart({ lines, fiscalYear }: { lines: CompanyCostStruct
               rx="1"
             />;
           })}
-          <text className={`waterfall-value ${bar.value < 0 ? "negative" : bar.line.role === "expense" ? "positive" : ""}`} x={x + barWidth / 2} y={Math.max(17, top - 9)} textAnchor="middle">{formatPerHundred(bar.value, bar.line.role === "expense")}</text>
+          <text className={`waterfall-value ${bar.value < 0 ? "negative" : bar.line.role === "expense" ? "positive" : ""}`} x={x + barWidth / 2} y={Math.max(17, top - 9)} textAnchor="middle">{formatPerHundred(bar.value, bar.line.role === "expense", symbol)}</text>
           <text className="waterfall-label" x={x + barWidth / 2} y={plotBottom + 28} textAnchor="middle">
             {labelLines.map((label, labelIndex) => <tspan key={label} x={x + barWidth / 2} dy={labelIndex ? 13 : 0}>{label}</tspan>)}
           </text>
         </g>;
       })}
-      <line className="waterfall-zero" x1="18" x2={chartWidth - 18} y1={zeroY} y2={zeroY} />
+      <line className="waterfall-zero" x1={periodLabel ? 36 : 18} x2={chartWidth - 18} y1={zeroY} y2={zeroY} />
     </svg>
   </div>;
 }
 
-function CostHistoryTable({ lines, years }: { lines: CompanyCostStructureLine[]; years: number[] }) {
+function CostHistoryTable({ company, lines, years, symbol }: { company: Company; lines: CompanyCostStructureLine[]; years: number[]; symbol: string }) {
   const tableLines = lines.filter((line) => line.key !== "revenue" && line.key !== "cost_of_revenue");
-  return <div className="cost-history-wrap" data-horizontal-scroll><table className="cost-history-table">
-    <thead><tr><th>Economics per $100 Revenue</th>{years.map((year) => <th key={year}>FY{String(year).slice(-2)}</th>)}</tr></thead>
+  const longHistory = years.length > 5;
+  return <div className="cost-history-wrap" data-horizontal-scroll><table className={"cost-history-table" + (longHistory ? " long-history" : "")} style={longHistory ? { minWidth: 200 + years.length * 90 } : undefined}>
+    <thead><tr><th>Economics per {symbol}100 Revenue</th>{years.map((year) => <th key={year}>FY{String(year).slice(-2)}{periodReportingLabel(company, year) && <small className="story-period-basis">{periodReportingLabel(company, year)}</small>}</th>)}</tr></thead>
     <tbody>{tableLines.map((line) => {
       const byYear = new Map(line.history.map((point) => [point.fiscalYear, point.valuePerHundred]));
       return <tr key={line.key} className={line.key === "operating_income" ? "operating-profit" : ""}>
         <th>{line.label}{line.key === "unallocated_operating_expenses" && <small>Reconciliation only; no category estimated</small>}</th>
-        {years.map((year) => <td key={year} className={(byYear.get(year) ?? 0) > 0 && line.role === "expense" ? "credit" : ""}>{formatPerHundred(byYear.get(year) ?? null, line.role === "expense")}</td>)}
+        {years.map((year) => <td key={year} className={(byYear.get(year) ?? 0) > 0 && line.role === "expense" ? "credit" : ""}>{formatPerHundred(byYear.get(year) ?? null, line.role === "expense", currencySymbol(companyForPeriod(company, year)))}</td>)}
       </tr>;
     })}</tbody>
   </table></div>;
 }
 
-function WhereTheMoneyGoes({ company }: { company: Company }) {
+function costPeriodCurrency(company: Company, story: CompanyCostStructureStory, period: { reportingCurrency?: string | null }): string | null {
+  return period.reportingCurrency !== undefined ? period.reportingCurrency : story.reportingCurrency || currencyCode(company);
+}
+
+function companyWithCurrency(company: Company, currency: string): Company {
+  return { ...company, currency: currency === "USD" ? "US$ millions" : `${currency} millions` };
+}
+
+function CostActualHistory({ company, story }: { company: Company; story: CompanyCostStructureStory }) {
+  const breakdown = story.annualBreakdown;
+  if (!breakdown?.periods.length) return <div className="story-unavailable"><p>Annual SEC cost history is not available.</p></div>;
+  const billions = breakdown.lines.some(line => line.key === "revenue" && Object.values(line.values).some(cell => (cell.value ?? 0) >= 1000));
+  const scale = billions ? 1000 : 1;
+  const currencies = new Set(breakdown.periods.map(period => costPeriodCurrency(company, story, period)));
+  const singleCurrency = currencies.size === 1 ? [...currencies][0] : null;
+  const amount = (value: number | null, currency: string | null) => value === null || !currency ? "Not reported" :
+    `${value < 0 ? "(" : ""}${currencySymbol(companyWithCurrency(company, currency))}${(Math.abs(value) / scale).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}${value < 0 ? ")" : ""}`;
+  return <div className="cost-history-wrap us-cost-history" data-horizontal-scroll>
+    <table className="cost-history-table long-history" style={{ minWidth: 840 }}>
+      <thead><tr><th>Figures in {singleCurrency ? currencySymbol(companyWithCurrency(company, singleCurrency)) : "native currency "}{billions ? "B" : "M"}</th>{breakdown.periods.map(period => <th key={period.key}>{period.label}{currencies.size > 1 && <small>{costPeriodCurrency(company, story, period) ?? "Currency unavailable"}</small>}</th>)}</tr></thead>
+      <tbody>{breakdown.lines.filter(line => line.key !== "other_operating_expenses" || Object.values(line.values).some(cell => cell.value !== 0)).map(line => <tr key={line.key} className={line.role === "subtotal" ? "operating-profit" : ""}>
+        <th>{line.label}</th>{breakdown.periods.map(period => {
+          const cell = line.values[String(period.fiscalYear)];
+          return <td key={period.key}>{amount(cell?.value ?? null, costPeriodCurrency(company, story, period))}</td>;
+        })}
+      </tr>)}<tr className="operating-profit"><th>Operating margin</th>{breakdown.periods.map(period => <td key={period.key}>{formatPercent(breakdown.operatingMarginPercent[String(period.fiscalYear)] ?? null)}</td>)}</tr></tbody>
+    </table>
+  </div>;
+}
+
+export function CostInterestComparison({ company, story }: { company: Company; story: CompanyCostStructureStory }) {
+  const points = (story.interestComparison ?? []).map(point => ({ ...point,
+    key: point.key ?? (point.type === "ttm" ? "TTM" : `FY${point.fiscalYear}`),
+    label: point.label ?? (point.type === "ttm" ? `TTM to ${point.periodEnd}` : `FY${point.fiscalYear}`),
+    netInterestOtherIncomeExpense: point.netInterestOtherIncomeExpense ?? {
+      value: null, displayValue: null, status: "not_reported" as const, displayPolicy: "unavailable",
+      percentOfOperatingIncome: null, inputs: [],
+    },
+    interestExpense: point.interestExpense.status === "not_reported"
+      ? { ...point.interestExpense, displayValue: null, percentOfOperatingIncome: null } : point.interestExpense }));
+  if (!points.length) return <div className="story-unavailable"><p>SEC annual and TTM interest history is not available.</p></div>;
+  const series = [
+    { key: "operatingIncome", label: "Operating Income", color: "#d6a657" },
+    { key: "interestExpense", label: "Interest Expense", color: "#e66a67" },
+    { key: "interestIncome", label: "Interest & Investment Income", color: "#65ad8c" },
+    ...(points.some(point => point.netInterestOtherIncomeExpense.displayValue !== null)
+      ? [{ key: "netInterestOtherIncomeExpense", label: "Net interest & other income/(expense)", color: "#8c77b8" } as const] : []),
+  ] as const;
+  const currencies = new Set(points.map(point => costPeriodCurrency(company, story, point)).filter((currency): currency is string => currency !== null));
+  const unknownMonetaryUnit = points.some(point => costPeriodCurrency(company, story, point) === null && series.some(item => point[item.key].displayValue !== null));
+  if (currencies.size > 1 || unknownMonetaryUnit) return <div className="cost-history-wrap us-cost-history" data-horizontal-scroll>
+    <table className="cost-history-table long-history"><thead><tr><th>Figures in native currency millions</th>{points.map(point => <th key={point.key}>{point.label}<small>{costPeriodCurrency(company, story, point) ?? "Currency unavailable"}</small></th>)}</tr></thead>
+      <tbody>{series.map(item => <tr key={item.key}><th>{item.label}</th>{points.map(point => {
+        const cell = point[item.key], currency = costPeriodCurrency(company, story, point);
+        return <td key={point.key} data-series={item.key} data-source-status={cell.status}>{cell.displayValue === null || !currency ? "Not reported" : <>
+          {currencySymbol(companyWithCurrency(company, currency))}{cell.displayValue.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {item.key !== "operatingIncome" && <small>{formatPercent(cell.percentOfOperatingIncome)} of operating income</small>}
+          {cell.status === "not_reported" && <small>Not separately reported</small>}</>}</td>;
+      })}</tr>)}</tbody></table>
+      {story.interestComparisonNote && <small className="cost-source-note">{story.interestComparisonNote}</small>}
+  </div>;
+  const displayCompany = companyWithCurrency(company, [...currencies][0] ?? (story.reportingCurrency || currencyCode(company)));
+  const values = points.flatMap(point => series.map(item => point[item.key].displayValue)).filter((value): value is number => value !== null);
+  const width = 1120, height = 350, left = 58, right = 1102, top = 62, bottom = 281;
+  const maximum = Math.max(1, ...values) * 1.12;
+  const minimum = Math.min(0, ...values) * 1.18;
+  const y = (value: number) => top + (maximum - value) / (maximum - minimum) * (bottom - top);
+  const slot = (right - left) / points.length, barWidth = Math.min(40, slot / (series.length + 1.5));
+  const barGap = series.length > 3 ? 4 : 10;
+  const groupWidth = series.length * barWidth + (series.length - 1) * barGap;
+  const billions = maximum >= 1000, scale = billions ? 1000 : 1;
+  const amount = (value: number, operating: boolean) => `${value < 0 ? "−" : ""}${currencySymbol(displayCompany)}${(Math.abs(value) / scale).toFixed(2)}${value < 0 && operating ? " loss" : ""}`;
+  return <section className="cost-interest-panel">
+    <div className="cost-interest-legend">{series.map(item => <span key={item.key}><i style={{ background: item.color }} />{item.label}</span>)}</div>
+    <div className="cost-interest-scroll" >
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="cost-interest-title cost-interest-description">
+        <title id="cost-interest-title">Operating income, interest expense, and interest and investment income for the selected fiscal years and TTM</title>
+        <desc id="cost-interest-description">Separate bars for each fiscal year and the newer trailing twelve months in actual amounts. Financing and investment percentages use the same period&apos;s operating income.</desc>
+        {Array.from({ length: 5 }, (_, index) => {
+          const value = minimum + (maximum - minimum) * index / 4;
+          return <g key={index}><line className="cost-interest-grid" x1={left} x2={right} y1={y(value)} y2={y(value)} /><text className="cost-interest-axis" x={left - 9} y={y(value) + 4} textAnchor="end">{(value / scale).toFixed(1)}</text></g>;
+        })}
+        <text className="cost-interest-axis" transform={`translate(16 ${(top + bottom) / 2}) rotate(-90)`} textAnchor="middle">{billions ? "Billions" : "Millions"} of {currencySymbol(displayCompany)}</text>
+        <line className="waterfall-zero" x1={left} x2={right} y1={y(0)} y2={y(0)} />
+        {points.map((point, index) => <g key={point.key} data-period-key={point.key} data-period-type={point.type ?? "annual"} data-fiscal-year={point.fiscalYear}>
+          {series.map((item, seriesIndex) => {
+            const cell = point[item.key], value = cell.displayValue;
+            const x = left + index * slot + (slot - groupWidth) / 2 + seriesIndex * (barWidth + barGap);
+            const labelY = value === null ? y(0) - 12 : Math.min(y(value), y(0)) - (seriesIndex === 3 ? 84 : seriesIndex === 2 ? 44 : seriesIndex ? 28 : 12);
+            return <g key={item.key} data-series={item.key} data-source-status={cell.status}>
+              <title>{`${point.label} · ${item.label}: ${value === null ? "Not reported" : formatAmount(displayCompany, value)}${seriesIndex ? ` · ${formatPercent(cell.percentOfOperatingIncome)} of operating income` : ""}`}</title>
+              {value !== null && <rect x={x} y={Math.min(y(value), y(0))} width={barWidth} height={value === 0 ? 2 : Math.max(2, Math.abs(y(value) - y(0)))} fill={item.color} rx="1" />}
+              <text className="cost-interest-value" x={x + barWidth / 2} y={labelY} textAnchor="middle">{value === null ? "N/R" : amount(value, item.key === "operatingIncome")}</text>
+              {seriesIndex > 0 && <text className="cost-interest-ratio" fill={item.color} x={x + barWidth / 2} y={labelY + 15} textAnchor="middle">({formatPercent(cell.percentOfOperatingIncome)})</text>}
+            </g>;
+          })}
+          <text className="cost-interest-year" x={left + index * slot + slot / 2} y={bottom + 31} textAnchor="middle">{point.type === "ttm" ? "TTM" : point.label}</text>
+          {point.type === "ttm" && <text className="cost-interest-period-end" x={left + index * slot + slot / 2} y={bottom + 48} textAnchor="middle">to {point.periodEnd}</text>}
+        </g>)}
+      </svg>
+    </div>
+    <small className="cost-source-note">{story.interestComparisonNote ?? "Missing reported amounts and undefined percentages are unavailable."}</small>
+  </section>;
+}
+
+export function UsWhereTheMoneyGoes({ company, initialPage = 1 }: { company: Company; initialPage?: number }) {
+  const [page, setPage] = useState(initialPage);
   const story = company.companyStory?.costStructure;
-  const available = story?.status === "available" && story.latestFiscalYear !== null && story.lines.some((line) => line.key === "operating_income" && line.latestValuePerHundred !== null);
+  const subtitles = ["For every $100 of revenue", "Actual breakdown from Revenue to Operating Profit · Available fiscal years", "Operating income vs financing and investment flows · Last 7 fiscal years + TTM"];
+  const median = story?.median;
+  const chartLines: CompanyCostStructureLine[] = (median?.lines ?? []).map(line => ({
+    key: line.key, label: line.label, role: line.role, latestValuePerHundred: line.valuePerHundred,
+    history: [], lineage: { kind: "median", concept: null, derivationMethod: "median_of_revenue_ratios", formula: null, sourceUrl: null },
+  }));
+  const operatingMedian = median?.lines.find(line => line.key === "operating_income")?.valuePerHundred;
+  return <section className="story-chapter-page cost-story-page us-cost-story">
+    <header className="story-chapter-header"><div><span>02</span><hgroup><h2>Where the money goes</h2><p>{subtitles[page - 1]}</p></hgroup></div>
+      <div className="story-chapter-actions"><nav className="story-page-navigation" aria-label="Where the money goes pages">
+        <button type="button" onClick={() => setPage(current => Math.max(1, current - 1))} disabled={page === 1} aria-label="Previous page"><span aria-hidden="true">‹</span> Previous</button>
+        <strong aria-live="polite">{page} of 3</strong>
+        <button type="button" onClick={() => setPage(current => Math.min(3, current + 1))} disabled={page === 3} aria-label="Next page">Next <span aria-hidden="true">›</span></button>
+      </nav><div className="story-period-toggle" role="group" aria-label="Reporting period"><button className="active">{median?.periods.some(period => period.type === "ttm") ? "Annual + TTM" : "Annual"}</button><button disabled title="Quarterly story view is in progress">Quarterly</button></div></div>
+    </header>
+    <div className="story-internal-page" key={page} data-story-page={page}>
+      {!story || story.schemaVersion !== 2 ? <div className="story-unavailable"><p>TaRaShaData has not returned the updated SEC cost story for this company.</p></div> : <>
+        {page === 1 && <>
+          <div className="cost-median-periods"><strong>Comparison set (median)</strong>{median?.periods.map(period => <span key={period.key} className={period.type === "ttm" ? "ttm" : ""}>{period.label}</span>)}</div>
+          {median?.status === "available" ? <>
+            <div className="cost-waterfall-panel"><WaterfallChart lines={chartLines} fiscalYear={story.latestFiscalYear ?? 0} periodLabel="the selected comparison set (median)" symbol="$" /></div>
+            {median.lines.some(line => line.valuePerHundred === null) && <p className="cost-source-note">Not reported for every selected observation: {median.lines.filter(line => line.valuePerHundred === null).map(line => line.label).join(", ")}.</p>}
+            <div className="story-insight"><span aria-hidden="true">↗</span><p>On a median basis, {company.name} retains <strong>{formatPerHundred(operatingMedian ?? null, false, "$")}</strong> of operating profit for every $100 of revenue. Each line uses its own median; subtotal bars reset to their calculated median and may differ from the sum of median costs.</p></div>
+          </> : <div className="story-unavailable"><p>{median?.reason ?? story.reason}</p></div>}
+        </>}
+        {page === 2 && <CostActualHistory company={company} story={story} />}
+        {page === 3 && <CostInterestComparison company={company} story={story} />}
+        {page > 1 && (page === 2 ? story.annualSummary : story.interestSummary) && <div className="story-insight"><span aria-hidden="true">↗</span><p>{page === 2 ? story.annualSummary : story.interestSummary}</p></div>}
+        <RevenueSourcesDisclosure methodology={story.methodology} sourceUrls={story.sourceUrl ? [story.sourceUrl] : []} />
+      </>}
+    </div>
+  </section>;
+}
+
+
+function WhereTheMoneyGoes({ company: originalCompany }: { company: Company }) {
+  if (!isIndiaListedCompany(originalCompany)) return <UsWhereTheMoneyGoes company={originalCompany} />;
+  const story = originalCompany.companyStory?.costStructure;
+  const company = companyForPeriod(originalCompany, story?.latestFiscalYear ?? "TTM");
+  const available = story?.status === "available" && story.latestFiscalYear !== null
+    && (!isIndiaListedCompany(company) || periodReportingCurrency(company, story.latestFiscalYear))
+    && story.lines.some((line) => line.key === "operating_income" && line.latestValuePerHundred !== null);
   return <section className="story-chapter-page cost-story-page">
     <header className="story-chapter-header">
-      <div><span>02</span><hgroup><h2>Where the money goes</h2><p>{available ? `For every $100 of revenue · FY${story.latestFiscalYear}` : "Cost structure and operating leverage"}</p></hgroup></div>
+      <div><span>02</span><hgroup><h2>Where the money goes</h2><p>{available ? `For every ${currencySymbol(company)}100 of revenue · FY${story.latestFiscalYear}` : "Cost structure and operating leverage"}</p></hgroup></div>
       <div className="story-period-toggle" role="group" aria-label="Reporting period"><button className="active">Annual</button><button disabled title="Quarterly story view is in progress">Quarterly</button></div>
     </header>
     {available ? <>
       <div className="cost-story-grid">
-        <div className="cost-waterfall-panel"><WaterfallChart lines={story.lines} fiscalYear={story.latestFiscalYear!} /><div className="story-insight"><span aria-hidden="true">↗</span><p>{story.summary}</p></div></div>
-        <CostHistoryTable lines={story.lines} years={story.years} />
+        <div className="cost-waterfall-panel"><WaterfallChart lines={story.lines} fiscalYear={story.latestFiscalYear!} symbol={currencySymbol(company)} /><div className="story-insight"><span aria-hidden="true">↗</span><p>{story.summary}</p></div></div>
+        <CostHistoryTable company={company} lines={story.lines} years={story.years} symbol={currencySymbol(company)} />
       </div>
       <footer className="story-methodology"><div><strong>TaRaShaData derivation</strong><p>{story.methodology}</p></div>{story.sourceUrl && <a href={story.sourceUrl} target="_blank" rel="noreferrer">Open source filing ↗</a>}</footer>
     </> : <div className="story-unavailable">
@@ -424,7 +635,8 @@ function WhereTheMoneyGoes({ company }: { company: Company }) {
 }
 
 function formatBridgeAmount(company: Company, value: number, operation?: CompanyCashConversionBridgeLine["operation"]): string {
-  const amount = formatAmount(company, Math.abs(value));
+  const amount = isIndiaListedCompany(company) ? formatAmount(company, Math.abs(value))
+    : `${currencySymbol(company)}${Math.abs(value).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if (operation === "subtract") return `(${amount})`;
   if (operation === "add") return `+${amount}`;
   return value < 0 ? `−${amount}` : amount;
@@ -435,21 +647,26 @@ function formatSignedAmount(company: Company, value: number): string {
   return value > 0 ? `+${amount}` : value < 0 ? `(${amount})` : amount;
 }
 
-function CashBridge({ company, story }: { company: Company; story: CompanyCashConversionStory }) {
+function CashBridge({ company, story, incomplete = false, periodLabel }: { company: Company; story: CompanyCashConversionStory; incomplete?: boolean; periodLabel?: string }) {
+  const lines = incomplete ? story.partialBridge?.lines ?? [] : story.bridge;
+  const year = incomplete ? story.partialBridge?.fiscalYear : story.latestFiscalYear;
   return <section className="cash-bridge-panel" aria-labelledby="cash-bridge-title">
-    <header><div><h3 id="cash-bridge-title">From Operating Profit to FCFF</h3><span>FY{story.latestFiscalYear}</span></div><small>{story.displayUnit}</small></header>
+    <header><div><h3 id="cash-bridge-title">{story.earningsBasis === "operating_income_plus_disclosed_interest_investment_income" ? "From Interest-inclusive EBIT to FCFF" : "From Operating Profit to FCFF"}</h3><span>{periodLabel ?? `FY${year}`}</span></div><small>{story.displayUnit}</small></header>
     <div className="cash-bridge-steps">
-      {story.bridge.map((line) => {
-        const row = <div className={`cash-bridge-row ${line.operation}`}>
+      {lines.map((line) => {
+        const row = <div className={`cash-bridge-row ${line.operation}${line.value === null ? " input-missing" : ""}`}>
           <span className="cash-bridge-operation" aria-hidden="true">{line.operation === "subtract" ? "−" : line.operation === "add" ? "+" : line.operation === "subtotal" || line.operation === "total" ? "=" : "●"}</span>
-          <div><strong>{line.operation === "subtract" ? "Less: " : line.operation === "add" ? "Add: " : ""}{line.label}</strong><small>{line.formula ?? (line.key === "ebit" ? "Operating income before interest and tax" : line.key === "depreciation_and_amortization" ? "Non-cash charge" : "TaRaShaData annual normalized value")}</small></div>
-          <b>{formatBridgeAmount(company, line.value, line.operation)}</b>
+          <div><strong>{line.operation === "subtract" ? "Less: " : line.operation === "add" ? "Add: " : ""}{line.label}</strong><small>{line.formula ?? (line.key === "ebit" ? "Operating income before interest and tax" : line.key === "depreciation_and_amortization" ? "Non-cash charge" : "TaRaShaData normalized value")}</small>{line.disclosure && <small className="cash-bridge-disclosure">{line.disclosure}</small>}</div>
+          <b>{line.value === null ? <span className="cash-input-missing">{line.key === "fcff" ? "Awaiting inputs" : "Input unavailable"}</span> : formatBridgeAmount(company, line.value, line.operation)}</b>
+        </div>;
+        if (line.workingCapitalCalculation) return <div className="cash-ncwc-step" key={line.key}>
+          {row}<NonCashWorkingCapital calculation={line.workingCapitalCalculation} displayUnit={story.displayUnit} />
         </div>;
         return line.components.length ? <details className="cash-working-capital" key={line.key} open>
           <summary>{row}<span className="cash-detail-caret" aria-hidden="true">⌄</span></summary>
           <div className="cash-component-list">
-            {line.components.map((component) => <div key={component.key}><span>{component.label}</span><b className={component.value >= 0 ? "positive" : "negative"}>{formatSignedAmount(company, component.value)}</b></div>)}
-            <div className="cash-component-total"><span>Net working-capital cash effect</span><b>{formatSignedAmount(company, line.value)}</b></div>
+            {line.components.map((component) => <div key={component.key}><span>{component.label}{component.lineage.sourceUrl && <> · <a href={component.lineage.sourceUrl} target="_blank" rel="noreferrer">SEC filing ↗</a></>}</span><b className={component.value >= 0 ? "positive" : "negative"}>{formatSignedAmount(company, component.value)}</b></div>)}
+            <div className="cash-component-total"><span>{line.key === "ebit" ? "Interest-inclusive EBIT" : line.key === "capital_expenditure" ? "Net capital investment" : "Net working-capital cash effect"}</span><b>{line.value === null ? "—" : line.key === "capital_expenditure" ? formatBridgeAmount(company, line.value, line.operation) : formatSignedAmount(company, line.value)}</b></div>
           </div>
         </details> : <div key={line.key}>{row}</div>;
       })}
@@ -464,52 +681,75 @@ function chartAxisAmount(company: Company, value: number): string {
   return absolute >= 1000 ? `${signed}${symbol}${(absolute / 1000).toFixed(0)}B` : `${signed}${symbol}${absolute.toFixed(0)}M`;
 }
 
-function CashConversionTrend({ company, points, summary }: { company: Company; points: CompanyCashConversionTrendPoint[]; summary: string | null }) {
-  const width = 760;
-  const height = 310;
-  const plot = { left: 58, right: 704, top: 48, bottom: 244 };
-  const values = points.map((point) => point.fcff);
-  const rawMin = Math.min(0, ...values);
-  const rawMax = Math.max(0, ...values);
-  const amountRange = Math.max(1, rawMax - rawMin);
-  const amountPadding = amountRange * .16;
-  const amountMin = rawMin < 0 ? rawMin - amountPadding : 0;
-  const amountMax = rawMax + amountPadding;
+function CashConversionTrend({ company, story }: { company: Company; story: CompanyCashConversionStory }) {
+  const annual = story.trend;
+  const years = story.displayAnnualYears ?? annual.map(point => point.fiscalYear).slice(-7);
+  const points = years.map(year => {
+    const point = annual.find(item => item.fiscalYear === year);
+    return { key: `FY${year}`, label: `FY${String(year).slice(-2)}`, fiscalYear: year,
+      fcff: point?.fcff ?? null, conversionPercent: point?.conversionPercent ?? null,
+      periodEnd: point?.periodEnd ?? null };
+  });
+  if (story.displayAnnualYears || story.ttm) points.push({ key: "TTM", label: "TTM",
+    fiscalYear: story.ttm?.latestFiscalYear ?? years.at(-1) ?? 0,
+    fcff: story.ttm?.metrics?.fcff ?? null,
+    conversionPercent: story.ttm?.metrics?.conversionPercent ?? null,
+    periodEnd: story.ttm?.latestPeriodEnd ?? null });
+  const ratioLabel = "FCFF / Operating Profit";
+  if (!periodsHaveComparableCurrency(company, years)) return <section className="cash-trend-panel" aria-labelledby="cash-trend-title">
+    <header><h3 id="cash-trend-title">Free Cash Flow to the Firm Trend</h3></header>
+    <p className="offering-quality-note">Amount trend unavailable across different reported currencies. Each year remains in its stated currency; no conversion is applied.</p>
+    <div className="cash-trend-scroll"><table className="adjusted-comparison-table"><thead><tr><th>Reported period</th><th>FCFF</th><th>{ratioLabel}</th></tr></thead><tbody>
+      {points.map(point => <tr key={point.key}><th>{point.key}<small className="story-period-basis">{periodReportingLabel(company, point.fiscalYear)}</small></th><td>{formatAmount(company, point.fcff, point.fiscalYear)}</td><td>{formatPercent(point.conversionPercent)}</td></tr>)}
+    </tbody></table></div>
+  </section>;
+  const width = 800, height = 320;
+  const plot = { left: 58, right: 730, top: 48, bottom: 244 };
+  const values = points.flatMap(point => point.fcff === null ? [] : [point.fcff]);
+  const rawMin = Math.min(0, ...values), rawMax = Math.max(0, ...values);
+  const amountPadding = Math.max(1, rawMax - rawMin) * .16;
+  const amountMin = rawMin < 0 ? rawMin - amountPadding : 0, amountMax = rawMax + amountPadding;
   const yAmount = (value: number) => plot.top + ((amountMax - value) / Math.max(1, amountMax - amountMin)) * (plot.bottom - plot.top);
-  const conversions = points.map((point) => point.conversionPercent).filter((value): value is number => value !== null && Number.isFinite(value));
-  const conversionMin = Math.min(0, ...conversions);
-  const conversionMax = Math.max(10, ...conversions) * 1.2;
+  const conversions = points.flatMap(point => point.conversionPercent === null ? [] : [point.conversionPercent]);
+  const conversionMin = Math.min(0, ...conversions), conversionMax = Math.max(10, ...conversions) * 1.2;
   const yConversion = (value: number) => plot.top + ((conversionMax - value) / Math.max(1, conversionMax - conversionMin)) * (plot.bottom - plot.top);
-  const slot = (plot.right - plot.left) / Math.max(1, points.length);
-  const barWidth = Math.min(62, slot * .52);
-  const linePoints = points.flatMap((point, index) => point.conversionPercent === null ? [] : [`${plot.left + slot * index + slot / 2},${yConversion(point.conversionPercent)}`]);
-  const ticks = Array.from({ length: 5 }, (_, index) => amountMin + ((amountMax - amountMin) * index) / 4);
+  const slot = (plot.right - plot.left) / Math.max(1, points.length), barWidth = Math.min(62, slot * .52);
+  const center = (index: number) => plot.left + slot * index + slot / 2;
+  const ticks = values.length ? Array.from({ length: 5 }, (_, index) => amountMin + ((amountMax - amountMin) * index) / 4) : [];
   return <section className="cash-trend-panel" aria-labelledby="cash-trend-title">
-    <header><div><h3 id="cash-trend-title">Free Cash Flow to the Firm Trend</h3><div className="cash-trend-legend"><span><i />FCFF</span><span><i />FCFF / Operating Profit</span></div></div></header>
-    <div className="cash-trend-scroll" data-horizontal-scroll><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="cash-trend-chart-title cash-trend-chart-description">
-      <title id="cash-trend-chart-title">Annual free cash flow to the firm and conversion from operating profit</title>
-      <desc id="cash-trend-chart-description">Bars show annual FCFF. The line shows FCFF divided by operating profit.</desc>
-      {ticks.map((tick) => <g key={tick}><line className="cash-chart-grid" x1={plot.left} x2={plot.right} y1={yAmount(tick)} y2={yAmount(tick)} /><text className="cash-chart-axis" x={plot.left - 10} y={yAmount(tick) + 3} textAnchor="end">{chartAxisAmount(company, tick)}</text></g>)}
-      <line className="cash-chart-baseline" x1={plot.left} x2={plot.right} y1={yAmount(0)} y2={yAmount(0)} />
+    <header><div><h3 id="cash-trend-title">Free Cash Flow to the Firm Trend</h3><div className="cash-trend-legend"><span><i />FCFF</span><span><i />{ratioLabel}</span></div></div></header>
+    <div className="cash-trend-fit"><svg viewBox={`0 0 ${width} ${height}`} role="img" aria-labelledby="cash-trend-chart-title cash-trend-chart-description">
+      <title id="cash-trend-chart-title">{`Free cash flow to the firm: latest seven fiscal years${story.displayAnnualYears || story.ttm ? " and TTM" : ""}`}</title>
+      <desc id="cash-trend-chart-description">{values.length ? `Bars show FCFF. Missing values are marked unavailable. The line shows ${ratioLabel}; it does not connect across missing periods.` : "No FCFF amounts are available for the displayed periods. Missing periods have no numeric amount scale."}</desc>
+      {ticks.map(tick => <g key={tick}><line className="cash-chart-grid" x1={plot.left} x2={plot.right} y1={yAmount(tick)} y2={yAmount(tick)} /><text className="cash-chart-axis" x={plot.left - 10} y={yAmount(tick) + 3} textAnchor="end">{chartAxisAmount(company, tick)}</text></g>)}
+      <line className="cash-chart-baseline" x1={plot.left} x2={plot.right} y1={values.length ? yAmount(0) : plot.bottom} y2={values.length ? yAmount(0) : plot.bottom} />
+      {!values.length && <text className="cash-chart-axis" x={(plot.left + plot.right) / 2} y={(plot.top + plot.bottom) / 2} textAnchor="middle">FCFF amounts unavailable for these periods</text>}
       {points.map((point, index) => {
-        const center = plot.left + slot * index + slot / 2;
-        const zero = yAmount(0);
-        const valueY = yAmount(point.fcff);
-        return <g key={point.fiscalYear}>
-          <rect className={`cash-chart-bar ${point.fcff < 0 ? "negative" : ""}`} x={center - barWidth / 2} y={Math.min(zero, valueY)} width={barWidth} height={Math.max(2, Math.abs(zero - valueY))} rx="4" />
-          <text className="cash-chart-value" x={center} y={point.fcff >= 0 ? valueY - 9 : valueY + 15} textAnchor="middle">{formatAmount(company, point.fcff)}</text>
-          <text className="cash-chart-year" x={center} y={plot.bottom + 28} textAnchor="middle">FY{String(point.fiscalYear).slice(-2)}</text>
+        const valueY = point.fcff === null ? null : yAmount(point.fcff), zero = yAmount(0);
+        return <g key={point.key} data-cash-period={point.key}>
+          <title>{`${point.key}${point.periodEnd ? ` through ${point.periodEnd}` : ""}: ${point.fcff === null ? "FCFF unavailable" : formatAmount(company, point.fcff, point.fiscalYear)}`}</title>
+          {valueY !== null && point.fcff !== null ? <>
+            <rect className={`cash-chart-bar ${point.fcff < 0 ? "negative" : ""}`} x={center(index) - barWidth / 2} y={Math.min(zero, valueY)} width={barWidth} height={Math.max(2, Math.abs(zero - valueY))} rx="4" />
+            <text className="cash-chart-value" x={center(index)} y={point.fcff >= 0 ? valueY - 9 : valueY + 15} textAnchor="middle">{formatAmount(company, point.fcff, point.fiscalYear)}</text>
+          </> : <text className="cash-chart-missing" x={center(index)} y={plot.bottom - 10} textAnchor="middle">Unavailable</text>}
+          <text className="cash-chart-year" x={center(index)} y={plot.bottom + 28} textAnchor="middle">{point.label}</text>
+          {point.key === "TTM" && point.periodEnd && <text className="cash-chart-axis" x={center(index)} y={plot.bottom + 43} textAnchor="middle">{point.periodEnd}</text>}
         </g>;
       })}
-      {linePoints.length > 1 && <polyline className="cash-conversion-line" points={linePoints.join(" ")} />}
-      {points.map((point, index) => point.conversionPercent === null ? null : <g key={`conversion-${point.fiscalYear}`}>
-        <circle className="cash-conversion-dot" cx={plot.left + slot * index + slot / 2} cy={yConversion(point.conversionPercent)} r="4" />
-        <text className="cash-conversion-value" x={plot.left + slot * index + slot / 2} y={yConversion(point.conversionPercent) + 21} textAnchor="middle">{formatPercent(point.conversionPercent)}</text>
+      {points.map((point, index) => {
+        const previous = points[index - 1];
+        return point.conversionPercent !== null && previous?.conversionPercent != null ? <line key={`line-${point.key}`} className="cash-conversion-line" x1={center(index - 1)} x2={center(index)} y1={yConversion(previous.conversionPercent)} y2={yConversion(point.conversionPercent)} /> : null;
+      })}
+      {points.map((point, index) => point.conversionPercent === null ? null : <g key={`conversion-${point.key}`}>
+        <circle className="cash-conversion-dot" cx={center(index)} cy={yConversion(point.conversionPercent)} r="4" />
+        <text className="cash-conversion-value" x={center(index)} y={yConversion(point.conversionPercent) + 21} textAnchor="middle">{formatPercent(point.conversionPercent)}</text>
       </g>)}
-      <text className="cash-chart-axis" x={plot.right + 15} y={plot.top + 3}>{formatPercent(conversionMax)}</text>
-      <text className="cash-chart-axis" x={plot.right + 15} y={plot.bottom + 3}>{formatPercent(conversionMin)}</text>
+      {conversions.length > 0 && <>
+        <text className="cash-chart-axis" x={plot.right + 8} y={plot.top + 3}>{formatPercent(conversionMax)}</text>
+        <text className="cash-chart-axis" x={plot.right + 8} y={plot.bottom + 3}>{formatPercent(conversionMin)}</text>
+      </>}
     </svg></div>
-    {summary && <div className="story-insight"><span aria-hidden="true">↗</span><p>{summary}</p></div>}
+    {story.summary && <div className="story-insight"><span aria-hidden="true">↗</span><p>{story.summary}</p></div>}
   </section>;
 }
 
@@ -520,37 +760,104 @@ function CashMetric({ label, value, prior, formula, current, previous }: { label
   </div>;
 }
 
-function CashEfficiencyMetrics({ company, story }: { company: Company; story: CompanyCashConversionStory }) {
+function CashEfficiencyMetrics({ company, story, periodLabel }: { company: Company; story: CompanyCashConversionStory; periodLabel?: string }) {
   const metrics = story.metrics!;
   return <section className="cash-efficiency-panel" aria-labelledby="cash-efficiency-title">
-    <header><h3 id="cash-efficiency-title">FCFF & Efficiency Metrics <span>(FY{story.latestFiscalYear})</span></h3></header>
+    <header><h3 id="cash-efficiency-title">FCFF & Efficiency Metrics <span>({periodLabel ?? `FY${story.latestFiscalYear}`})</span></h3></header>
     <div>
-      <CashMetric label="FCFF" value={formatAmount(company, metrics.fcff)} prior={metrics.priorFiscalYear ? `vs FY${metrics.priorFiscalYear}: ${formatAmount(company, metrics.priorFcff)}` : "No prior annual value"} formula="NOPAT + D&A + WC effect − Capex" current={metrics.fcff} previous={metrics.priorFcff} />
-      <CashMetric label="FCFF / Operating Profit" value={formatPercent(metrics.conversionPercent)} prior={metrics.priorFiscalYear ? `vs FY${metrics.priorFiscalYear}: ${formatPercent(metrics.priorConversionPercent)}` : "No prior annual value"} formula="FCFF / Operating Profit" current={metrics.conversionPercent} previous={metrics.priorConversionPercent} />
+      <CashMetric label="FCFF" value={formatAmount(company, metrics.fcff, story.latestFiscalYear)} prior={metrics.priorFiscalYear ? `vs FY${metrics.priorFiscalYear}: ${formatAmount(company, metrics.priorFcff, metrics.priorFiscalYear)}` : periodLabel ? "Prior TTM comparison unavailable" : "No prior annual value"} formula="After-tax EBIT + selected non-cash add-back + WC effect − CapEx" current={metrics.fcff} previous={periodsHaveComparableCurrency(company, [story.latestFiscalYear!, metrics.priorFiscalYear!]) ? metrics.priorFcff : null} />
+      <CashMetric label="FCFF / Operating Profit" value={formatPercent(metrics.conversionPercent)} prior={metrics.priorFiscalYear ? `vs FY${metrics.priorFiscalYear}: ${formatPercent(metrics.priorConversionPercent)}` : periodLabel ? "Prior TTM comparison unavailable" : "No prior annual value"} formula="FCFF / Operating Profit" current={metrics.conversionPercent} previous={metrics.priorConversionPercent} />
       <CashMetric label="FCFF Growth" value={formatPercent(metrics.growthPercent)} prior={metrics.priorGrowthPercent === null ? "Prior growth unavailable" : `prior: ${formatPercent(metrics.priorGrowthPercent)}`} formula="FCFF year-over-year growth" current={metrics.growthPercent} previous={metrics.priorGrowthPercent} />
-      <CashMetric label="FCFF / Revenue" value={formatPercent(metrics.revenuePercent)} prior={metrics.priorFiscalYear ? `vs FY${metrics.priorFiscalYear}: ${formatPercent(metrics.priorRevenuePercent)}` : "No prior annual value"} formula="FCFF / Revenue" current={metrics.revenuePercent} previous={metrics.priorRevenuePercent} />
+      <CashMetric label="FCFF / Revenue" value={formatPercent(metrics.revenuePercent)} prior={metrics.priorFiscalYear ? `vs FY${metrics.priorFiscalYear}: ${formatPercent(metrics.priorRevenuePercent)}` : periodLabel ? "Prior TTM comparison unavailable" : "No prior annual value"} formula="FCFF / Revenue" current={metrics.revenuePercent} previous={metrics.priorRevenuePercent} />
     </div>
   </section>;
 }
 
-function WhatBecomesCash({ company }: { company: Company }) {
-  const story = company.companyStory?.cashConversion;
-  const available = story?.status === "available" && story.latestFiscalYear !== null && story.bridge.length > 0 && story.trend.length > 0 && story.metrics !== null;
+function cashInputLabel(key: string): string {
+  const labels: Record<string, string> = {
+    ebit: "EBIT", ebit_including_interest_income: "interest-inclusive EBIT",
+    effective_tax_rate: "effective tax rate", revenue: "revenue",
+    depreciation_amortization: "depreciation and amortization", capital_expenditures: "capital expenditure",
+    current_assets: "current assets", cash_input: "cash and current investments",
+    current_liabilities: "current liabilities", current_debt: "current debt",
+    change_operating_working_capital: "operating working-capital cash effects",
+  };
+  const dated = key.match(/^(FY\d{4}) (.+)$/);
+  return dated ? `${dated[1]} ${labels[dated[2]] ?? dated[2].replaceAll("_", " ")}` : labels[key] ?? key.replaceAll("_", " ");
+}
+
+function CashPeriodAvailability({ company, story }: { company: Company; story: CompanyCashConversionStory | undefined }) {
+  if (!story?.periodGaps?.length || (!isIndiaListedCompany(company) && !story.workingCapitalCalculation)) return null;
+  const periodGaps = !isIndiaListedCompany(company) && story.displayAnnualYears
+    ? story.periodGaps.filter(gap => story.displayAnnualYears!.includes(gap.fiscalYear))
+    : story.periodGaps;
+  if (!periodGaps.length) return null;
+  if (!isIndiaListedCompany(company)) return <details className="cash-availability-details">
+    <summary>Data availability by fiscal year <span>{periodGaps.length} incomplete {periodGaps.length === 1 ? "year" : "years"}</span></summary>
+    <table><thead><tr><th>Fiscal year</th><th>Inputs still needed</th></tr></thead><tbody>
+      {periodGaps.map(gap => <tr key={gap.fiscalYear}><th>FY{gap.fiscalYear}</th><td>{[...new Set(gap.missingInputs)].map(cashInputLabel).join(", ") || "Matching SEC financial inputs"}</td></tr>)}
+    </tbody></table>
+  </details>;
+  const inputLabels: Record<string, string> = {
+    ebit: "EBIT", ebit_including_interest_income: "interest-inclusive EBIT", effective_tax_rate: "effective tax rate",
+    revenue: "revenue", depreciation_amortization: "depreciation and amortization",
+    capital_expenditures: "capital expenditure",
+    change_operating_working_capital: "operating working-capital cash effects",
+  };
+  return <>{story.periodGaps.map(gap => <p key={gap.fiscalYear}>
+    {`FY${gap.fiscalYear}${gap.reportingBasis ? ` · ${gap.reportingBasis === "consolidated" ? "Consolidated" : "Standalone"}` : ""}${gap.reportingCurrency ? ` · ${gap.reportingCurrency}` : ""}: FCFF unavailable. `}
+    {gap.reason} {gap.missingInputs.length > 0 && `Missing inputs: ${gap.missingInputs.map(key => inputLabels[key] ?? key.replaceAll("_", " ")).join(", ")}.`}
+  </p>)}</>;
+}
+
+function WhatBecomesCash({ company: originalCompany }: { company: Company }) {
+  const annualStory = originalCompany.companyStory?.cashConversion;
+  const [mode, setMode] = useState<"annual" | "ttm">("annual");
+  useEffect(() => setMode("annual"), [originalCompany.id]);
+  const story = mode === "ttm" ? annualStory?.ttm : annualStory;
+  const periodLabel = mode === "ttm" ? `TTM${story?.latestPeriodEnd ? ` through ${story.latestPeriodEnd}` : ""}` : undefined;
+  const company = companyForPeriod(originalCompany, story?.latestFiscalYear ?? "TTM");
+  const available = story?.status === "available" && story.latestFiscalYear !== null
+    && (!isIndiaListedCompany(company) || periodReportingCurrency(company, story.latestFiscalYear))
+    && story.bridge.length > 0 && story.metrics !== null;
   return <section className="story-chapter-page cash-story-page">
     <header className="story-chapter-header">
-      <div><span>03</span><hgroup><h2>What becomes cash</h2><p>{available ? `From Operating Profit to Free Cash Flow to the Firm · FY${story.latestFiscalYear}` : "From operating profit to free cash flow"}</p></hgroup></div>
-      <div className="story-period-toggle" role="group" aria-label="Reporting period"><button className="active">Annual</button><button disabled title="Quarterly story view is in progress">Quarterly</button></div>
+      <div><span>03</span><hgroup><h2>What becomes cash</h2><p>{available ? `From ${story.earningsBasis === "operating_income_plus_disclosed_interest_investment_income" ? "Interest-inclusive EBIT" : "Operating Profit"} to Free Cash Flow to the Firm · ${periodLabel ?? `FY${story.latestFiscalYear}`}` : "From earnings to free cash flow"}</p></hgroup></div>
+      <div className="story-period-toggle" role="group" aria-label="Reporting period">
+        <button className={mode === "annual" ? "active" : ""} aria-pressed={mode === "annual"} onClick={() => setMode("annual")}>Annual</button>
+        {!isIndiaListedCompany(company) ? <button className={mode === "ttm" ? "active" : ""} aria-pressed={mode === "ttm"} disabled={!annualStory?.ttm} title={!annualStory?.ttm ? "TTM inputs have not been prepared" : "View the trailing twelve-month cash bridge"} onClick={() => setMode("ttm")}>TTM</button> : <button disabled title="Quarterly story view is in progress">Quarterly</button>}
+      </div>
     </header>
     {available ? <>
       <div className="cash-story-grid">
-        <CashBridge company={company} story={story} />
-        <CashConversionTrend company={company} points={story.trend} summary={story.summary} />
-        <CashEfficiencyMetrics company={company} story={story} />
+        <CashBridge company={company} story={story} periodLabel={periodLabel} />
+        <div className="cash-story-context">
+          <CashConversionTrend company={company} story={annualStory!} />
+          <CashEfficiencyMetrics company={company} story={story} periodLabel={periodLabel} />
+        </div>
       </div>
       {story.takeaway && <aside className="cash-takeaway"><span aria-hidden="true">☆</span><div><strong>TaRaSha Takeaway</strong><p>{story.takeaway}</p></div></aside>}
-      <footer className="story-methodology"><div><strong>TaRaShaData derivation</strong><p>{story.methodology}</p></div>{story.sourceUrl && <a href={story.sourceUrl} target="_blank" rel="noreferrer">Open source filing ↗</a>}</footer>
+      <footer className="story-methodology"><div><strong>TaRaShaData derivation</strong><p>{story.methodology}</p><CashPeriodAvailability company={originalCompany} story={story} /></div>{story.sourceUrl && <a href={story.sourceUrl} target="_blank" rel="noreferrer">Open source filing ↗</a>}</footer>
+    </> : !isIndiaListedCompany(company) && story?.workingCapitalCalculation ? <>
+      <div className="cash-story-grid cash-story-incomplete">
+        {story.partialBridge ? <CashBridge company={company} story={story} incomplete periodLabel={periodLabel} />
+          : <section className="cash-bridge-panel"><header><h3>Available working-capital inputs</h3><small>{story.displayUnit}</small></header><NonCashWorkingCapital calculation={story.workingCapitalCalculation} displayUnit={story.displayUnit} /></section>}
+        <div className="cash-story-context"><section className="cash-availability-panel">
+          <span className="cash-availability-badge">Calculation incomplete</span>
+          <h3>FCFF needs a complete set of inputs</h3>
+          <p>Available SEC values are shown in the bridge. Missing FCFF periods will appear when the remaining inputs are supported.</p>
+          <h4>Still needed for {periodLabel ?? `FY${story.partialBridge?.fiscalYear ?? story.workingCapitalCalculation.currentFiscalYear}`}</h4>
+          <ul>{[...new Set((mode === "ttm" ? annualStory?.ttm?.missingInputs : story.periodGaps?.find(gap => gap.fiscalYear === (story.partialBridge?.fiscalYear ?? story.workingCapitalCalculation?.currentFiscalYear))?.missingInputs) ?? [])].map(key => <li key={key}>{cashInputLabel(key)}</li>)}</ul>
+          <p className="cash-availability-note">Missing amounts are not estimated. Expand the source details below to review other fiscal years.</p>
+        </section>{annualStory && <CashConversionTrend company={company} story={annualStory} />}</div>
+      </div>
+      <CashPeriodAvailability company={originalCompany} story={story} />
+      <footer className="story-methodology"><div><strong>TaRaShaData derivation</strong><p>{story.methodology}</p></div></footer>
     </> : <div className="story-unavailable">
-      <span aria-hidden="true">03</span><div><h3>Operating profit to FCFF is not available</h3><p>{story?.reason ?? "TaRaShaData did not return the complete annual facts required for the FCFF bridge."}</p><small>No missing financial input or substitute source has been estimated.</small></div>
+      <span aria-hidden="true">03</span><div><h3>FCFF inputs are incomplete</h3><p>{story?.reason ?? "TaRaShaData did not return the complete annual facts required for the FCFF bridge."}</p>
+        {story?.workingCapitalCalculation && <NonCashWorkingCapital calculation={story.workingCapitalCalculation} displayUnit={story.displayUnit} />}
+        <CashPeriodAvailability company={originalCompany} story={story} /><small>{story?.workingCapitalCalculation ? "TaRaShaData supplies all values. Any current-debt assumption is disclosed above." : "No missing financial input or substitute source has been estimated."}</small></div>
+      {annualStory && <CashConversionTrend company={company} story={annualStory} />}
     </div>}
   </section>;
 }
@@ -577,7 +884,7 @@ type BalanceSectionTone = "assets" | "liabilities" | "equity";
 
 const balanceComponentExplanations: Record<string, string> = {
   cash: "Cash and investments that can usually be accessed quickly to pay bills or fund the business.",
-  operating_current_assets: "Near-term resources such as customer IOUs, goods waiting to be sold, and prepaid costs.",
+  operating_current_assets: "Reported current assets after removing cash and short-term investments. The reported details below can overlap and are not added together.",
   property_plant_equipment: "Long-lived physical assets—such as buildings, machinery, and equipment—used to run the business.",
   goodwill: "The premium paid in acquisitions for benefits such as a brand, customer relationships, or expected synergies.",
   other_intangible_assets: "Non-physical assets such as patents, software, licenses, and acquired customer relationships.",
@@ -620,9 +927,14 @@ function BalanceComponentIcon({ componentKey }: { componentKey: string }) {
 
 function BalanceBarChart({ company, points, label, tone }: { company: Company; points: CompanyBalanceSheetTrendPoint[]; label: string; tone: BalanceSectionTone }) {
   const usable = points.filter((point) => Number.isFinite(point.value)).sort((left, right) => left.fiscalYear - right.fiscalYear);
-  if (usable.length < 2) return <div className="balance-trend-unavailable"><span aria-hidden="true">—</span><strong>Five-year trend unavailable</strong><p>Comparable annual history was not separately reported.</p></div>;
+  if (usable.length < 2) return <div className="balance-trend-unavailable"><span aria-hidden="true">—</span><strong>{isIndiaListedCompany(company) ? "Historical trend unavailable" : "Five-year trend unavailable"}</strong><p>{isIndiaListedCompany(company) ? "Comparable annual history unavailable from verified source data." : "Comparable annual history was not separately reported."}</p></div>;
+  if (!periodsHaveComparableCurrency(company, usable.map(point => point.fiscalYear))) return <div className="balance-component-chart">
+    <div><span>Historical values</span><span>Reported currencies</span></div><p>Amount comparison unavailable across currencies.</p>
+    <table className="adjusted-comparison-table"><tbody>{usable.map(point => <tr key={point.fiscalYear}><th>FY{point.fiscalYear}<small className="story-period-basis">{periodReportingLabel(company, point.fiscalYear)}</small></th><td>{formatAmount(company, point.value, point.fiscalYear)}</td></tr>)}</tbody></table>
+  </div>;
   const width = 500;
-  const height = 166;
+  const hasBasisLabels = usable.some(point => periodReportingLabel(company, point.fiscalYear));
+  const height = hasBasisLabels ? 180 : 166;
   const plotTop = 28;
   const plotBottom = 120;
   const min = Math.min(0, ...usable.map((point) => point.value));
@@ -632,9 +944,9 @@ function BalanceBarChart({ company, points, label, tone }: { company: Company; p
   const baseline = y(0);
   const groupWidth = width / usable.length;
   const barWidth = Math.min(46, groupWidth * .48);
-  const aria = usable.map((point) => `FY${point.fiscalYear} ${formatAmount(company, point.value)}`).join(", ");
+  const aria = usable.map((point) => `FY${point.fiscalYear} ${formatAmount(company, point.value, point.fiscalYear)}`).join(", ");
   return <div className="balance-component-chart">
-    <div><span>Five-year trend</span><span>Reported value</span></div>
+    <div><span>{isIndiaListedCompany(company) ? "Historical trend" : "Five-year trend"}</span><span>Reported value</span></div>
     <svg className={`balance-bar-chart ${tone}`} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${label}: ${aria}`}>
       <line className="balance-bar-grid" x1="8" x2={width - 8} y1={(plotTop + plotBottom) / 2} y2={(plotTop + plotBottom) / 2} />
       <line className="balance-bar-zero" x1="8" x2={width - 8} y1={baseline} y2={baseline} />
@@ -646,9 +958,10 @@ function BalanceBarChart({ company, points, label, tone }: { company: Company; p
         const labelY = point.value >= 0 ? Math.max(12, rectY - 7) : Math.min(139, rectY + rectHeight + 12);
         const latest = index === usable.length - 1;
         return <g key={point.fiscalYear}>
-          <rect className={`balance-bar ${latest ? "latest" : ""}`} x={center - barWidth / 2} y={rectY} width={barWidth} height={rectHeight} rx="4"><title>{`FY${point.fiscalYear}: ${formatAmount(company, point.value)}`}</title></rect>
-          <text className="balance-bar-value" x={center} y={labelY} textAnchor="middle">{formatAmount(company, point.value)}</text>
+          <rect className={`balance-bar ${latest ? "latest" : ""}`} x={center - barWidth / 2} y={rectY} width={barWidth} height={rectHeight} rx="4"><title>{`FY${point.fiscalYear}: ${formatAmount(company, point.value, point.fiscalYear)}`}</title></rect>
+          <text className="balance-bar-value" x={center} y={labelY} textAnchor="middle">{formatAmount(company, point.value, point.fiscalYear)}</text>
           <text className="balance-bar-year" x={center} y="155" textAnchor="middle">FY{String(point.fiscalYear).slice(-2)}</text>
+          {periodReportingLabel(company, point.fiscalYear) && <text className="story-period-basis" x={center} y="169" textAnchor="middle">{periodReportingLabel(company, point.fiscalYear)}</text>}
         </g>;
       })}
     </svg>
@@ -656,13 +969,18 @@ function BalanceBarChart({ company, points, label, tone }: { company: Company; p
 }
 
 function BalanceComponentCard({ company, component, tone, shareLabel, latestFiscalYear }: { company: Company; component: CompanyBalanceSheetComponent; tone: BalanceSectionTone; shareLabel: string; latestFiscalYear: number }) {
-  const movement = trendMovement(component.trend);
+  const indiaListed = isIndiaListedCompany(company);
   const available = component.value !== null;
+  const latestShareAvailable = available && component.percentageOfBase !== null
+    && component.trend.some(point => point.fiscalYear === latestFiscalYear && point.percentageOfBase !== null);
+  const movement = latestShareAvailable && periodsHaveComparableCurrency(company, component.trend.map(point => point.fiscalYear))
+    ? trendMovement(component.trend) : null;
   return <article className={`balance-component-card ${tone} ${available ? "" : "unavailable"}`}>
     <header>
       <div className="balance-component-card-copy">
         <h4>{component.label}</h4>
-        <p>{available ? `${formatPercent(component.percentageOfBase)} of ${shareLabel}` : "Not separately reported"}</p>
+        <p>{!available && component.unavailableReason ? component.unavailableReason : indiaListed && component.percentageOfBase === null ? available ? "Share unavailable" : "Data unavailable"
+          : available ? `${formatPercent(component.percentageOfBase)} of ${shareLabel}` : "Not separately reported"}</p>
         {movement && <small className={movement.tone}>{movement.text}</small>}
       </div>
       <div className="balance-component-latest"><strong>{available ? formatAmount(company, component.value) : "—"}</strong><small>{available ? `Latest · FY${String(latestFiscalYear).slice(-2)}` : "Latest value unavailable"}</small></div>
@@ -671,13 +989,13 @@ function BalanceComponentCard({ company, component, tone, shareLabel, latestFisc
       <span className="balance-component-icon"><BalanceComponentIcon componentKey={component.key} /></span>
       <div><strong>What this means</strong><p>{balanceComponentExplanation(component, tone)}</p></div>
     </div>
-    {available ? <BalanceBarChart company={company} points={component.trend} label={component.label} tone={tone} /> : <div className="balance-component-unavailable"><span aria-hidden="true">—</span><p>No trend is shown because TaRaSha does not infer missing balances.</p></div>}
+    {available || component.trend.length > 0 ? <BalanceBarChart company={company} points={component.trend} label={component.label} tone={tone} /> : <div className="balance-component-unavailable"><span aria-hidden="true">—</span><p>No trend is shown because TaRaSha does not infer missing balances.</p></div>}
     {component.children.length > 0 && <details className="balance-component-details">
       <summary>View latest reported breakdown</summary>
       <div className="balance-component-children">
         {component.children.map((child) => <div key={child.key} className={child.value === null ? "unavailable" : ""}>
           <span>{child.label}</span><strong>{formatAmount(company, child.value)}</strong>
-          <small>{child.percentageOfBase === null ? "Not reported" : `${formatPercent(child.percentageOfBase)} of ${shareLabel}`}{child.interestRatePercent === null ? "" : ` · ${formatRatePercent(child.interestRatePercent)} rate`}</small>
+          <small>{child.percentageOfBase === null ? indiaListed ? child.value === null ? "Data unavailable" : "Share unavailable" : "Not reported" : `${formatPercent(child.percentageOfBase)} of ${shareLabel}`}{child.interestRatePercent === null ? "" : ` · ${formatRatePercent(child.interestRatePercent)} rate`}</small>
         </div>)}
       </div>
     </details>}
@@ -705,19 +1023,20 @@ function balanceHealth(story: CompanyBalanceSheetStory): { label: string; tone: 
 
 function BalanceEquation({ company, story }: { company: Company; story: CompanyBalanceSheetStory }) {
   const { assets, liabilities, shareholdersEquity } = story.equation;
-  const liabilitiesShare = percentOfBaseForDisplay(liabilities, assets);
-  const equityShare = percentOfBaseForDisplay(shareholdersEquity, assets);
+  const partial = story.accountingEquationAvailable === false;
+  const liabilitiesShare = partial ? null : percentOfBaseForDisplay(liabilities, assets);
+  const equityShare = partial ? null : percentOfBaseForDisplay(shareholdersEquity, assets);
   const health = balanceHealth(story);
   return <section className="balance-equation-card" aria-labelledby="balance-equation-title">
-    <header><div><h3 id="balance-equation-title">Assets are funded by liabilities and shareholders’ equity.</h3><p>The accounting equation reconciles for the latest reported fiscal year.</p></div><div className={`balance-health-badge ${health.tone}`}><i />{health.label}</div></header>
+    <header><div><h3 id="balance-equation-title">Assets are funded by liabilities and shareholders’ equity.</h3><p>{partial ? "The accounting equation is unavailable for this period; verified balances are shown below." : "The accounting equation reconciles for the latest reported fiscal year."}</p></div><div className={`balance-health-badge ${health.tone}`}><i />{health.label}</div></header>
     <div className="balance-equation">
-      <div className="balance-equation-side assets"><small>WHAT IT OWNS</small><strong>{formatAmount(company, assets)}</strong><span className="balance-equation-label"><b>Assets</b><i>· 100%</i></span></div>
+      <div className="balance-equation-side assets"><small>WHAT IT OWNS</small><strong>{formatAmount(company, assets)}</strong><span className="balance-equation-label"><b>Assets</b><i>{partial && assets === null ? "· unavailable" : "· 100%"}</i></span></div>
       <em>=</em>
       <div className="balance-equation-funding">
         <small>HOW IT IS FUNDED</small>
         <div className="balance-equation-funding-item liabilities"><strong>{formatAmount(company, liabilities)}</strong><span className="balance-equation-label"><b>Liabilities</b><i>· {formatPercent(liabilitiesShare)}</i></span></div>
         <div className="balance-equation-funding-item equity"><strong>{formatAmount(company, shareholdersEquity)}</strong><span className="balance-equation-label"><b>Shareholders’ equity</b><i>· {formatPercent(equityShare)}</i></span></div>
-        <div className="balance-funding-bar" aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, liabilitiesShare ?? 0))}%` }} /><i style={{ width: `${Math.max(0, Math.min(100, equityShare ?? 0))}%` }} /></div>
+        {!partial && <div className="balance-funding-bar" aria-hidden="true"><i style={{ width: `${Math.max(0, Math.min(100, liabilitiesShare ?? 0))}%` }} /><i style={{ width: `${Math.max(0, Math.min(100, equityShare ?? 0))}%` }} /></div>}
       </div>
     </div>
   </section>;
@@ -729,8 +1048,8 @@ function percentOfBaseForDisplay(value: number | null, base: number | null): num
 
 function BalanceHealthMetrics({ company, story }: { company: Company; story: CompanyBalanceSheetStory }) {
   const metrics = [
-    { label: "Total debt", value: formatAmount(company, story.health.totalDebt), note: story.health.totalDebt === null ? "No debt separately reported" : "Interest-bearing obligations", tone: "neutral" },
-    { label: "Net cash (debt)", value: formatAmount(company, story.health.netCashDebt), note: "Cash − total debt", tone: story.health.netCashDebt !== null && story.health.netCashDebt >= 0 ? "positive" : "negative" },
+    { label: "Total debt", value: formatAmount(company, story.health.totalDebt), note: story.health.totalDebt === null ? "Complete debt data unavailable" : "Interest-bearing obligations", tone: "neutral" },
+    { label: "Net cash (debt)", value: formatAmount(company, story.health.netCashDebt), note: "Cash − total debt", tone: story.health.netCashDebt === null ? "neutral" : story.health.netCashDebt !== null && story.health.netCashDebt >= 0 ? "positive" : "negative" },
     { label: "Net debt / EBITDA", value: formatMultiple(story.health.netDebtToEbitda), note: "Lower means more headroom", tone: story.health.netDebtToEbitda !== null && story.health.netDebtToEbitda <= 1 ? "positive" : "neutral" },
     { label: "Interest coverage", value: formatMultiple(story.health.interestCoverage), note: "EBIT ÷ interest expense", tone: story.health.interestCoverage !== null && story.health.interestCoverage >= 5 ? "positive" : story.health.interestCoverage !== null && story.health.interestCoverage < 2 ? "negative" : "neutral" },
     { label: "Weighted avg. cost of debt", value: formatRatePercent(story.health.weightedAverageCostOfDebt), note: story.health.weightedAverageCostOfDebtNote, tone: "neutral" },
@@ -740,14 +1059,17 @@ function BalanceHealthMetrics({ company, story }: { company: Company; story: Com
   </section>;
 }
 
-export function BalanceSheetChapter({ company }: { company: Company }) {
+export function BalanceSheetChapter({ company: originalCompany }: { company: Company }) {
   const [activeSection, setActiveSection] = useState<BalanceSectionTone>("assets");
-  const story = company.companyStory?.balanceSheet;
-  const available = story?.status === "available" && story.latestFiscalYear !== null && story.equation.assets !== null && story.equation.liabilities !== null && story.equation.shareholdersEquity !== null;
+  const story = originalCompany.companyStory?.balanceSheet;
+  const company = companyForPeriod(originalCompany, story?.latestFiscalYear ?? "TTM");
+  const available = story?.status === "available" && story.latestFiscalYear !== null
+    && (!isIndiaListedCompany(company) || periodReportingCurrency(company, story.latestFiscalYear))
+    && (isIndiaListedCompany(company) || story.equation.assets !== null && story.equation.liabilities !== null && story.equation.shareholdersEquity !== null);
   useEffect(() => setActiveSection("assets"), [company.id]);
   const sections = available ? [
-    { tone: "assets" as const, title: "Assets · what the company owns", tabTitle: "Assets", tabSubtitle: "What the company owns", total: story.equation.assets, components: story.assets, shareLabel: "total assets", description: "Five-year values are separated from the latest mix, so the direction and current balance are easy to scan." },
-    { tone: "liabilities" as const, title: "Liabilities · what the company owes", tabTitle: "Liabilities", tabSubtitle: "What the company owes", total: story.equation.liabilities, components: story.liabilities, shareLabel: "total liabilities", description: "Reported obligations are shown with their five-year values; financing detail stays collapsed until requested." },
+    { tone: "assets" as const, title: "Assets · what the company owns", tabTitle: "Assets", tabSubtitle: "What the company owns", total: story.equation.assets, components: story.assets, shareLabel: "total assets", description: isIndiaListedCompany(company) ? "Historical values are separated from the latest mix, so the direction and current balance are easy to scan." : "Five-year values are separated from the latest mix, so the direction and current balance are easy to scan." },
+    { tone: "liabilities" as const, title: "Liabilities · what the company owes", tabTitle: "Liabilities", tabSubtitle: "What the company owes", total: story.equation.liabilities, components: story.liabilities, shareLabel: "total liabilities", description: isIndiaListedCompany(company) ? "Reported obligations are shown with their available historical values; financing detail stays collapsed until requested." : "Reported obligations are shown with their five-year values; financing detail stays collapsed until requested." },
     { tone: "equity" as const, title: "Shareholders’ equity · what belongs to shareholders", tabTitle: "Shareholders’ equity", tabSubtitle: "What belongs to shareholders", total: story.equation.shareholdersEquity, components: story.shareholdersEquity, shareLabel: "shareholders’ equity", description: "Negative balances use a visible zero line, making accumulated losses and other adjustments easier to interpret." },
   ] : [];
   const selectAdjacentSection = (current: BalanceSectionTone, direction: -1 | 1) => {
@@ -758,7 +1080,7 @@ export function BalanceSheetChapter({ company }: { company: Company }) {
   };
   return <section className="story-chapter-page balance-story-page">
     <header className="story-chapter-header">
-      <div><span>04</span><hgroup><h2>The balance sheet</h2><p>{available ? `Assets = Liabilities + Shareholders’ Equity · FY${story.latestFiscalYear}` : "What the company owns, owes and has built for shareholders"}</p></hgroup></div>
+      <div><span>04</span><hgroup><h2>The balance sheet</h2><p>{available ? isIndiaListedCompany(company) && story.accountingEquationAvailable === false ? `Verified annual balances · FY${story.latestFiscalYear}` : `Assets = Liabilities + Shareholders’ Equity · FY${story.latestFiscalYear}` : "What the company owns, owes and has built for shareholders"}</p></hgroup></div>
       <div className="story-period-toggle" role="group" aria-label="Reporting period"><button className="active">Annual</button><button disabled title="Quarterly story view is in progress">Quarterly</button></div>
     </header>
     {available ? <>
@@ -1293,10 +1615,27 @@ function WorkInProgress({ storyId, backToDiscover }: { storyId: string; backToDi
   </section>;
 }
 
-export function CompanyStoryHome({ company, watched, toggleWatch, backToDiscover }: { company: Company; watched: boolean; toggleWatch: (id: string) => void; backToDiscover: () => void }) {
+export function MarketContextStatus({ company, chapter, retry }: { company: Company; chapter: string; retry?: () => void }) {
+  const item = storyItems.find(item => item.id === chapter);
+  const failure = company.marketContextStatus?.status === "error";
+  return <section className="story-chapter-page">
+    <header className="story-chapter-header"><div><span>{item?.number}</span><hgroup><h2>{item?.title ?? "Market data"}</h2><p>{item?.subtitle}</p></hgroup></div></header>
+    <div className="story-unavailable" role={failure ? "alert" : "status"}>
+      <h3>{failure ? "Market data could not be loaded" : "Loading market data…"}</h3>
+      <p>{failure ? company.marketContextStatus?.error ?? "Please retry the market request." : "Your financial story is ready. Market prices and history are loading separately."}</p>
+      {failure && retry && <button type="button" className="button secondary" onClick={retry}>Retry market data</button>}
+    </div>
+  </section>;
+}
+
+export function CompanyStoryHome({ company, watched, toggleWatch, backToDiscover, retryMarketContext }: { company: Company; watched: boolean; toggleWatch: (id: string) => void; backToDiscover: () => void; retryMarketContext?: () => void }) {
   const [activeStory, setActiveStory] = useState("makes-money");
   useEffect(() => setActiveStory("makes-money"), [company.id]);
-  const content = useMemo(() => activeStory === "makes-money"
+  const waitingForMarket = ["stock-behaves", "market-pricing", "stock-got-here"].includes(activeStory)
+    && company.marketContextStatus && company.marketContextStatus.status !== "ready";
+  const content = useMemo(() => waitingForMarket
+    ? <MarketContextStatus company={company} chapter={activeStory} retry={retryMarketContext} />
+    : activeStory === "makes-money"
     ? <HowItMakesMoney company={company} />
     : activeStory === "money-goes"
       ? <WhereTheMoneyGoes company={company} />
@@ -1310,9 +1649,11 @@ export function CompanyStoryHome({ company, watched, toggleWatch, backToDiscover
               ? <MarketPricingChapter company={company} />
               : activeStory === "stock-got-here"
                 ? <StockHistoryChapter company={company} />
-          : <WorkInProgress storyId={activeStory} backToDiscover={backToDiscover} />, [activeStory, company, backToDiscover]);
+                : activeStory === "financials"
+                  ? <StatementExplorer company={company} />
+          : <WorkInProgress storyId={activeStory} backToDiscover={backToDiscover} />, [activeStory, company, backToDiscover, waitingForMarket, retryMarketContext]);
   return <div className="company-story-page">
     <CompanyStoryHeader company={company} watched={watched} toggleWatch={toggleWatch} />
-    <div className="company-story-shell"><StoryNavigation activeStory={activeStory} onChange={setActiveStory} /><div className="company-story-content">{content}</div></div>
+    <div className="company-story-shell"><StoryNavigation activeStory={activeStory} onChange={setActiveStory} supported={company.supportedStoryChapters} /><div className="company-story-content">{content}</div></div>
   </div>;
 }

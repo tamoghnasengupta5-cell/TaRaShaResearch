@@ -108,10 +108,10 @@ describe("how-it-makes-money story", () => {
     expect(markup).toContain("$10.54B");
     expect(markup).toContain("$8.92B");
     expect(markup).toContain("$1.62B");
-    expect(markup.match(/25\.0%/g)).toHaveLength(4);
+    expect(markup).not.toContain("25.0%"); // Annual categories cannot establish comparable TTM growth.
     expect(markup).toContain("Product / Service");
     expect(markup).not.toContain("Undetermined business segment");
-    expect(markup).toContain("Growth uses TTM, the prior comparable, and the prior-to-prior comparable values");
+    expect(markup).toContain("3Y CAGR compares with TTM three years earlier using a cube root");
     expect(markup).toContain("not necessarily reportable operating segments");
   });
 

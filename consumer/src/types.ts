@@ -295,15 +295,51 @@ export interface BusinessSegmentRevenue {
   percentageOfTotal: number | null;
   yoyGrowthPercent: number | null;
   threeYearCagrPercent: number | null;
+  yoyGrowthReason?: string | null;
+  threeYearCagrReason?: string | null;
   history: BusinessSegmentRevenueHistory[];
   accession: string | null;
   filedDate: string | null;
   sourceUrl: string | null;
 }
 
+export type RevenueBreakdownSourceType = "reported_segment_reconciliation" | "disclosed_revenue_note" | "reported_revenue_hierarchy";
+
+export interface RevenueOfferingSource {
+  source_url?: string;
+  accession?: string | null;
+  concept?: string;
+  role?: string;
+  fact_id?: number;
+  company_id?: number;
+  artifact_id?: number;
+  taxonomy?: string;
+  dimensions?: Record<string, string>;
+  value?: string;
+  unit?: string;
+  period_start?: string | null;
+  period_end?: string;
+  period_type?: string;
+  fiscal_year?: number | null;
+  fiscal_period?: string | null;
+  filed_date?: string | null;
+}
+
 export interface RevenueOffering {
+  ttmThreeYearCagrPercent?: number | null;
+  ttmYoyGrowthReason?: string | null;
+  ttmThreeYearCagrReason?: string | null;
+  ttmGrowthComparisons?: unknown;
+  ttmGrowthSourceUrls?: string[];
+  ttmYoyGrowthPercent?: number | null;
+  ttmThreePeriodCagrPercent?: number | null;
   id: string;
   label: string;
+  axis?: string;
+  member?: string;
+  labelBasis?: string;
+  periodEnds?: Record<string, string>;
+  provenanceByPeriod?: Record<string, RevenueOfferingSource[]>;
   /** Values use the same millions-based reporting currency as company metrics. */
   revenueByPeriod: Record<string, number | null>;
   sourceByPeriod?: Record<string, string>;
@@ -371,6 +407,51 @@ export interface CompanyRevenueStory {
   methodology: string;
 }
 
+export interface CompanyCostStoryPeriod {
+  reportingCurrency?: string | null;
+  key: string;
+  label: string;
+  type: "annual" | "ttm";
+  fiscalYear: number | null;
+  periodEnd: string | null;
+}
+
+export interface CompanyCostStoryValue {
+  value: number | null; // Actual reporting-currency millions; no FX or revenue normalization.
+  inputs: unknown[]; // Full TaRaShaData canonical provenance references.
+}
+
+export interface CompanyCostMedianLine {
+  key: string;
+  label: string;
+  role: "revenue" | "expense" | "subtotal";
+  valuePerHundred: number | null;
+  observationCount: number;
+  reason: string | null;
+  inputs: unknown[];
+}
+
+export interface CompanyCostInterestValue extends CompanyCostStoryValue {
+  displayValue: number | null;
+  status: "reported" | "not_reported";
+  displayPolicy: string;
+  percentOfOperatingIncome: number | null;
+}
+
+export interface CompanyCostInterestYear {
+  key?: string;
+  label?: string;
+  type?: "annual" | "ttm";
+  reportingCurrency?: string | null;
+  fiscalYear: number | null;
+  periodEnd: string | null;
+  operatingIncome: CompanyCostInterestValue;
+  interestExpense: CompanyCostInterestValue;
+  interestIncome: CompanyCostInterestValue;
+  netInterestOtherIncomeExpense?: CompanyCostInterestValue;
+}
+
+
 export interface CompanyCostStructureHistory {
   fiscalYear: number;
   periodEnd: string | null;
@@ -393,6 +474,23 @@ export interface CompanyCostStructureLine {
 }
 
 export interface CompanyCostStructureStory {
+  schemaVersion?: number;
+  annualSummary?: string | null;
+  interestSummary?: string | null;
+  interestComparisonNote?: string | null;
+  median?: {
+    status: "available" | "unavailable";
+    reason: string | null;
+    periods: CompanyCostStoryPeriod[];
+    lines: CompanyCostMedianLine[];
+  };
+  annualBreakdown?: {
+    displayUnit: string;
+    periods: CompanyCostStoryPeriod[];
+    lines: { key: string; label: string; role: "revenue" | "expense" | "subtotal"; values: Record<string, CompanyCostStoryValue> }[];
+    operatingMarginPercent: Record<string, number | null>;
+  };
+  interestComparison?: CompanyCostInterestYear[];
   status: "available" | "unavailable";
   reason: string | null;
   latestFiscalYear: number | null;
@@ -428,9 +526,54 @@ export interface CompanyCashConversionBridgeLine {
   formula: string | null;
   lineage: CompanyCashConversionLineage;
   components: CompanyCashConversionComponent[];
+  disclosure?: string;
+  workingCapitalCalculation?: CompanyNcwcCalculation;
+}
+
+export interface CompanyNcwcComponent {
+  key: string;
+  label: string;
+  priorValue: number | null;
+  currentValue: number | null;
+  priorSourceUrl: string | null;
+  currentSourceUrl: string | null;
+}
+
+export interface CompanyNcwcInput {
+  key: "current_assets" | "cash_input" | "current_liabilities" | "current_debt";
+  label: string;
+  operator: "" | "−" | "+";
+  priorValue: number | null;
+  currentValue: number | null;
+  components: CompanyNcwcComponent[];
+  priorDetailStatus: string;
+  currentDetailStatus: string;
+  priorNote: string | null;
+  currentNote: string | null;
+}
+
+export interface CompanyNcwcCalculation {
+  periodType?: string;
+  priorPeriodLabel?: string;
+  currentPeriodLabel?: string;
+  cashInputPolicy?: string;
+  status: "available" | "unavailable";
+  reason: string | null;
+  formula: string;
+  priorFiscalYear: number;
+  currentFiscalYear: number;
+  priorPeriodEnd: string | null;
+  currentPeriodEnd: string | null;
+  priorNcwc: number | null;
+  currentNcwc: number | null;
+  priorOperatingCurrentAssets: number | null;
+  currentOperatingCurrentAssets: number | null;
+  cashEffect: number | null;
+  inputs: CompanyNcwcInput[];
 }
 
 export interface CompanyCashConversionTrendPoint {
+  reportingCurrency?: string;
   fiscalYear: number;
   periodEnd: string;
   ebit: number;
@@ -440,6 +583,7 @@ export interface CompanyCashConversionTrendPoint {
   depreciationAndAmortization: number;
   workingCapitalImpact: number;
   workingCapitalComponents: CompanyCashConversionComponent[];
+  workingCapitalCalculation?: CompanyNcwcCalculation;
   capitalExpenditure: number;
   fcff: number;
   conversionPercent: number | null;
@@ -447,7 +591,29 @@ export interface CompanyCashConversionTrendPoint {
   fcffRevenuePercent: number | null;
 }
 
+export interface CompanyCashConversionPeriodGap {
+  fiscalYear: number;
+  periodEnd: string | null;
+  reportingBasis: "standalone" | "consolidated" | null;
+  reportingCurrency: string | null;
+  status: "unavailable";
+  reasonCode: string;
+  reason: string;
+  missingInputs: string[];
+  sourceUrls: string[];
+}
+
 export interface CompanyCashConversionStory {
+  latestStatementFiscalYear?: number;
+  displayAnnualYears?: number[];
+  ttm?: Omit<CompanyCashConversionStory, "ttm"> & { periodStart: string | null; missingInputs: string[] };
+  partialBridge?: {
+    fiscalYear: number;
+    lines: (Omit<CompanyCashConversionBridgeLine, "value"> & { value: number | null })[];
+  };
+  earningsBasis?: string;
+  workingCapitalCalculation?: CompanyNcwcCalculation;
+  periodGaps?: CompanyCashConversionPeriodGap[];
   status: "available" | "unavailable";
   reason: string | null;
   latestFiscalYear: number | null;
@@ -485,6 +651,7 @@ export interface CompanyBalanceSheetComponent {
   key: string;
   label: string;
   value: number | null;
+  unavailableReason?: string;
   percentageOfBase: number | null;
   trend: CompanyBalanceSheetTrendPoint[];
   children: Array<{
@@ -498,6 +665,7 @@ export interface CompanyBalanceSheetComponent {
 
 export interface CompanyBalanceSheetStory {
   status: "available" | "unavailable";
+  accountingEquationAvailable?: boolean;
   reason: string | null;
   latestFiscalYear: number | null;
   latestPeriodEnd: string | null;
@@ -521,6 +689,7 @@ export interface CompanyBalanceSheetStory {
     weightedAverageCostOfDebt: number | null;
     weightedAverageCostOfDebtFiscalYear: number | null;
     weightedAverageCostOfDebtNote: string;
+    weightedAverageCostOfDebtLineage?: { unit: string | null; derivationMethod: string | null; formula: string | null; sourceUrl: string | null } | null;
   };
   summary: string | null;
   methodology: string;
@@ -814,7 +983,41 @@ export interface CompanyStockHistoryStory {
   } | null;
 }
 
+export type OperationsScope = "whole" | "continuing" | "discontinued" | "undetermined";
+
+export interface PreparedFinancialSnapshot {
+  snapshotId: string;
+  key: string;
+  identifier: string;
+  fromYear: number;
+  toYear: number;
+}
+
+export interface PreparedStoryDelivery {
+  preparedAtUtc: string;
+  snapshotId: string;
+  isLatest: boolean;
+  latestStatus: "ready" | "preparing" | "failed" | "unknown";
+}
+
+export interface CompanyMarketContext {
+  companyId: string;
+  snapshotId: string;
+  snapshotKey: string;
+  stockRisk: CompanyStockRiskStory;
+  marketPricing: CompanyMarketPricingStory;
+  stockHistory: CompanyStockHistoryStory;
+}
+
 export interface Company {
+  preparedFinancialSnapshot?: PreparedFinancialSnapshot;
+  preparedStoryDelivery?: PreparedStoryDelivery;
+  marketContextStatus?: { status: "pending" | "loading" | "ready" | "error"; error?: string };
+  supportedStoryChapters?: number[];
+  country?: "USA" | "India";
+  reportingBasis?: "standalone" | "consolidated";
+  reportingBasisByYear?: Record<string, "standalone" | "consolidated">;
+  annualCurrencyByYear?: Record<string, string | null>;
   id: string;
   logoUrl?: string;
   name: string;
@@ -832,12 +1035,43 @@ export interface Company {
   companyStory?: {
     revenueSegments?: CompanyRevenueStory;
     revenueOfferings?: {
+      segmentReconciliation?: {
+        sourceType?: RevenueBreakdownSourceType;
+        reportingBasis?: "standalone" | "consolidated";
+        periodType?: "ttm" | "annual";
+        fiscalYear?: number;
+        history?: Record<string, {
+          sourceType?: RevenueBreakdownSourceType;
+          basis?: string;
+          methodology?: string;
+          reportingBasis?: "standalone" | "consolidated";
+          periodEnd: string; totalRevenue: number | null;
+          items: { sourceType?: RevenueBreakdownSourceType; id: string; label: string; role: "segment" | "elimination" | "reconciliation";
+            revenue: number | null; sourceUrls: string[];
+            yoyGrowthPercent?: number | null; threePeriodCagrPercent?: number | null;
+            threeYearCagrPercent?: number | null; yoyGrowthReason?: string | null;
+            threeYearCagrReason?: string | null; growthComparisons?: unknown; growthSourceUrls?: string[] }[];
+        }>;
+        periodEnd: string; basis: string; methodology: string; totalRevenue: number | null;
+        items: { sourceType?: RevenueBreakdownSourceType; id: string; label: string; role: "segment" | "elimination" | "reconciliation";
+          revenue: number | null; sourceUrls: string[];
+            yoyGrowthPercent?: number | null; threePeriodCagrPercent?: number | null;
+            threeYearCagrPercent?: number | null; yoyGrowthReason?: string | null;
+            threeYearCagrReason?: string | null; growthComparisons?: unknown; growthSourceUrls?: string[] }[];
+      };
       offerings: RevenueOffering[];
+      /** Reported disclosures may overlap; never use them to sum chart shares. */
+      reportedOfferings?: RevenueOffering[];
+      reportedOfferingsMethodology?: string;
       offeringAxis?: string | null;
       status?: "available" | "unavailable";
       reason?: string | null;
       annualTotals?: Record<string, number | null>;
       annualPeriodEnds?: Record<string, string>;
+      annualReportingBases?: Record<string, "standalone" | "consolidated">;
+      annualReportingCurrencies?: Record<string, string>;
+      annualOperationsScopes?: Record<string, OperationsScope | null>;
+      annualOperationsScopeGroups?: Record<string, string>;
       totalSourceByPeriod?: Record<string, string>;
       totalSourcesByPeriod?: Record<string, string[]>;
       methodology?: string;
@@ -846,7 +1080,8 @@ export interface Company {
       adjustmentImpacts?: RevenueAdjustmentImpact[];
       adjustedRevenue?: AdjustedRevenueStory;
       qualityWarnings?: string[];
-      ttm?: { periodEnd: string; revenue: number; priorYearRevenue: number | null };
+      ttm?: { periodEnd: string; revenue: number; priorYearRevenue: number | null; reportingCurrency?: string;
+        operationsScope?: OperationsScope | null; operationsScopeGroup?: string | null };
     };
     costStructure?: CompanyCostStructureStory;
     cashConversion?: CompanyCashConversionStory;
@@ -874,6 +1109,11 @@ export interface Company {
 }
 
 export interface CatalogCompany {
+  preparedDefaultRequest?: {
+    identifier: string; from_year: number; to_year: number;
+    include_market_context: boolean; include_industry_context: true; defer_market_context: true;
+    constituent_identifiers: string[] | null; provenance: "references" | "full";
+  };
   id: string;
   cik: string | null;
   name: string;
@@ -889,16 +1129,35 @@ export interface CatalogCompany {
 }
 
 export interface StatementFact {
+  /** Explicit presentation semantics for dimensionless ratios. */
+  displayFormat?: "percentage" | "number";
   key: string;
   label: string;
   description: string;
-  unit: string;
+  unit: string | null;
   values: YearValue[];
+  /** API-defined supporting rows remain distinct from a verified combined row. */
+  parentKey?: string;
+  sourceMetric?: string;
+  presentationRequired?: boolean;
+  periodScope?: Array<{ period: { type: string; start?: string | null; end: string }; status: string;
+    presentation?: string; reason?: string; ppe_fact_id?: number | null; rou_fact_ids?: number[]; evidence?: unknown }>;
+  annualSources?: Array<{ year: number; periodEnd: string; periodStart: string | null; value: string | null; unit: string | null;
+    displayUnit: string | null; sourceDisplayUnit?: string | null; displayScale?: number | string | null; displayFormat?: "percentage" | "number"; status?: string; reason?: string | null; sourceUrl: string | null;
+    factId?: number | null; observationId?: number | null; provenance: Record<string, unknown> | null }>;
+  /** Latest API-supplied TTM stays separate from fiscal-year series. */
+  ttm?: { value: number | null; periodEnd: string; periodStart: string | null; unit: string | null;
+    displayScale?: number | string | null; sourceDisplayUnit?: string | null;
+    displayFormat?: "percentage" | "number"; sourceUrl: string | null; provenance: Record<string, unknown> | null;
+    status?: string; reason?: string | null;
+    factId?: number | null; observationId?: number | null; canonicalValue?: string | null; canonicalUnit?: string | null } | null;
 }
 
 export interface StatementGroup {
-  key: "income" | "balance" | "cash" | "shares";
+  key: "income" | "balance" | "cash" | "shares" | "ratios" | "kpis";
   label: string;
+  ttmPeriodEnd?: string | null;
+  annualPeriods?: string[];
   facts: StatementFact[];
 }
 

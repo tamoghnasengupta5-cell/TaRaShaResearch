@@ -3,12 +3,13 @@ import type { Plugin } from "vite";
 import {
   fetchDataCompanyLogo,
   pullDataCompany,
+  pullDataCompanyMarketContext,
   searchDataCompanies,
   type DataProviderEnv,
 } from "./functions/dataProvider";
 import { getMarketOverview } from "./functions/marketOverviewProvider";
 
-const MAX_YEAR_RANGE = 7;
+const MAX_YEAR_RANGE = 30;
 
 class RequestError extends Error {
   constructor(message: string, readonly status = 400) {
@@ -21,6 +22,14 @@ function sendJson(response: ServerResponse, status: number, data: unknown): void
   response.setHeader("content-type", "application/json; charset=utf-8");
   response.setHeader("cache-control", "no-store");
   response.end(JSON.stringify(data));
+}
+
+async function withRequestSignal<T>(response: ServerResponse, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  const cancel = () => { if (!response.writableEnded) controller.abort(); };
+  response.once("close", cancel);
+  try { return await run(controller.signal); }
+  finally { response.removeListener("close", cancel); }
 }
 
 async function sendResponse(response: ServerResponse, upstream: Response): Promise<void> {
@@ -88,13 +97,22 @@ async function handleDataRequest(request: IncomingMessage, response: ServerRespo
   }
   if (request.method === "GET" && url.pathname === "/api/data/company") {
     const years = validYearRange(url.searchParams.get("fromYear"), url.searchParams.get("toYear"));
-    sendJson(response, 200, await pullDataCompany(env, String(url.searchParams.get("companyId") || ""), years.fromYear, years.toYear));
+    const saved = url.searchParams.get("preparedDefaultRequest");
+    sendJson(response, 200, await withRequestSignal(response, signal => pullDataCompany(env, String(url.searchParams.get("companyId") || ""), years.fromYear, years.toYear, undefined, { signal, deferMarketContext: url.searchParams.get("deferMarket") === "true",
+      ...(saved === null ? {} : { preparedDefaultRequest: JSON.parse(saved) }) })));
+    return;
+  }
+  if (request.method === "POST" && url.pathname === "/api/data/company-market") {
+    const body = await readJsonBody(request);
+    if (!body.snapshot || typeof body.snapshot !== "object") throw new RequestError("Prepared financial snapshot is required.");
+    sendJson(response, 200, await withRequestSignal(response, signal => pullDataCompanyMarketContext(env, String(body.companyId || ""),
+      body.snapshot as Parameters<typeof pullDataCompanyMarketContext>[2], signal)));
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/data/company") {
     const body = await readJsonBody(request);
     const years = validYearRange(body.fromYear, body.toYear);
-    sendJson(response, 200, await pullDataCompany(env, String(body.companyId || ""), years.fromYear, years.toYear, constituentIds(body.constituentIds)));
+    sendJson(response, 200, await withRequestSignal(response, signal => pullDataCompany(env, String(body.companyId || ""), years.fromYear, years.toYear, constituentIds(body.constituentIds), { signal, deferMarketContext: body.deferMarket === true })));
     return;
   }
   throw new RequestError("Local TaRaShaData.ai API endpoint not found.", 404);

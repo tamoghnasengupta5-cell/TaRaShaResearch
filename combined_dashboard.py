@@ -7,9 +7,31 @@ import streamlit as st
 
 from core import *  # noqa: F401,F403
 from dashboard_category_filter import select_category_company_ids
+from dashboard_spreadsheet_filter import select_spreadsheet_company_ids
+from dashboard_upload_dates import UPLOAD_DATE_COLUMN, add_latest_upload_dates
 from score_weights_ui import render_score_weight_summary
 from score_range_dashboard import build_score_range_frame, render_score_range_dashboard
 from ui_theme import DASHBOARD_COLUMN_LABELS, company_label_map, dashboard_section, display_table_frame, render_dashboard_table
+
+
+def _add_dashboard_countries(conn, frame: pd.DataFrame, companies_df: pd.DataFrame) -> pd.DataFrame:
+    """Attach each company's stored country by ID without changing score order."""
+    out = frame.copy()
+    out["Country"] = ""
+    if out.empty or "_company_id" not in out:
+        return out
+    countries = companies_df
+    if "country" not in countries.columns and conn is not None:
+        company_ids = sorted({int(value) for value in out["_company_id"]})
+        placeholders = ",".join("?" for _ in company_ids)
+        countries = read_df(
+            "SELECT * FROM companies WHERE id IN (" + placeholders + ")",
+            conn, params=company_ids,
+        )
+    # Legacy company records can lack a country; never infer one from the ticker.
+    if "country" in countries.columns:
+        out["Country"] = out["_company_id"].map(countries.set_index("id")["country"]).fillna("")
+    return out
 
 
 
@@ -30,6 +52,10 @@ def _combined_dashboard_excel_bytes(
         for sheet_name, sheet_df in sheets:
             sheet_df.to_excel(writer, index=False, sheet_name=sheet_name)
             worksheet = writer.sheets[sheet_name]
+            if UPLOAD_DATE_COLUMN in sheet_df.columns:
+                date_column = list(sheet_df.columns).index(UPLOAD_DATE_COLUMN) + 1
+                for row_number in range(2, worksheet.max_row + 1):
+                    worksheet.cell(row=row_number, column=date_column).number_format = "dd mmm yyyy"
             worksheet.freeze_panes = "A2"
             worksheet.auto_filter.ref = worksheet.dimensions
 
@@ -663,7 +689,7 @@ def render_combined_dashboard_tab() -> None:
         # -----------------------------
         selection_mode = st.radio(
             "Analyze by",
-            ["Company", "Industry Bucket", "Category / Sub-Category"],
+            ["Company", "Industry Bucket", "Category / Sub-Category", "Spreadsheet"],
             horizontal=True,
             key="combined_score_mode",
         )
@@ -726,6 +752,11 @@ def render_combined_dashboard_tab() -> None:
                     )
                     if not bucket_members_df.empty:
                         score_company_ids = [int(x) for x in bucket_members_df["company_id"].tolist()]
+        elif selection_mode == "Spreadsheet":
+            score_company_ids = select_spreadsheet_company_ids(
+                conn, key="combined_score_spreadsheet",
+                result_state_key="combined_score_results",
+            )
         else:
             selected_ids = select_category_company_ids(
                 conn,
@@ -738,7 +769,8 @@ def render_combined_dashboard_tab() -> None:
             score_company_ids = selected_ids
 
         if not score_company_ids:
-            st.info("Select at least one company, industry bucket, or sub-category to compute Overall Scores.")
+            if selection_mode != "Spreadsheet":
+                st.info("Select at least one company, industry bucket, or sub-category to compute Overall Scores.")
             return
 
         score_company_ids = sorted(set(score_company_ids))
@@ -925,11 +957,15 @@ def render_combined_dashboard_tab() -> None:
             df_sorted = df.sort_values(by=sort_col, ascending=False)
         else:
             df_sorted = df
+        df_sorted = _add_dashboard_countries(conn, df_sorted, companies_df)
+        df_sorted = add_latest_upload_dates(conn, df_sorted)
         df_sorted = add_company_taxonomy_columns(conn, df_sorted)
 
         ordered_main_cols = [
             "Company Name",
             "Ticker",
+            "Country",
+            UPLOAD_DATE_COLUMN,
             "Category",
             "Sub-Category",
             "Industry Bucket",
@@ -1061,9 +1097,16 @@ def render_combined_dashboard_tab() -> None:
         )
         render_dashboard_table(
             styler,
+            column_config={
+                UPLOAD_DATE_COLUMN: st.column_config.DateColumn(
+                    format="DD MMM YYYY",
+                    help="Latest successful financial-data upload date in UTC. Blank means no recorded upload date.",
+                ),
+            },
             help_map=overall_help,
             key="combined_overall_score_dashboard_table",
         )
+        st.caption("Latest Uploaded Date is the financial-data upload date in UTC. Blank dates have no recorded upload history.")
         if progress_bar is not None:
             progress_bar.progress(100, text="Overall score computation complete.")
 

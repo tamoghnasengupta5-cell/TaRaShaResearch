@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 from dashboard_category_filter import select_category_company_ids
+from dashboard_spreadsheet_filter import select_spreadsheet_company_ids
 
 from core import (
     TTC_SECTIONS,
@@ -2790,7 +2791,7 @@ def render_through_the_cycle_combined_score_tab() -> None:
 
     mode = st.radio(
         "Analyze by",
-        ["Company", "Industry Bucket", "Category / Sub-Category"],
+        ["Company", "Industry Bucket", "Category / Sub-Category", "Spreadsheet"],
         horizontal=True,
         key="ttc_combined_mode",
     )
@@ -2830,6 +2831,11 @@ def render_through_the_cycle_combined_score_tab() -> None:
             )
             if bucket_members_df is not None and not bucket_members_df.empty:
                 company_ids = [int(x) for x in bucket_members_df["company_id"].tolist()]
+    elif mode == "Spreadsheet":
+        company_ids = select_spreadsheet_company_ids(
+            conn, key="ttc_combined_spreadsheet",
+            result_state_key="ttc_combined_has_run",
+        )
     else:
         selected_ids = select_category_company_ids(
             conn,
@@ -2842,7 +2848,8 @@ def render_through_the_cycle_combined_score_tab() -> None:
         company_ids = selected_ids
 
     if not company_ids:
-        st.info("Select at least one company, industry bucket, or sub-category to compute scores.")
+        if mode != "Spreadsheet":
+            st.info("Select at least one company, industry bucket, or sub-category to compute scores.")
         return
     company_ids = sorted(set(company_ids))
 
