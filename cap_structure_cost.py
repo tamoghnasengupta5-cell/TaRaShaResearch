@@ -1,4 +1,5 @@
-﻿import re
+from preview_mode import is_read_only
+import re
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -102,7 +103,7 @@ def render_capital_structure_cost_of_capital_tab() -> None:
                 key="cs_bucket_name_input",
             )
         with bucket_col2:
-            save_bucket = st.button("Save bucket", key="cs_save_bucket_button")
+            save_bucket = st.button("Save bucket", key="cs_save_bucket_button", disabled=is_read_only())
 
         if save_bucket:
             sel_company_ids: List[int] = [int(company_id) for company_id in options]

@@ -1,4 +1,5 @@
-﻿import streamlit as st
+from preview_mode import is_read_only
+import streamlit as st
 from core import *  # noqa: F401,F403
 from typing import List
 from ui_theme import company_label_map, format_company_option
@@ -131,6 +132,9 @@ def delete_company_metric_data(conn, company_ids: List[int]) -> None:
 
     conn.commit()
 def render_admin_tab():
+    if is_read_only():
+        st.info("This Research preview is read-only. Changes cannot be saved.")
+        return
     st.title("Admin")
 
     st.write(

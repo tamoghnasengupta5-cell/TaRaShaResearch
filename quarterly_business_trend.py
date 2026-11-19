@@ -1,3 +1,4 @@
+from preview_mode import is_read_only
 import io
 from typing import Dict, List, Tuple
 
@@ -316,7 +317,7 @@ def render_quarterly_business_trend_formula_tab() -> None:
         editable_df,
         hide_index=True,
         use_container_width=True,
-        disabled=["parameter_key", "parameter", "sort_order"],
+        disabled=True if is_read_only() else ["parameter_key", "parameter", "sort_order"],
         column_config={
             "parameter_key": st.column_config.TextColumn("Parameter Key"),
             "parameter": st.column_config.TextColumn("Parameter"),
@@ -329,7 +330,7 @@ def render_quarterly_business_trend_formula_tab() -> None:
     weight_total = float(pd.to_numeric(edited_df["weight"], errors="coerce").fillna(0.0).sum())
     st.caption(f"Total weight: {weight_total:.2f}. Total must equal 100.00.")
 
-    if st.button("Save weights", type="primary", key="quarterly_business_trend_save_weights"):
+    if st.button("Save weights", type="primary", key="quarterly_business_trend_save_weights", disabled=is_read_only()):
         if abs(weight_total - 100.0) > 1e-6:
             st.error(f"Total weight must equal 100.00. Current total: {weight_total:.2f}.")
             return
@@ -367,6 +368,9 @@ def _category_editor_frame(categories_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def render_quarterly_business_trend_master_category_tab() -> None:
+    if is_read_only():
+        st.info("This Research preview is read-only. Changes cannot be saved.")
+        return
     conn = get_db()
     categories_df = get_relative_valuation_categories(conn)
     editor_df = _category_editor_frame(categories_df)
@@ -418,6 +422,9 @@ def _reset_assignment_subcategory() -> None:
 
 
 def render_quarterly_business_trend_company_assignment_tab() -> None:
+    if is_read_only():
+        st.info("This Research preview is read-only. Changes cannot be saved.")
+        return
     conn = get_db()
     companies_df = list_companies(conn)
     categories_df = get_relative_valuation_categories(conn)
@@ -508,6 +515,9 @@ def render_quarterly_business_trend_company_assignment_tab() -> None:
 
 
 def render_quarterly_business_trend_categories_tab() -> None:
+    if is_read_only():
+        st.info("This Research preview is read-only. Changes cannot be saved.")
+        return
     active_tab = lazy_tab_bar(
         ["Master Category", "Company Assignment"],
         key="quarterly_business_trend_categories_tabs",
@@ -522,7 +532,7 @@ def render_quarterly_business_trend_categories_tab() -> None:
 def render_quarterly_business_trend_score_tab() -> None:
     st.title("Quarterly Business Trend Score")
     active_tab = lazy_tab_bar(
-        ["Dashboard", "Formula", "Categories"],
+        ["Dashboard", "Formula"] + ([] if is_read_only() else ["Categories"]),
         key="quarterly_business_trend_tabs",
         default="Dashboard",
     )

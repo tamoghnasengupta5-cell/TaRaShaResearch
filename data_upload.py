@@ -1,3 +1,4 @@
+from preview_mode import is_read_only
 import streamlit as st
 import math
 import io
@@ -1286,6 +1287,9 @@ def ingest_financials_bytes(
 
 
 def render_data_upload_tab():
+    if is_read_only():
+        st.info("This Research preview is read-only. Changes cannot be saved.")
+        return
     st.title("Revenue Growth & Operating Margin — Upload, Store, and Analyze")
 
     tab_fundamentals, tab_bulk, tab_price = st.tabs(["Fundamentals", "Bulk Upload", "Price"])

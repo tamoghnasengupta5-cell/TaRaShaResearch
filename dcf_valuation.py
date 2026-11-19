@@ -43,6 +43,7 @@ from ttc_efficiency import (
     _merge_ttm_into_annual,
 )
 from db_config import get_db_url, get_sqlite_path, is_sqlite_url
+from preview_mode import is_read_only, require_writable
 from ui_lazy_tabs import lazy_tab_bar
 from ui_theme import add_taxonomy_pictures, company_label_map, dashboard_section, display_table_frame, format_company_option, render_dashboard_table
 
@@ -3071,6 +3072,8 @@ _RELATIVE_VALUATION_SCHEMA_VERSION = 3
 
 
 def _ensure_relative_market_metrics_table(conn) -> None:
+    if is_read_only():
+        return
     if is_sqlite_url(get_db_url()):
         create_sql = f"""
         CREATE TABLE IF NOT EXISTS {_RELATIVE_MARKET_METRICS_TABLE} (
@@ -3131,6 +3134,7 @@ def _load_relative_market_metrics(conn, company_ids: List[int]) -> pd.DataFrame:
 
 
 def _upsert_relative_market_metric(conn, row: Dict[str, object]) -> None:
+    require_writable()
     _ensure_relative_market_metrics_table(conn)
     params = (
         int(row["company_id"]),
@@ -3684,6 +3688,7 @@ def _fetch_yfinance_market_metrics(company_row: pd.Series) -> Dict[str, object]:
 
 
 def _refresh_relative_market_metrics(conn, members_df: pd.DataFrame) -> Dict[str, int]:
+    require_writable()
     counts = {
         "ev_yfinance_direct": 0,
         "ev_market_cap_api": 0,
@@ -3774,7 +3779,8 @@ def _fill_missing_calculated_market_metrics(conn, company_id: int, market_row: O
             row[f"{prefix}_source"] = calculated.get(f"{prefix}_source")
             row[f"{prefix}_as_of"] = calculated.get(f"{prefix}_as_of")
             row[f"{prefix}_detail"] = calculated.get(f"{prefix}_detail")
-    _upsert_relative_market_metric(conn, row)
+    if not is_read_only():
+        _upsert_relative_market_metric(conn, row)
     return pd.Series(row)
 
 
@@ -4086,7 +4092,7 @@ def _render_relative_valuation_dashboard_tab(conn) -> None:
 
     st.caption(f"{len(selected_company_ids)} compan(y/ies) selected.")
     members_df = _members_for_company_ids(conn, selected_company_ids)
-    if st.button("Refresh EV and P/E Data", key="relative_valuation_refresh_market_metrics"):
+    if st.button("Refresh EV and P/E Data", key="relative_valuation_refresh_market_metrics", disabled=is_read_only()):
         counts = _refresh_relative_market_metrics(conn, members_df)
         st.session_state.pop(_RELATIVE_VALUATION_RESULTS_KEY, None)
         st.session_state.pop(_RELATIVE_VALUATION_META_KEY, None)
@@ -4169,6 +4175,8 @@ def _commit_db(conn) -> None:
 
 
 def _ensure_valuation_saved_dashboards_table(conn) -> None:
+    if is_read_only():
+        return
     if is_sqlite_url(get_db_url()):
         create_sql = f"""
         CREATE TABLE IF NOT EXISTS {_VALUATION_DASHBOARD_SAVED_TABLE} (
@@ -4429,6 +4437,8 @@ def _render_valuation_dashboard_save_controls(
     score_year_range: str,
     terminal_year: int,
 ) -> None:
+    if is_read_only():
+        return
     st.markdown("---")
     save_mode = st.radio(
         "Save dashboard",
@@ -6021,6 +6031,9 @@ def _render_company_tab(conn) -> None:
 
 
 def _render_general_settings_tab(conn) -> None:
+    if is_read_only():
+        st.info("This Research preview is read-only. Changes cannot be saved.")
+        return
     st.subheader("General")
 
     default_rates = _get_latest_risk_free_rates(conn)
@@ -6067,6 +6080,9 @@ def _get_effective_industry_settings(group_id: int, general_settings: Dict[str, 
 
 
 def _render_industry_settings_tab(conn) -> None:
+    if is_read_only():
+        st.info("This Research preview is read-only. Changes cannot be saved.")
+        return
     st.subheader("Industry - Level")
 
     groups_df = read_df("SELECT id, name FROM company_groups ORDER BY name", conn)
@@ -6315,6 +6331,9 @@ def _render_company_assumption_upload_workflow(
 
 
 def _render_company_settings_tab(conn) -> None:
+    if is_read_only():
+        st.info("This Research preview is read-only. Changes cannot be saved.")
+        return
     st.subheader("Company - Level")
 
     companies_df = list_companies(conn)
@@ -6438,6 +6457,9 @@ def _render_company_settings_tab(conn) -> None:
 
 
 def _render_settings_tab(conn) -> None:
+    if is_read_only():
+        st.info("Settings cannot be changed in this read-only preview.")
+        return
     active_settings_tab = lazy_tab_bar(
         ["General", "Industry - Level", "Company - Level"],
         key="dcf_settings_tabs",
@@ -6462,7 +6484,8 @@ def render_dcf_valuations_tab() -> None:
     )
 
     if active_model_tab == "Discounted Cash Flow":
-        active_dcf_tab = lazy_tab_bar(["Industry", "Company", "Settings"], key="dcf_primary_tabs", default="Industry")
+        labels = ["Industry", "Company"] + ([] if is_read_only() else ["Settings"])
+        active_dcf_tab = lazy_tab_bar(labels, key="dcf_primary_tabs", default="Industry")
         if active_dcf_tab == "Industry":
             _render_industry_tab(conn)
         elif active_dcf_tab == "Company":

@@ -6,11 +6,12 @@ import os
 from typing import Any, Iterable, Mapping, Tuple
 
 import pandas as pd
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from db_config import get_db_url, is_sqlite_url
+from preview_mode import is_read_only, require_writable
 
 
 @lru_cache(maxsize=1)
@@ -37,13 +38,23 @@ def get_engine() -> Engine:
             pool_timeout=max(1, int(os.environ.get("TARASHA_DB_POOL_TIMEOUT", "30"))),
             pool_recycle=max(60, int(os.environ.get("TARASHA_DB_POOL_RECYCLE", "900"))),
         )
-    return create_engine(url, connect_args=connect_args, **engine_kwargs)
+    engine = create_engine(url, connect_args=connect_args, **engine_kwargs)
+    if is_read_only():
+        @event.listens_for(engine, "connect")
+        def _protect_snapshot(connection, _record):
+            connection.execute("PRAGMA query_only=ON")
+    return engine
 
 
 class ManagedSession(Session):
     """Session that can defer legacy helper commits into one outer transaction."""
 
     _DEFER_KEY = "tarasha_deferred_commit_depth"
+
+    def flush(self, objects=None) -> None:
+        if self.new or self.dirty or self.deleted:
+            require_writable()
+        super().flush(objects)
 
     def commit(self) -> None:
         if int(self.info.get(self._DEFER_KEY, 0)) > 0:

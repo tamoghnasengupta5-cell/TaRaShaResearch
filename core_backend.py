@@ -16,6 +16,7 @@ from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 import db_models
+from preview_mode import is_read_only, require_writable, sqlite_snapshot_uri
 from db_orm import (
     Companies,
     CompanyGroups,
@@ -157,6 +158,8 @@ def _sqlite_companies_count(db_path: str) -> int | None:
 
 def _seed_azure_db_if_needed(target_db_path: str) -> None:
     """On Azure, seed the persistent DB from the repo DB once (if needed)."""
+    if is_read_only():
+        return
     if not is_sqlite_url(get_db_url()):
         return
     if not _is_azure_app_service():
@@ -218,6 +221,10 @@ def get_conn(db_path: str | None = None) -> sqlite3.Connection:
     - timeout/busy_timeout helps avoid 'database is locked' when the DB is briefly busy.
     - journal_mode=DELETE is more reliable than WAL on some cloud-mounted filesystems.
     """
+    if is_read_only():
+        conn = sqlite3.connect(sqlite_snapshot_uri(), uri=True, check_same_thread=False, timeout=30)
+        conn.execute("PRAGMA query_only=ON")
+        return conn
     db_path = db_path or get_db_path()
 
     # On Azure, ensure the persistent DB file is seeded from the repo DB (once) if needed
@@ -1150,6 +1157,8 @@ def _business_quarter_trend_default_weight_map() -> Dict[str, float]:
 
 
 def _seed_business_quarter_trend_weights_if_empty(conn) -> None:
+    if is_read_only():
+        return
     cur = conn.cursor()
     cur.execute("SELECT COUNT(*) FROM business_quarter_trend_weights")
     row = cur.fetchone()
@@ -1280,6 +1289,8 @@ def _load_ttc_assumptions_seed_rows() -> List[Tuple[str, str, float, float, str,
 
 
 def _seed_ttc_assumptions_if_empty(conn) -> None:
+    if is_read_only():
+        return
     cur = conn.cursor()
     try:
         cur.execute("SELECT COUNT(*) FROM ttc_assumptions")
@@ -2357,6 +2368,7 @@ def _get_company_country(conn: sqlite3.Connection, company_id: int) -> str:
         pass
     return "USA"
 def init_db(conn) -> None:
+    require_writable()
     db_models.metadata.create_all(conn.get_bind())
 
     # Backwards-compatible schema migration
@@ -2755,6 +2767,9 @@ def compute_and_store_wacc(conn: sqlite3.Connection, company_id: int) -> None:
       - Values are stored as percentage points (e.g., 6.62 means 6.62%).
       - Uses the country-specific tax-rate value in the DB (not year-specific).
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         country = _get_company_country(conn, company_id)
         tax_rate = _tax_rate_to_decimal(_get_effective_marginal_tax_rate_for_country(conn, country))
@@ -2861,6 +2876,9 @@ def get_annual_wacc_series(conn: sqlite3.Connection, company_id: int) -> pd.Data
 
 def compute_and_store_roic_wacc_spread(conn: sqlite3.Connection, company_id: int) -> None:
     """Compute and store annual Spread% = ROIC% - WACC% for a given company (safe to call repeatedly)."""
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         conn.execute(
             """
@@ -8990,6 +9008,9 @@ def compute_and_store_total_equity_and_roe(conn: sqlite3.Connection, company_id:
 
     This uses values already stored in the DB.
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         se_df = get_annual_shareholders_equity_series(conn, company_id)
     except Exception:
@@ -9077,6 +9098,9 @@ def compute_and_store_debt_equity(conn: sqlite3.Connection, company_id: int) -> 
 
     This uses values already stored in the DB.
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         debt_df = get_annual_total_debt_series(conn, company_id)
     except Exception:
@@ -9296,6 +9320,9 @@ def compute_and_store_levered_beta(conn: sqlite3.Connection, company_id: int) ->
         Levered Beta(y) =
             Unlevered Beta(bucket) * (1 + (1 - TaxRate(country)) * Debt/Equity(y))
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     ub = _get_company_unlevered_beta_from_bucket(conn, company_id)
     if ub is None or not np.isfinite(ub):
         return
@@ -9349,6 +9376,9 @@ def compute_and_store_cost_of_equity(conn: sqlite3.Connection, company_id: int) 
       - Country risk premiums are pulled from Country_Risk_Premium (columns: us, india, china, japan, uk, uae).
       - Values are stored as percentage points (e.g., 6.25 means 6.25%).
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         cur = conn.cursor()
         cur.execute(
@@ -9465,6 +9495,9 @@ def compute_and_store_default_spread(conn: sqlite3.Connection, company_id: int) 
       - <= 12.499999                        => 0.70
       - else                                => 0.59
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         cur = conn.cursor()
         cur.execute(
@@ -9550,6 +9583,9 @@ def compute_and_store_pre_tax_cost_of_debt(conn: sqlite3.Connection, company_id:
       - Default Spread is pulled from default_spread_annual for the same year.
       - Values are stored as percentage points (e.g., 4.10 means 4.10%).
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         cur = conn.cursor()
         cur.execute(
@@ -9647,6 +9683,9 @@ def compute_and_store_rd_spend_rate(conn: sqlite3.Connection, company_id: int) -
 
     R&D Spend Rate % = Research & Development Expense / NOPAT.
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         nopat_df = get_annual_nopat_series(conn, company_id)
     except Exception:
@@ -9690,6 +9729,9 @@ def compute_and_store_fcff_and_reinvestment_rate(conn: sqlite3.Connection, compa
     Net CapEx = CapEx - D&A
     Reinvestment Rate = (Net CapEx + Î”NCWC) / NOPAT
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         nopat_df = get_annual_nopat_series(conn, company_id)
     except Exception:
@@ -9774,6 +9816,9 @@ def compute_and_store_fcfe(conn: sqlite3.Connection, company_id: int) -> None:
     - Î”NCWC uses the prior available NCWC year (not necessarily year-1).
     - If Net Debt Issued/Paid is missing for a year, it is treated as 0 for that year.
     """
+    # Published previews use the reconciled cached results without writing.
+    if is_read_only():
+        return
     try:
         ni_common_df = get_annual_net_income_to_common_series(conn, company_id)
     except Exception:

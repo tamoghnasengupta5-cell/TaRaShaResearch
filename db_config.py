@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from preview_mode import is_read_only, snapshot_path, sqlite_snapshot_uri
+
 
 def _is_azure_app_service() -> bool:
     return bool(os.environ.get("WEBSITE_SITE_NAME") or os.environ.get("WEBSITE_INSTANCE_ID"))
@@ -13,6 +15,8 @@ def _repo_dir() -> Path:
 
 
 def get_sqlite_path() -> Path:
+    if is_read_only():
+        return snapshot_path()
     env_path = (os.environ.get("TARASHA_DB_PATH") or "").strip()
     if env_path:
         p = Path(env_path)
@@ -26,6 +30,10 @@ def get_sqlite_path() -> Path:
 
 
 def get_db_url() -> str:
+    if is_read_only():
+        # Fail closed: a public preview never falls back to a writer URL,
+        # Keychain database, or an automatically created empty SQLite file.
+        return f"sqlite:///{sqlite_snapshot_uri()}&uri=true"
     url = (os.environ.get("TARASHA_DB_URL") or "").strip()
     if url:
         return url

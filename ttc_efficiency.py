@@ -1,4 +1,5 @@
 from __future__ import annotations
+from preview_mode import is_read_only
 
 import io
 import re
@@ -3364,6 +3365,9 @@ def render_through_the_cycle_combined_score_tab() -> None:
 
 
 def render_through_the_cycle_assumptions_tab() -> None:
+    if is_read_only():
+        st.info("This Research preview is read-only. Changes cannot be saved.")
+        return
     conn = get_db()
     sections = _parse_assumptions_sections(conn)
     if all(not rows for rows in sections.values()):

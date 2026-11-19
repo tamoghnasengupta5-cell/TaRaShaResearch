@@ -7,6 +7,7 @@ from sqlalchemy import text
 from db_config import get_db_url, is_sqlite_url
 from db_session import DbCompat, SessionLocal, get_engine
 from core_backend import init_db
+from preview_mode import is_read_only
 
 # ---------------------------
 # Shared connection helper (Streamlit cached)
@@ -24,7 +25,10 @@ def _initialize_database_runtime():
         auto_create = os.environ.get("TARASHA_AUTO_CREATE_SCHEMA", "").strip().lower() in {
             "1", "true", "yes", "on"
         }
-        if is_sqlite_url(url) or auto_create:
+        if is_read_only():
+            with engine.connect() as connection:
+                connection.execute(text("SELECT 1 FROM companies LIMIT 1"))
+        elif is_sqlite_url(url) or auto_create:
             # Preserve local/Azure SQLite bootstrap behavior. Shared PostgreSQL
             # is migration-owned and must not perform 130 catalog checks during
             # an interactive page load.

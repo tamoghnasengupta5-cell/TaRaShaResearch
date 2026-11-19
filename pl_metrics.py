@@ -1,3 +1,4 @@
+from preview_mode import is_read_only
 import streamlit as st
 from core import *  # noqa: F401,F403
 from ui_theme import company_label_map
@@ -64,7 +65,7 @@ def render_pl_metrics_tab():
                         key="bucket_name_input",
                     )
                 with bucket_col2:
-                    save_bucket = st.button("Save bucket", key="save_bucket_button")
+                    save_bucket = st.button("Save bucket", key="save_bucket_button", disabled=is_read_only())
 
                 if save_bucket:
                     sel_company_ids = [int(company_id) for company_id in options]

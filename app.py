@@ -10,6 +10,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from core import get_db
+from preview_mode import is_read_only
 from ui_lazy_tabs import lazy_tab_bar
 from ui_theme import company_label_map, inject_dashboard_table_css, install_dataframe_defaults
 
@@ -1413,14 +1414,13 @@ def _render_home_body() -> None:
 
 def _render_equity_research_body() -> None:
     active_tab = lazy_tab_bar(
-        [
-            "Data Upload",
+        (["Data Upload"] if not is_read_only() else []) + [
             "Value Creation Stability Score",
             "Quarterly Business Trend Score",
             "Through-the-Cycle Efficiency Score",
         ],
         key="equity_research_primary",
-        default="Data Upload",
+        default="Value Creation Stability Score" if is_read_only() else "Data Upload",
     )
 
     if active_tab == "Data Upload":
@@ -1437,8 +1437,7 @@ def _render_equity_research_body() -> None:
                 "Capital structure & Spread",
                 "Cash Flow and Reinvestment",
                 "Combined Dashboard",
-                "Admin",
-            ],
+            ] + ([] if is_read_only() else ["Admin"]),
             key="value_creation_tabs",
             default="P&L Metrics Dashboard",
         )
@@ -1483,8 +1482,7 @@ def _render_equity_research_body() -> None:
                 "Cash Flow Efficiency Score",
                 "Working Capital Efficiency Score",
                 "Combined Score",
-                "Admin",
-            ],
+            ] + ([] if is_read_only() else ["Admin"]),
             key="ttc_tabs",
             default="Income Statement Efficiency Score",
         )
@@ -1530,6 +1528,8 @@ def _render_footer() -> None:
     st.markdown("", unsafe_allow_html=True)
 
 active_top_tab = _render_header()
+if is_read_only():
+    st.caption("Read-only preview · Explore the published financial data and download results. Changes are not saved.")
 
 if active_top_tab == "Home":
     _render_home_body()
